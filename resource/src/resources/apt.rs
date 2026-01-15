@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use indexmap::indexmap;
 use lusid_causality::{CausalityMeta, CausalityTree};
 use lusid_cmd::{Command, CommandError};
+use lusid_ctx::Context;
 use lusid_operation::{operations::apt::AptOperation, Operation};
 use lusid_params::{ParamField, ParamType, ParamTypes};
 use rimu::{SourceId, Span, Spanned};
@@ -130,7 +131,10 @@ impl ResourceType for Apt {
 
     type State = AptState;
     type StateError = AptStateError;
-    async fn state(resource: &Self::Resource) -> Result<Self::State, Self::StateError> {
+    async fn state(
+        _ctx: &mut Context,
+        resource: &Self::Resource,
+    ) -> Result<Self::State, Self::StateError> {
         Command::new("dpkg-query")
             .args(["-W", "-f='${Status}'", &resource.package])
             .handle(

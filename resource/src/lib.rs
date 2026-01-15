@@ -4,6 +4,7 @@ pub use crate::resources::*;
 
 use async_trait::async_trait;
 use lusid_causality::CausalityTree;
+use lusid_ctx::Context;
 use lusid_operation::Operation;
 use lusid_params::ParamTypes;
 use lusid_view::Render;
@@ -45,7 +46,10 @@ pub trait ResourceType {
     type StateError;
 
     /// Fetch current state of resource on machine.
-    async fn state(resource: &Self::Resource) -> Result<Self::State, Self::StateError>;
+    async fn state(
+        ctx: &mut Context,
+        resource: &Self::Resource,
+    ) -> Result<Self::State, Self::StateError>;
 
     /// A change from current state.
     type Change: Render;
@@ -138,18 +142,19 @@ impl ResourceParams {
 }
 
 impl Resource {
-    pub async fn state(&self) -> Result<ResourceState, ResourceStateError> {
+    pub async fn state(&self, ctx: &mut Context) -> Result<ResourceState, ResourceStateError> {
         async fn typed<R: ResourceType>(
+            ctx: &mut Context,
             resource: &R::Resource,
             map: impl Fn(R::State) -> ResourceState,
             map_err: impl Fn(R::StateError) -> ResourceStateError,
         ) -> Result<ResourceState, ResourceStateError> {
-            R::state(resource).await.map(map).map_err(map_err)
+            R::state(ctx, resource).await.map(map).map_err(map_err)
         }
 
         match self {
             Resource::Apt(resource) => {
-                typed::<Apt>(resource, ResourceState::Apt, ResourceStateError::Apt).await
+                typed::<Apt>(ctx, resource, ResourceState::Apt, ResourceStateError::Apt).await
             }
         }
     }

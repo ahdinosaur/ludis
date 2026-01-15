@@ -1,7 +1,5 @@
 //! Parameter schemas and values.
 
-use std::path::Path;
-
 use displaydoc::Display;
 use indexmap::IndexMap;
 use rimu::{from_serde_value, SerdeValue, SerdeValueError, SourceId, Span, Spanned, Value};
@@ -17,7 +15,6 @@ pub enum ParamType {
     List { item: Box<Spanned<ParamType>> },
     Object { value: Box<Spanned<ParamType>> },
     Path,
-    HostPath,
 }
 
 #[derive(Debug, Clone)]
@@ -299,7 +296,7 @@ impl FromRimu for ParamTypes {
     }
 }
 
-#[derive(Debug, Error, Display)]
+#[derive(Debug, Clone, Error, Display)]
 pub enum ValidateValueError {
     /// Value does not match expected type
     TypeMismatch {
@@ -318,17 +315,9 @@ pub enum ValidateValueError {
         #[source]
         error: Box<ValidateValueError>,
     },
-    /// Host path error "{path}": {error:?}
-    HostPathError {
-        path: String,
-        #[source]
-        error: std::io::Error,
-    },
-    /// Host path doesn't exist: "{path}"
-    HostPathNotExists { path: String },
 }
 
-#[derive(Debug, Error, Display)]
+#[derive(Debug, Clone, Error, Display)]
 pub enum ParamValidationError {
     /// Missing required parameter "{key}"
     MissingParam {
@@ -347,13 +336,13 @@ pub enum ParamValidationError {
     },
 }
 
-#[derive(Debug, Error, Display)]
+#[derive(Debug, Clone, Error, Display)]
 #[displaydoc("Parameters struct did not match all fields")]
 pub struct ParamsStructValidationError {
     errors: Vec<ParamValidationError>,
 }
 
-#[derive(Debug, Error, Display)]
+#[derive(Debug, Clone, Error, Display)]
 pub enum ParamsValidationError {
     /// Parameter values without parameter types
     ValuesWithoutTypes,
@@ -407,27 +396,6 @@ fn validate_type(
                 }
             }
             Err(mismatch(param_type, value))
-        }
-
-        ParamType::HostPath => {
-            if let Value::String(path_str) = value_inner {
-                let path = Path::new(path_str);
-                let exists =
-                    path.try_exists()
-                        .map_err(|error| ValidateValueError::HostPathError {
-                            path: path_str.into(),
-                            error,
-                        })?;
-                if exists {
-                    Ok(())
-                } else {
-                    Err(ValidateValueError::HostPathNotExists {
-                        path: path_str.into(),
-                    })
-                }
-            } else {
-                Err(mismatch(param_type, value))
-            }
         }
 
         ParamType::List { item } => {

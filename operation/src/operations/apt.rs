@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
+use lusid_ctx::Context;
 use std::{collections::BTreeSet, fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -72,6 +73,7 @@ impl OperationType for Apt {
     type ApplyStderr = ChildStderr;
 
     async fn apply(
+        _ctx: &mut Context,
         operation: &Self::Operation,
     ) -> Result<(Self::ApplyOutput, Self::ApplyStdout, Self::ApplyStderr), Self::ApplyError> {
         match operation {

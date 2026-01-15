@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 lusid-cmd = { path = "../cmd", version = "0.1" }
+lusid-ctx = { path = "../ctx", version = "0.1" }
 lusid-fs = { path = "../fs", version = "0.1" }
 lusid-view = { path = "../view", version = "0.1" }
 async-trait.workspace = true

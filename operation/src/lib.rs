@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use core::task;
+use lusid_ctx::Context;
 use lusid_view::Render;
 use pin_project::pin_project;
 use std::{
@@ -33,6 +34,7 @@ pub trait OperationType {
 
     /// Apply an operation of this type.
     async fn apply(
+        ctx: &mut Context,
         operation: &Self::Operation,
     ) -> Result<(Self::ApplyOutput, Self::ApplyStdout, Self::ApplyStderr), Self::ApplyError>;
 }
@@ -119,6 +121,7 @@ impl Operation {
     /// Apply a set of operations by type
     pub async fn apply(
         &self,
+        ctx: &mut Context,
     ) -> Result<
         (
             OperationApplyOutput,
@@ -129,8 +132,9 @@ impl Operation {
     > {
         match self {
             Operation::Apt(op) => {
-                let (output, stdout, stderr) =
-                    Apt::apply(op).await.map_err(OperationApplyError::Apt)?;
+                let (output, stdout, stderr) = Apt::apply(ctx, op)
+                    .await
+                    .map_err(OperationApplyError::Apt)?;
                 Ok((
                     OperationApplyOutput::Apt(output),
                     OperationApplyStdout::Apt(stdout),

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
 use std::{fmt::Display, path::Path, pin::Pin};
 use tokio::io::AsyncRead;
@@ -202,6 +203,7 @@ impl OperationType for File {
     type ApplyStderr = Pin<Box<dyn AsyncRead + Send + 'static>>;
 
     async fn apply(
+        _ctx: &mut Context,
         operation: &Self::Operation,
     ) -> Result<(Self::ApplyOutput, Self::ApplyStdout, Self::ApplyStderr), Self::ApplyError> {
         let stdout = Box::pin(tokio::io::empty());
@@ -270,7 +272,7 @@ impl OperationType for File {
             FileOperation::RemoveDirectory { path } => {
                 info!("[file] remove directory: {}", path);
                 Ok((
-                    Box::pin(async move { fs::remove_dir(path.as_path).await }),
+                    Box::pin(async move { fs::remove_dir(path.as_path()).await }),
                     stdout,
                     stderr,
                 ))
@@ -288,15 +290,25 @@ impl OperationType for File {
             FileOperation::ChangeMode { path, mode } => {
                 info!("[file] change mode: {} -> {}", path, mode);
                 Ok((
-                    Box::pin(async move { fs::change_mode(path, mode).await }),
+                    Box::pin(async move { fs::change_mode(path.as_path(), mode.as_u32()).await }),
                     stdout,
                     stderr,
                 ))
             }
             FileOperation::ChangeOwner { path, user, group } => {
-                info!("[file] change user: {} -> {}", path, user);
+                info!(
+                    "[file] change user: {} -> user {:?} + group {:?}",
+                    path, user, group
+                );
                 Ok((
-                    Box::pin(async move { fs::change_owner(path, user, group).await }),
+                    Box::pin(async move {
+                        fs::change_owner(
+                            path.as_path(),
+                            user.as_ref().map(|u| u.as_str()),
+                            user.as_ref().map(|g| g.as_str()),
+                        )
+                        .await
+                    }),
                     stdout,
                     stderr,
                 ))
