@@ -5,7 +5,10 @@ use indexmap::indexmap;
 use lusid_causality::{CausalityMeta, CausalityTree};
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
-use lusid_operation::{operations::file::FileOperation, Operation};
+use lusid_operation::{
+    operations::file::{FileGroup, FileMode, FileOperation, FilePath, FileUser},
+    Operation,
+};
 use lusid_params::{ParamField, ParamType, ParamTypes};
 use rimu::{SourceId, Span, Spanned};
 use serde::Deserialize;
@@ -14,26 +17,65 @@ use thiserror::Error;
 use crate::ResourceType;
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub enum FileParams {
-    Package { package: String },
-    Packages { packages: Vec<String> },
+    Source {
+        source: FilePath,
+        path: FilePath,
+        mode: FileMode,
+        user: FileUser,
+        group: FileGroup,
+    },
+    File {
+        path: FilePath,
+        mode: FileMode,
+        user: FileUser,
+        group: FileGroup,
+    },
+    FileAbsent {
+        path: FilePath,
+    },
+    Directory {
+        path: FilePath,
+        mode: FileMode,
+        user: FileUser,
+        group: FileGroup,
+    },
+    DirectoryFiles {
+        path: FilePath,
+        mode: FileMode,
+        user: FileUser,
+        group: FileGroup,
+    },
+    DirectoryAbsent {
+        path: FilePath,
+    },
 }
 
 impl Display for FileParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FileParams::Package { package } => write!(f, "File(package = {package})"),
-            FileParams::Packages { packages } => {
-                write!(f, "File(packages = [{}])", packages.join(", "))
+            FileParams::File { src, dest, .. } => write!(f, "File(src={src}, dest={dest})"),
+            FileParams::Directory { src, dest, .. } => {
+                write!(f, "Directory(src={src}, dest={dest})")
             }
         }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct FileResource {
-    pub package: String,
+pub enum FileResource {
+    FileSource { source: FilePath, path: FilePath },
+    FilePresent { path: FilePath },
+    FileAbsent { path: FilePath },
+    DirectoryPresent { path: FilePath },
+    DirectoryAbsent { path: FilePath },
+    FileMode { mode: FileMode },
+    DirectoryFilesMode { mode: FileMode },
+    User { user: FileGroup },
+    DirectoryFilesUser { mode: FileMode },
+    Group { group: FileGroup },
+    DirectoryFilesGroup { mode: FileMode },
 }
 
 impl Display for FileResource {
@@ -45,8 +87,23 @@ impl Display for FileResource {
 
 #[derive(Debug, Clone)]
 pub enum FileState {
-    NotInstalled,
-    Installed,
+    FileSourced,
+    FilePresent,
+    FileAbsent,
+    DirectoryPresent,
+    DirectoryAbsent,
+    ModeCorrect,
+    ModeIncorrect,
+    DirectoryFilesModeCorrect,
+    DirectoryFilesModeIncorrect,
+    UserCorrect,
+    UserIncorrect,
+    DirectoryFilesUserCorrect,
+    DirectoryFilesUserIncorrect,
+    GroupCorrect,
+    GroupIncorrect,
+    DirectoryFilesGroupCorrect,
+    DirectoryFilesGroupIncorrect,
 }
 
 impl Display for FileState {
@@ -85,7 +142,7 @@ pub struct File;
 
 #[async_trait]
 impl ResourceType for File {
-    const ID: &'static str = "apt";
+    const ID: &'static str = "file";
 
     fn param_types() -> Option<Spanned<ParamTypes>> {
         let span = Span::new(SourceId::empty(), 0, 0);
@@ -111,23 +168,7 @@ impl ResourceType for File {
     type Params = FileParams;
     type Resource = FileResource;
 
-    fn resources(params: Self::Params) -> Vec<CausalityTree<Self::Resource>> {
-        match params {
-            FileParams::Package { package } => vec![CausalityTree::leaf(
-                CausalityMeta::default(),
-                FileResource { package },
-            )],
-            FileParams::Packages { packages } => vec![CausalityTree::branch(
-                CausalityMeta::default(),
-                packages
-                    .into_iter()
-                    .map(|package| {
-                        CausalityTree::leaf(CausalityMeta::default(), FileResource { package })
-                    })
-                    .collect(),
-            )],
-        }
-    }
+    fn resources(params: Self::Params) -> Vec<CausalityTree<Self::Resource>> {}
 
     type State = FileState;
     type StateError = FileStateError;
@@ -135,73 +176,10 @@ impl ResourceType for File {
         _ctx: &mut Context,
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
-        Command::new("dpkg-query")
-            .args(["-W", "-f='${Status}'", &resource.package])
-            .handle(
-                |stdout| {
-                    let stdout = String::from_utf8_lossy(stdout);
-                    let status_parts: Vec<_> = stdout.trim_matches('\'').split(" ").collect();
-                    let Some(status) = status_parts.get(2) else {
-                        return Err(FileStateError::ParseStatus {
-                            status: stdout.to_string(),
-                        });
-                    };
-                    match *status {
-                        "not-installed" => Ok(FileState::NotInstalled),
-                        "unpacked" => Ok(FileState::NotInstalled),
-                        "half-installed" => Ok(FileState::NotInstalled),
-                        "installed" => Ok(FileState::Installed),
-                        "config-files" => Ok(FileState::NotInstalled),
-                        _ => Err(FileStateError::ParseStatus {
-                            status: stdout.to_string(),
-                        }),
-                    }
-                },
-                |stderr| {
-                    let stderr = String::from_utf8_lossy(stderr);
-                    if stderr.contains("no packages found matching") {
-                        Ok(Some(FileState::NotInstalled))
-                    } else {
-                        Ok(None)
-                    }
-                },
-            )
-            .await?
     }
 
     type Change = FileChange;
-    fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change> {
-        match state {
-            FileState::Installed => None,
-            FileState::NotInstalled => Some(FileChange::Install {
-                package: resource.package.clone(),
-            }),
-        }
-    }
+    fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change> {}
 
-    fn operations(change: Self::Change) -> Vec<CausalityTree<Operation>> {
-        match change {
-            FileChange::Install { package } => {
-                vec![
-                    CausalityTree::Leaf {
-                        node: Operation::File(FileOperation::Update),
-                        meta: CausalityMeta {
-                            id: Some("update".into()),
-                            ..Default::default()
-                        },
-                    },
-                    CausalityTree::Leaf {
-                        node: Operation::File(FileOperation::Install {
-                            packages: vec![package],
-                        }),
-                        meta: CausalityMeta {
-                            id: None,
-                            before: vec!["update".into()],
-                            after: vec![],
-                        },
-                    },
-                ]
-            }
-        }
-    }
+    fn operations(change: Self::Change) -> Vec<CausalityTree<Operation>> {}
 }

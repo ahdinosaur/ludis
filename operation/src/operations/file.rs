@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
+use serde::{Deserialize, Serialize};
 use std::{fmt::Display, path::Path, pin::Pin};
 use tokio::io::AsyncRead;
 use tracing::info;
@@ -13,7 +14,7 @@ pub enum FileSource {
     Path(FilePath),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FilePath(String);
 
 impl FilePath {
@@ -32,7 +33,7 @@ impl Display for FilePath {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Copy, PartialEq, Eq)]
 pub struct FileMode(u32);
 
 impl FileMode {
@@ -51,7 +52,7 @@ impl Display for FileMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileUser(String);
 
 impl FileUser {
@@ -70,7 +71,7 @@ impl Display for FileUser {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileGroup(String);
 
 impl FileGroup {
