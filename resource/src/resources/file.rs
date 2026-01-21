@@ -241,19 +241,31 @@ impl ResourceType for File {
             } => vec![
                 CausalityTree::leaf(
                     CausalityMeta::id("file".into()),
-                    FileResource::FileSource { source, path },
+                    FileResource::FileSource {
+                        source,
+                        path: path.clone(),
+                    },
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["file".into()]),
-                    FileResource::Mode { path, mode },
+                    FileResource::Mode {
+                        path: path.clone(),
+                        mode,
+                    },
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["file".into()]),
-                    FileResource::User { path, user },
+                    FileResource::User {
+                        path: path.clone(),
+                        user,
+                    },
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["file".into()]),
-                    FileResource::Group { path, group },
+                    FileResource::Group {
+                        path: path.clone(),
+                        group,
+                    },
                 ),
             ],
             FileParams::File {
@@ -264,19 +276,28 @@ impl ResourceType for File {
             } => vec![
                 CausalityTree::leaf(
                     CausalityMeta::id("file".into()),
-                    FileResource::FilePresent { path },
+                    FileResource::FilePresent { path: path.clone() },
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["file".into()]),
-                    FileResource::Mode { path, mode },
+                    FileResource::Mode {
+                        path: path.clone(),
+                        mode,
+                    },
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["file".into()]),
-                    FileResource::User { path, user },
+                    FileResource::User {
+                        path: path.clone(),
+                        user,
+                    },
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["file".into()]),
-                    FileResource::Group { path, group },
+                    FileResource::Group {
+                        path: path.clone(),
+                        group,
+                    },
                 ),
             ],
             FileParams::FileAbsent { path } => vec![CausalityTree::leaf(
@@ -291,19 +312,28 @@ impl ResourceType for File {
             } => vec![
                 CausalityTree::leaf(
                     CausalityMeta::id("directory".into()),
-                    FileResource::DirectoryPresent { path },
+                    FileResource::DirectoryPresent { path: path.clone() },
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["directory".into()]),
-                    FileResource::Mode { path, mode },
+                    FileResource::Mode {
+                        path: path.clone(),
+                        mode,
+                    },
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["directory".into()]),
-                    FileResource::User { path, user },
+                    FileResource::User {
+                        path: path.clone(),
+                        user,
+                    },
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["directory".into()]),
-                    FileResource::Group { path, group },
+                    FileResource::Group {
+                        path: path.clone(),
+                        group,
+                    },
                 ),
             ],
             FileParams::DirectoryAbsent { path } => vec![CausalityTree::leaf(
@@ -316,9 +346,10 @@ impl ResourceType for File {
     type State = FileState;
     type StateError = FileStateError;
     async fn state(
-        _ctx: &mut Context,
+        ctx: &mut Context,
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
+        match resource {}
     }
 
     type Change = FileChange;

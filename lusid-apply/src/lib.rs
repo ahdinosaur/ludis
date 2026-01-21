@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use lusid_apply_stdio::AppUpdate;
 use lusid_causality::{compute_epochs, CausalityTree, EpochError};
 use lusid_ctx::{Context, ContextError};
@@ -14,6 +16,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info};
 
 pub struct ApplyOptions {
+    pub root_path: PathBuf,
     pub plan_id: PlanId,
     pub params_json: Option<String>,
 }
@@ -57,11 +60,12 @@ pub enum ApplyError {
 pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     info!("starting");
     let ApplyOptions {
+        root_path,
         plan_id,
         params_json,
     } = options;
 
-    let ctx = Context::create()?;
+    let ctx = Context::create(&root_path)?;
     let mut store = Store::new(ctx.paths().cache_dir());
 
     info!(plan = %plan_id, "using plan");
@@ -110,7 +114,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     let resource_states = resources
         .map_result_async(
             |resource| async move {
-                let state = resource.state().await?;
+                let state = resource.state(&mut ctx).await?;
                 Ok::<(Resource, ResourceState), ApplyError>((resource, state))
             },
             |index| emit(AppUpdate::ResourceStatesNodeStart { index }),
@@ -201,7 +205,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
             emit(AppUpdate::OperationApplyStart { index }).await?;
 
-            let (output, stdout, stderr) = operation.apply().await?;
+            let (output, stdout, stderr) = operation.apply(&mut xtx).await?;
 
             let output_task = async {
                 output.await?;

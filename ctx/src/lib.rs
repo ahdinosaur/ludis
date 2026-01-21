@@ -1,5 +1,7 @@
 mod paths;
 
+use std::path::{Path, PathBuf};
+
 use lusid_http::{HttpClient, HttpError};
 use thiserror::Error;
 
@@ -16,15 +18,24 @@ pub enum ContextError {
 
 #[derive(Debug, Clone)]
 pub struct Context {
+    root: PathBuf,
     paths: Paths,
     http: HttpClient,
 }
 
 impl Context {
-    pub fn create() -> Result<Self, ContextError> {
+    pub fn create(root: &Path) -> Result<Self, ContextError> {
         let paths = Paths::create()?;
         let http = HttpClient::new()?;
-        Ok(Self { paths, http })
+        Ok(Self {
+            root: root.to_path_buf(),
+            paths,
+            http,
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
     }
 
     pub fn paths(&self) -> &Paths {

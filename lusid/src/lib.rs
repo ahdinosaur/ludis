@@ -217,9 +217,11 @@ async fn cmd_dev_apply(config: Config, machine_id: String) -> Result<(), AppErro
         params,
     } = config.get_machine(&machine_id)?;
 
+    let root = config.path.parent().unwrap();
+    let mut ctx = Context::create(root).unwrap();
+
     let instance_id = &machine_id;
     let ports = vec![];
-    let mut ctx = Context::create().unwrap();
     let options = VmOptions {
         instance_id,
         machine: &machine,
@@ -284,9 +286,11 @@ async fn cmd_dev_ssh(config: Config, machine_id: String) -> Result<(), AppError>
         params: _,
     } = config.get_machine(&machine_id)?;
 
+    let root = config.path.parent().unwrap();
+    let mut ctx = Context::create(root).unwrap();
+
     let instance_id = &machine_id;
     let ports = vec![];
-    let mut ctx = Context::create().unwrap();
     let options = VmOptions {
         instance_id,
         machine: &machine,

@@ -9,6 +9,10 @@ use lusid_apply::{apply, ApplyOptions};
 #[derive(Parser, Debug)]
 #[command(name = "lusid-apply", about = "Apply a Lusid plan.", version)]
 struct Cli {
+    /// Absolute or relative path to the lusid root.
+    #[arg(long = "root")]
+    root_path: PathBuf,
+
     /// Absolute or relative path to the .lusid plan file.
     #[arg(long = "plan")]
     plan_path: PathBuf,
@@ -34,6 +38,7 @@ async fn main() {
         .unwrap_or(cli.plan_path.clone());
     let plan_id = PlanId::Path(plan_path.clone());
     let options = ApplyOptions {
+        root_path: cli.root_path,
         plan_id,
         params_json: cli.params_json,
     };
