@@ -9,6 +9,7 @@ use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub enum ParamType {
+    Literal(Value),
     Boolean,
     String,
     Number,
@@ -373,6 +374,13 @@ fn validate_type(
     let value_inner = value.inner();
 
     match typ_inner {
+        ParamType::Literal(literal) => {
+            if value.inner() == literal {
+                Ok(())
+            } else {
+                Err(mismatch(param_type, value))
+            }
+        }
         ParamType::Boolean => match value_inner {
             Value::Boolean(_) => Ok(()),
             _ => Err(mismatch(param_type, value)),

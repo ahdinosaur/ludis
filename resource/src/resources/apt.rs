@@ -117,15 +117,12 @@ impl ResourceType for Apt {
                 CausalityMeta::default(),
                 AptResource { package },
             )],
-            AptParams::Packages { packages } => vec![CausalityTree::branch(
-                CausalityMeta::default(),
-                packages
-                    .into_iter()
-                    .map(|package| {
-                        CausalityTree::leaf(CausalityMeta::default(), AptResource { package })
-                    })
-                    .collect(),
-            )],
+            AptParams::Packages { packages } => packages
+                .into_iter()
+                .map(|package| {
+                    CausalityTree::leaf(CausalityMeta::default(), AptResource { package })
+                })
+                .collect(),
         }
     }
 
@@ -185,20 +182,13 @@ impl ResourceType for Apt {
                 vec![
                     CausalityTree::Leaf {
                         node: Operation::Apt(AptOperation::Update),
-                        meta: CausalityMeta {
-                            id: Some("update".into()),
-                            ..Default::default()
-                        },
+                        meta: CausalityMeta::id("update".into()),
                     },
                     CausalityTree::Leaf {
                         node: Operation::Apt(AptOperation::Install {
                             packages: vec![package],
                         }),
-                        meta: CausalityMeta {
-                            id: None,
-                            before: vec!["update".into()],
-                            after: vec![],
-                        },
+                        meta: CausalityMeta::before(vec!["update".into()]),
                     },
                 ]
             }

@@ -18,3 +18,29 @@ impl<NodeId> Default for CausalityMeta<NodeId> {
         }
     }
 }
+
+impl<NodeId> CausalityMeta<NodeId> {
+    pub fn id(id: NodeId) -> Self {
+        Self {
+            id: Some(id),
+            before: vec![],
+            after: vec![],
+        }
+    }
+
+    pub fn before(before: Vec<NodeId>) -> Self {
+        Self {
+            id: None,
+            before,
+            after: vec![],
+        }
+    }
+
+    pub fn after(after: Vec<NodeId>) -> Self {
+        Self {
+            id: None,
+            before: vec![],
+            after,
+        }
+    }
+}
