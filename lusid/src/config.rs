@@ -163,6 +163,10 @@ impl Config {
         println!("{table}")
     }
 
+    pub fn root(&self) -> &Path {
+        self.path.parent().unwrap()
+    }
+
     async fn load_config(path: &Path) -> Result<ConfigToml, ConfigError> {
         let path = if path.is_dir() {
             path.join("lusid.toml")

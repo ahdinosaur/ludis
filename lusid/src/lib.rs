@@ -183,6 +183,7 @@ async fn cmd_local_apply(config: Config) -> Result<(), AppError> {
 
     let mut command = Command::new(lusid_apply_linux_x86_64_path);
     command
+        .args(["--root", &config.root().to_string_lossy()])
         .args(["--plan", &plan.to_string_lossy()])
         .args(["--log", &config.log]);
 
@@ -217,7 +218,7 @@ async fn cmd_dev_apply(config: Config, machine_id: String) -> Result<(), AppErro
         params,
     } = config.get_machine(&machine_id)?;
 
-    let root = config.path.parent().unwrap();
+    let root = config.root();
     let mut ctx = Context::create(root).unwrap();
 
     let instance_id = &machine_id;
@@ -241,7 +242,7 @@ async fn cmd_dev_apply(config: Config, machine_id: String) -> Result<(), AppErro
     let dev_dir = format!("/home/{}", vm.user);
     let plan_dir = plan.parent().unwrap();
     let plan_filename = plan.file_name().unwrap().to_string_lossy();
-    let apply_bin = which(config.lusid_apply_linux_x86_64_path)?;
+    let apply_bin = which(&config.lusid_apply_linux_x86_64_path)?;
 
     let volumes = vec![
         SshVolume::FilePath {
@@ -254,9 +255,11 @@ async fn cmd_dev_apply(config: Config, machine_id: String) -> Result<(), AppErro
         },
     ];
 
-    let log = config.log;
-    let mut command =
-        format!("{dev_dir}/lusid-apply --plan {dev_dir}/plan/{plan_filename} --log {log}");
+    let log = &config.log;
+    let mut command = format!(
+        "{dev_dir}/lusid-apply --root {} --plan {dev_dir}/plan/{plan_filename} --log {log}",
+        root.display()
+    );
     if let Some(params) = params {
         let params_json = serde_json::to_string(&params)?;
         command.push_str(&format!(" --params '{params_json}'"));
