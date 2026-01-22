@@ -110,7 +110,7 @@ where
                         if !line.trim().is_empty() {
                             app.push_stderr(line)
                         }
-                    },
+                    }
                     Ok(None) => stderr_done = true,
                     Err(err) => return Err(err.into()),
                 }
@@ -168,6 +168,12 @@ fn read_events() -> UnboundedReceiver<Event> {
     });
 
     event_rx
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiPage {
+    Main,
+    Stderr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,6 +332,7 @@ struct TuiApp {
     app_view: AppView,
     stage: PipelineStage,
     follow_pipeline: bool,
+    page: UiPage,
 
     params_state: TreeState,
     resources_state: TreeState,
@@ -336,7 +343,15 @@ struct TuiApp {
     operations_apply_state: OperationsApplyState,
 
     child_exited: bool,
-    stderr: Vec<String>,
+
+    // Collect *all* stderr output.
+    stderr_buffer: String,
+    stderr_lines_count: usize,
+
+    // stderr page UI state.
+    stderr_scroll: u16,
+    stderr_follow: bool,
+    stderr_view_height: u16,
 }
 
 impl TuiApp {
@@ -345,6 +360,7 @@ impl TuiApp {
             app_view: AppView::default(),
             stage: PipelineStage::ResourceParams,
             follow_pipeline: true,
+            page: UiPage::Main,
 
             params_state: TreeState::default(),
             resources_state: TreeState::default(),
@@ -353,8 +369,15 @@ impl TuiApp {
             operations_state: TreeState::default(),
 
             operations_apply_state: OperationsApplyState::default(),
+
             child_exited: false,
-            stderr: Vec::new(),
+
+            stderr_buffer: String::new(),
+            stderr_lines_count: 0,
+
+            stderr_scroll: 0,
+            stderr_follow: true,
+            stderr_view_height: 0,
         }
     }
 
@@ -363,7 +386,7 @@ impl TuiApp {
 
         self.app_view = current.update(update)?;
 
-        if self.follow_pipeline {
+        if self.follow_pipeline && self.page == UiPage::Main {
             let next = PipelineStage::from_app_view(&self.app_view);
             if next.is_available(&self.app_view) {
                 self.stage = next;
@@ -383,52 +406,109 @@ impl TuiApp {
         }) = event
         {
             if modifiers == KeyModifiers::NONE {
-                match code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
-
-                    KeyCode::Char('f') => {
-                        self.follow_pipeline = !self.follow_pipeline;
-                        if self.follow_pipeline {
-                            let next = PipelineStage::from_app_view(&self.app_view);
-                            if next.is_available(&self.app_view) {
-                                self.stage = next;
-                            }
-                        }
-                    }
-
-                    KeyCode::Left => {
-                        self.follow_pipeline = false;
-                        self.navigate_stage_relative(-1);
-                    }
-
-                    KeyCode::Right => {
-                        self.follow_pipeline = false;
-                        self.navigate_stage_relative(1);
-                    }
-
-                    // Optional: keep Tab behavior as another way to move between stages.
-                    KeyCode::Tab => {
-                        self.follow_pipeline = false;
-                        self.navigate_stage_relative(1);
-                    }
-
-                    // Optional: keep Shift-Tab behavior as another way to move between stages.
-                    KeyCode::BackTab => {
-                        self.follow_pipeline = false;
-                        self.navigate_stage_relative(-1);
-                    }
-
-                    KeyCode::Down | KeyCode::Char('j') => self.move_down(),
-                    KeyCode::Up | KeyCode::Char('k') => self.move_up(),
-
-                    KeyCode::Enter | KeyCode::Char(' ') => self.toggle_selected(),
-
-                    _ => {}
+                match self.page {
+                    UiPage::Main => return Ok(self.handle_event_main(code)),
+                    UiPage::Stderr => return Ok(self.handle_event_stderr(code)),
                 }
             }
         }
 
         Ok(false)
+    }
+
+    fn handle_event_main(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => return true,
+
+            KeyCode::Char('e') => {
+                self.page = UiPage::Stderr;
+                self.stderr_follow = true;
+                self.stderr_scroll = u16::MAX; // clamp-to-bottom in draw
+                return false;
+            }
+
+            KeyCode::Char('f') => {
+                self.follow_pipeline = !self.follow_pipeline;
+                if self.follow_pipeline {
+                    let next = PipelineStage::from_app_view(&self.app_view);
+                    if next.is_available(&self.app_view) {
+                        self.stage = next;
+                    }
+                }
+            }
+
+            KeyCode::Left => {
+                self.follow_pipeline = false;
+                self.navigate_stage_relative(-1);
+            }
+
+            KeyCode::Right => {
+                self.follow_pipeline = false;
+                self.navigate_stage_relative(1);
+            }
+
+            // Optional: keep Tab behavior as another way to move between stages.
+            KeyCode::Tab => {
+                self.follow_pipeline = false;
+                self.navigate_stage_relative(1);
+            }
+
+            // Optional: keep Shift-Tab behavior as another way to move between
+            // stages.
+            KeyCode::BackTab => {
+                self.follow_pipeline = false;
+                self.navigate_stage_relative(-1);
+            }
+
+            KeyCode::Down | KeyCode::Char('j') => self.move_down(),
+            KeyCode::Up | KeyCode::Char('k') => self.move_up(),
+
+            KeyCode::Enter | KeyCode::Char(' ') => self.toggle_selected(),
+
+            _ => {}
+        }
+
+        false
+    }
+
+    fn handle_event_stderr(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Char('q') | KeyCode::Esc => return true,
+
+            // Toggle back to main view.
+            KeyCode::Char('e') => {
+                self.page = UiPage::Main;
+                return false;
+            }
+
+            // Scrolling controls.
+            KeyCode::Up | KeyCode::Char('k') => self.stderr_scroll_up(1),
+            KeyCode::Down | KeyCode::Char('j') => self.stderr_scroll_down(1),
+
+            KeyCode::PageUp => {
+                let step = self.stderr_view_height.max(1);
+                self.stderr_scroll_up(step);
+            }
+
+            KeyCode::PageDown => {
+                let step = self.stderr_view_height.max(1);
+                self.stderr_scroll_down(step);
+            }
+
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.stderr_follow = false;
+                self.stderr_scroll = 0;
+            }
+
+            KeyCode::End | KeyCode::Char('G') => {
+                self.stderr_follow = true;
+                self.stderr_scroll = u16::MAX; // clamp-to-bottom in draw
+            }
+
+            _ => {}
+        }
+
+        false
     }
 
     fn navigate_stage_relative(&mut self, direction: i32) {
@@ -533,11 +613,28 @@ impl TuiApp {
     }
 
     fn push_stderr(&mut self, line: String) {
-        self.stderr.push(line);
+        if !self.stderr_buffer.is_empty() {
+            self.stderr_buffer.push('\n');
+        }
+        self.stderr_buffer.push_str(&line);
+        self.stderr_lines_count = self.stderr_lines_count.saturating_add(1);
+
+        // If the user is following stderr, keep "pinned to bottom". We
+        // don’t know the view height here, so we set an oversize scroll and
+        // clamp during draw.
+        if self.page == UiPage::Stderr && self.stderr_follow {
+            self.stderr_scroll = u16::MAX;
+        }
     }
 
-    fn stderr_text(&self) -> String {
-        self.stderr.join("\n")
+    fn stderr_scroll_up(&mut self, lines: u16) {
+        self.stderr_follow = false;
+        self.stderr_scroll = self.stderr_scroll.saturating_sub(lines);
+    }
+
+    fn stderr_scroll_down(&mut self, lines: u16) {
+        self.stderr_follow = false;
+        self.stderr_scroll = self.stderr_scroll.saturating_add(lines);
     }
 }
 
@@ -618,6 +715,10 @@ fn pipeline_feedback_line(app: &TuiApp, outcome: Option<&Result<(), TuiError>>) 
         return format!("Process error: {err}");
     }
 
+    if app.page == UiPage::Stderr {
+        return "Viewing stderr (press e to return)".to_string();
+    }
+
     match &app.app_view {
         AppView::Start => "Waiting for planning output...".to_string(),
 
@@ -648,6 +749,13 @@ fn pipeline_feedback_line(app: &TuiApp, outcome: Option<&Result<(), TuiError>>) 
 }
 
 fn draw_main(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
+    match app.page {
+        UiPage::Stderr => draw_stderr_page(frame, area, app),
+        UiPage::Main => draw_main_pipeline(frame, area, app),
+    }
+}
+
+fn draw_main_pipeline(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
     match app.stage {
         PipelineStage::ResourceParams => match app.app_view.resource_params() {
             Some(tree) => draw_tree(frame, area, "resource params", tree, &mut app.params_state),
@@ -693,9 +801,48 @@ fn draw_main(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
     }
 }
 
-fn draw_help(frame: &mut ratatui::Frame, area: Rect, _app: &TuiApp) {
-    let hints =
-        "Left and Right navigate stages  Up and Down move  Enter toggles tree  f follow  q quit";
+fn draw_stderr_page(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
+    let inner_height = area.height.saturating_sub(2) as usize;
+    app.stderr_view_height = inner_height as u16;
+
+    let total_lines = app.stderr_lines_count.max(1);
+    let max_scroll = total_lines.saturating_sub(inner_height) as u16;
+
+    if app.stderr_follow || app.stderr_scroll > max_scroll {
+        app.stderr_scroll = max_scroll;
+    }
+
+    let title = if app.stderr_follow {
+        "stderr (following) - press e to return"
+    } else {
+        "stderr - press e to return"
+    };
+
+    let widget = if app.stderr_buffer.is_empty() {
+        Paragraph::new("<no stderr output>")
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(Color::DarkGray))
+    } else {
+        Paragraph::new(app.stderr_buffer.as_str())
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false })
+            .scroll((app.stderr_scroll, 0))
+            .style(Style::default().fg(Color::Red))
+    };
+
+    frame.render_widget(widget, area);
+}
+
+fn draw_help(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
+    let hints = match app.page {
+        UiPage::Main => {
+            "Left/Right stages  Up/Down move  Enter toggle tree  f follow  e stderr  q quit"
+        }
+        UiPage::Stderr => "Up/Down scroll  PgUp/PgDn page  g top  G/end bottom  e back  q quit",
+    };
 
     let lines = vec![Line::from(Span::styled(
         hints,
