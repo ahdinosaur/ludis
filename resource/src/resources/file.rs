@@ -1,16 +1,15 @@
 use std::{
     fmt::{self, Display},
-    path::PathBuf,
+    path::Path,
 };
 
 use async_trait::async_trait;
 use indexmap::indexmap;
 use lusid_causality::{CausalityMeta, CausalityTree};
-use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
 use lusid_operation::{
-    operations::file::{FileGroup, FileMode, FileOperation, FilePath, FileUser},
+    operations::file::{FileGroup, FileMode, FileOperation, FilePath, FileSource, FileUser},
     Operation,
 };
 use lusid_params::{ParamField, ParamType, ParamTypes};
@@ -56,18 +55,10 @@ impl Display for FileParams {
             FileParams::Source { source, path, .. } => {
                 write!(f, "Source(source={source}, path={path})")
             }
-            FileParams::File { path, .. } => {
-                write!(f, "File(path={path})")
-            }
-            FileParams::FileAbsent { path } => {
-                write!(f, "FileAbsent(path={path})")
-            }
-            FileParams::Directory { path, .. } => {
-                write!(f, "Directory(path={path})")
-            }
-            FileParams::DirectoryAbsent { path } => {
-                write!(f, "DirectoryAbsent(path={path})")
-            }
+            FileParams::File { path, .. } => write!(f, "File(path={path})"),
+            FileParams::FileAbsent { path } => write!(f, "FileAbsent(path={path})"),
+            FileParams::Directory { path, .. } => write!(f, "Directory(path={path})"),
+            FileParams::DirectoryAbsent { path } => write!(f, "DirectoryAbsent(path={path})"),
         }
     }
 }
@@ -87,19 +78,13 @@ pub enum FileResource {
 impl Display for FileResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FileResource::FileSource { source, path, .. } => {
+            FileResource::FileSource { source, path } => {
                 write!(f, "FileSource({source} -> {path})")
             }
-            FileResource::FilePresent { path, .. } => write!(f, "FilePresent({path})"),
-            FileResource::FileAbsent { path } => {
-                write!(f, "FileAbsent({path})")
-            }
-            FileResource::DirectoryPresent { path, .. } => {
-                write!(f, "DirectoryPresent({path})")
-            }
-            FileResource::DirectoryAbsent { path } => {
-                write!(f, "DirectoryAbsent({path})")
-            }
+            FileResource::FilePresent { path } => write!(f, "FilePresent({path})"),
+            FileResource::FileAbsent { path } => write!(f, "FileAbsent({path})"),
+            FileResource::DirectoryPresent { path } => write!(f, "DirectoryPresent({path})"),
+            FileResource::DirectoryAbsent { path } => write!(f, "DirectoryAbsent({path})"),
             FileResource::Mode { path, mode } => write!(f, "FileMode({path}, mode = {mode})"),
             FileResource::User { path, user } => write!(f, "FileUser({path}, user = {user})"),
             FileResource::Group { path, group } => write!(f, "FileGroup({path}, group = {group})"),
@@ -140,8 +125,7 @@ impl Display for FileState {
             GroupCorrect => "GroupCorrect",
             GroupIncorrect => "GroupIncorrect",
         };
-
-        write!(f, "{}", text)
+        write!(f, "{text}")
     }
 }
 
@@ -153,13 +137,60 @@ pub enum FileStateError {
 
 #[derive(Debug, Clone)]
 pub enum FileChange {
-    Install { package: String },
+    WriteFile {
+        path: FilePath,
+        source: FileSource,
+    },
+    RemoveFile {
+        path: FilePath,
+    },
+    CreateDirectory {
+        path: FilePath,
+    },
+    RemoveDirectory {
+        path: FilePath,
+    },
+    ChangeMode {
+        path: FilePath,
+        mode: FileMode,
+    },
+    ChangeOwner {
+        path: FilePath,
+        user: Option<FileUser>,
+        group: Option<FileGroup>,
+    },
 }
 
 impl Display for FileChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FileChange::Install { package } => write!(f, "File::Installed({package})"),
+            FileChange::WriteFile { path, source } => match source {
+                FileSource::Contents(contents) => write!(
+                    f,
+                    "File::WriteFile(path = {}, source = Contents({} bytes))",
+                    path,
+                    contents.len()
+                ),
+                FileSource::Path(source_path) => write!(
+                    f,
+                    "File::WriteFile(path = {}, source = Path({}))",
+                    path, source_path
+                ),
+            },
+            FileChange::RemoveFile { path } => write!(f, "File::RemoveFile(path = {path})"),
+            FileChange::CreateDirectory { path } => {
+                write!(f, "File::CreateDirectory(path = {path})")
+            }
+            FileChange::RemoveDirectory { path } => {
+                write!(f, "File::RemoveDirectory(path = {path})")
+            }
+            FileChange::ChangeMode { path, mode } => {
+                write!(f, "File::ChangeMode(path = {path}, mode = {mode})")
+            }
+            FileChange::ChangeOwner { path, user, group } => write!(
+                f,
+                "File::ChangeOwner(path = {path}, user = {user:?}, group = {group:?})"
+            ),
         }
     }
 }
@@ -173,47 +204,39 @@ impl ResourceType for File {
 
     fn param_types() -> Option<Spanned<ParamTypes>> {
         let span = Span::new(SourceId::empty(), 0, 0);
-
-        let path = |ty| Spanned::new(ParamField::new(ty), span.clone());
+        let field = |ty| Spanned::new(ParamField::new(ty), span.clone());
 
         Some(Spanned::new(
             ParamTypes::Union(vec![
                 indexmap! {
-                    "type".to_string() => path(ParamType::Literal("source".into())),
-                    "source".to_string() => path(ParamType::String),
-                    "path".to_string() => path(ParamType::String),
-                    "mode".to_string() => path(ParamType::Number),
-                    "user".to_string() => path(ParamType::String),
-                    "group".to_string() => path(ParamType::String),
+                  "type".to_string() => field(ParamType::Literal("source".into())),
+                  "source".to_string() => field(ParamType::String),
+                  "path".to_string() => field(ParamType::String),
+                  "mode".to_string() => field(ParamType::Number),
+                  "user".to_string() => field(ParamType::String),
+                  "group".to_string() => field(ParamType::String),
                 },
                 indexmap! {
-                    "type".to_string() => path(ParamType::Literal("file".into())),
-                    "path".to_string() => path(ParamType::String),
-                    "mode".to_string() => path(ParamType::Number),
-                    "user".to_string() => path(ParamType::String),
-                    "group".to_string() => path(ParamType::String),
+                  "type".to_string() => field(ParamType::Literal("file".into())),
+                  "path".to_string() => field(ParamType::String),
+                  "mode".to_string() => field(ParamType::Number),
+                  "user".to_string() => field(ParamType::String),
+                  "group".to_string() => field(ParamType::String),
                 },
                 indexmap! {
-                    "type".to_string() => path(ParamType::Literal("file-absent".into())),
-                    "path".to_string() => path(ParamType::String),
+                  "type".to_string() => field(ParamType::Literal("file-absent".into())),
+                  "path".to_string() => field(ParamType::String),
                 },
                 indexmap! {
-                    "type".to_string() => path(ParamType::Literal("directory".into())),
-                    "path".to_string() => path(ParamType::String),
-                    "mode".to_string() => path(ParamType::Number),
-                    "user".to_string() => path(ParamType::String),
-                    "group".to_string() => path(ParamType::String),
+                  "type".to_string() => field(ParamType::Literal("directory".into())),
+                  "path".to_string() => field(ParamType::String),
+                  "mode".to_string() => field(ParamType::Number),
+                  "user".to_string() => field(ParamType::String),
+                  "group".to_string() => field(ParamType::String),
                 },
                 indexmap! {
-                    "type".to_string() => path(ParamType::Literal("directory-files".into())),
-                    "path".to_string() => path(ParamType::String),
-                    "mode".to_string() => path(ParamType::Number),
-                    "user".to_string() => path(ParamType::String),
-                    "group".to_string() => path(ParamType::String),
-                },
-                indexmap! {
-                    "type".to_string() => path(ParamType::Literal("directory-absent".into())),
-                    "path".to_string() => path(ParamType::String),
+                  "type".to_string() => field(ParamType::Literal("directory-absent".into())),
+                  "path".to_string() => field(ParamType::String),
                 },
             ]),
             span,
@@ -255,12 +278,10 @@ impl ResourceType for File {
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["file".into()]),
-                    FileResource::Group {
-                        path: path.clone(),
-                        group,
-                    },
+                    FileResource::Group { path, group },
                 ),
             ],
+
             FileParams::File {
                 path,
                 mode,
@@ -287,16 +308,15 @@ impl ResourceType for File {
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["file".into()]),
-                    FileResource::Group {
-                        path: path.clone(),
-                        group,
-                    },
+                    FileResource::Group { path, group },
                 ),
             ],
+
             FileParams::FileAbsent { path } => vec![CausalityTree::leaf(
                 CausalityMeta::default(),
                 FileResource::FileAbsent { path },
             )],
+
             FileParams::Directory {
                 path,
                 mode,
@@ -323,12 +343,10 @@ impl ResourceType for File {
                 ),
                 CausalityTree::leaf(
                     CausalityMeta::before(vec!["directory".into()]),
-                    FileResource::Group {
-                        path: path.clone(),
-                        group,
-                    },
+                    FileResource::Group { path, group },
                 ),
             ],
+
             FileParams::DirectoryAbsent { path } => vec![CausalityTree::leaf(
                 CausalityMeta::default(),
                 FileResource::DirectoryAbsent { path },
@@ -336,49 +354,28 @@ impl ResourceType for File {
         }
     }
 
-    /*
-    pub enum FileResource {
-        FileSource { source: FilePath, path: FilePath },
-        FilePresent { path: FilePath },
-        FileAbsent { path: FilePath },
-        DirectoryPresent { path: FilePath },
-        DirectoryAbsent { path: FilePath },
-        Mode { path: FilePath, mode: FileMode },
-        User { path: FilePath, user: FileUser },
-        Group { path: FilePath, group: FileGroup },
-    }
-
-    pub enum FileState {
-        FileSourced,
-        FileNotSourced,
-        FilePresent,
-        FileAbsent,
-        DirectoryPresent,
-        DirectoryAbsent,
-        ModeCorrect,
-        ModeIncorrect,
-        UserCorrect,
-        UserIncorrect,
-        GroupCorrect,
-        GroupIncorrect,
-        */
-
     type State = FileState;
     type StateError = FileStateError;
+
     async fn state(
-        ctx: &mut Context,
+        _ctx: &mut Context,
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
         let state = match resource {
             FileResource::FileSource { source, path } => {
-                let source_contents = fs::read_file_to_string(source.as_path()).await?;
-                let path_contents = fs::read_file_to_string(path.as_path()).await?;
-                if source_contents == path_contents {
-                    FileState::FileSourced
-                } else {
+                if !fs::path_exists(path.as_path()).await? {
                     FileState::FileNotSourced
+                } else {
+                    let source_contents = fs::read_file_to_string(source.as_path()).await?;
+                    let path_contents = fs::read_file_to_string(path.as_path()).await?;
+                    if source_contents == path_contents {
+                        FileState::FileSourced
+                    } else {
+                        FileState::FileNotSourced
+                    }
                 }
             }
+
             FileResource::FilePresent { path } | FileResource::FileAbsent { path } => {
                 if fs::path_exists(path.as_path()).await? {
                     FileState::FilePresent
@@ -386,6 +383,7 @@ impl ResourceType for File {
                     FileState::FileAbsent
                 }
             }
+
             FileResource::DirectoryPresent { path } | FileResource::DirectoryAbsent { path } => {
                 if fs::path_exists(path.as_path()).await? {
                     FileState::DirectoryPresent
@@ -393,47 +391,148 @@ impl ResourceType for File {
                     FileState::DirectoryAbsent
                 }
             }
+
             FileResource::Mode { path, mode } => {
-                let actual_mode = fs::get_mode(path.as_path()).await?;
-                if actual_mode == mode.as_u32() {
-                    FileState::ModeCorrect
-                } else {
+                if !fs::path_exists(path.as_path()).await? {
                     FileState::ModeIncorrect
+                } else {
+                    let actual_mode = fs::get_mode(path.as_path()).await?;
+                    let actual_mode = actual_mode & 0o7777;
+                    if actual_mode == mode.as_u32() {
+                        FileState::ModeCorrect
+                    } else {
+                        FileState::ModeIncorrect
+                    }
                 }
             }
+
             FileResource::User { path, user } => {
-                let actual_user = fs::get_owner_user(path.as_path()).await?;
-                if actual_user.map(|u| u.name) == Some(user.to_string()) {
-                    FileState::UserCorrect
-                } else {
+                if !fs::path_exists(path.as_path()).await? {
                     FileState::UserIncorrect
+                } else {
+                    let actual_user = fs::get_owner_user(path.as_path()).await?;
+                    let actual_user = actual_user.map(|u| u.name.to_string());
+                    if actual_user.as_deref() == Some(user.as_str()) {
+                        FileState::UserCorrect
+                    } else {
+                        FileState::UserIncorrect
+                    }
                 }
             }
+
             FileResource::Group { path, group } => {
-                let actual_group = fs::get_owner_group(path.as_path()).await?;
-                if actual_group.map(|u| u.name) == Some(group.to_string()) {
-                    FileState::GroupCorrect
-                } else {
+                if !fs::path_exists(path.as_path()).await? {
                     FileState::GroupIncorrect
+                } else {
+                    let actual_group = fs::get_owner_group(path.as_path()).await?;
+                    let actual_group = actual_group.map(|g| g.name.to_string());
+                    if actual_group.as_deref() == Some(group.as_str()) {
+                        FileState::GroupCorrect
+                    } else {
+                        FileState::GroupIncorrect
+                    }
                 }
             }
         };
+
         Ok(state)
     }
 
     type Change = FileChange;
+
     fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change> {
         match (resource, state) {
-            (FileResource::FileSource { source, path }) => {}
-            (FileResource::FilePresent { path }) => {}
-            (FileResource::FileAbsent { path }) => {}
-            (FileResource::DirectoryPresent { path }) => {}
-            (FileResource::DirectoryAbsent { path }) => {}
-            (FileResource::Mode { path, mode }) => {}
-            (FileResource::User { path, user }) => {}
-            (FileResource::Group { path, group }) => {}
+            (FileResource::FileSource { source, path }, FileState::FileNotSourced) => {
+                Some(FileChange::WriteFile {
+                    path: path.clone(),
+                    source: FileSource::Path(source.clone()),
+                })
+            }
+
+            (FileResource::FileSource { .. }, FileState::FileSourced) => None,
+
+            (FileResource::FilePresent { path }, FileState::FileAbsent) => {
+                Some(FileChange::WriteFile {
+                    path: path.clone(),
+                    source: FileSource::Contents(Vec::new()),
+                })
+            }
+
+            (FileResource::FilePresent { .. }, FileState::FilePresent) => None,
+
+            (FileResource::FileAbsent { path }, FileState::FilePresent) => {
+                Some(FileChange::RemoveFile { path: path.clone() })
+            }
+
+            (FileResource::FileAbsent { .. }, FileState::FileAbsent) => None,
+
+            (FileResource::DirectoryPresent { path }, FileState::DirectoryAbsent) => {
+                Some(FileChange::CreateDirectory { path: path.clone() })
+            }
+
+            (FileResource::DirectoryPresent { .. }, FileState::DirectoryPresent) => None,
+
+            (FileResource::DirectoryAbsent { path }, FileState::DirectoryPresent) => {
+                Some(FileChange::RemoveDirectory { path: path.clone() })
+            }
+
+            (FileResource::DirectoryAbsent { .. }, FileState::DirectoryAbsent) => None,
+
+            (FileResource::Mode { path, mode }, FileState::ModeIncorrect) => {
+                Some(FileChange::ChangeMode {
+                    path: path.clone(),
+                    mode: *mode,
+                })
+            }
+
+            (FileResource::Mode { .. }, FileState::ModeCorrect) => None,
+
+            (FileResource::User { path, user }, FileState::UserIncorrect) => {
+                Some(FileChange::ChangeOwner {
+                    path: path.clone(),
+                    user: Some(user.clone()),
+                    group: None,
+                })
+            }
+
+            (FileResource::User { .. }, FileState::UserCorrect) => None,
+
+            (FileResource::Group { path, group }, FileState::GroupIncorrect) => {
+                Some(FileChange::ChangeOwner {
+                    path: path.clone(),
+                    user: None,
+                    group: Some(group.clone()),
+                })
+            }
+
+            (FileResource::Group { .. }, FileState::GroupCorrect) => None,
+
+            _ => {
+                panic!("Unexpected case in change method for File resource.")
+            }
         }
     }
 
-    fn operations(change: Self::Change) -> Vec<CausalityTree<Operation>> {}
+    fn operations(change: Self::Change) -> Vec<CausalityTree<Operation>> {
+        let op = match change {
+            FileChange::WriteFile { path, source } => {
+                Operation::File(FileOperation::WriteFile { path, source })
+            }
+            FileChange::RemoveFile { path } => Operation::File(FileOperation::RemoveFile { path }),
+            FileChange::CreateDirectory { path } => {
+                Operation::File(FileOperation::CreateDirectory { path })
+            }
+            FileChange::RemoveDirectory { path } => {
+                Operation::File(FileOperation::RemoveDirectory { path })
+            }
+            FileChange::ChangeMode { path, mode } => {
+                Operation::File(FileOperation::ChangeMode { path, mode })
+            }
+            FileChange::ChangeOwner { path, user, group } => {
+                Operation::File(FileOperation::ChangeOwner { path, user, group })
+            }
+        };
+
+        vec![CausalityTree::leaf(CausalityMeta::default(), op)]
+    }
 }

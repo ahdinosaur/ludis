@@ -66,7 +66,7 @@ impl SshKeypair {
         fs::write_file(&public_key_path, public_key_string.as_bytes()).await?;
         fs::write_file(&private_key_path, private_key_string.as_bytes()).await?;
 
-        fs::set_file_mode(&private_key_path, 0o600).await?;
+        fs::change_mode(&private_key_path, 0o600).await?;
 
         debug!(
             public_key = %public_key_path.display(),

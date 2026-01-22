@@ -2,7 +2,11 @@ use async_trait::async_trait;
 use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
 use serde::{Deserialize, Serialize};
-use std::{fmt::Display, path::Path, pin::Pin};
+use std::{
+    fmt::{Debug, Display},
+    path::Path,
+    pin::Pin,
+};
 use tokio::io::AsyncRead;
 use tracing::info;
 

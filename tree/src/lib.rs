@@ -328,17 +328,17 @@ where
         WriteUpdateFut,
     >(
         self,
-        map: MapFn,
-        write_start: WriteStartFn,
-        write_update: WriteUpdateFn,
+        mut map: MapFn,
+        mut write_start: WriteStartFn,
+        mut write_update: WriteUpdateFn,
     ) -> Result<FlatTree<NextNode, Meta>, Error>
     where
         NextNode: Clone,
-        MapFn: Fn(Node) -> Fut + Copy,
+        MapFn: FnMut(Node) -> Fut,
         Fut: Future<Output = Result<NextNode, Error>>,
-        WriteStartFn: Fn(usize) -> WriteStartFut,
+        WriteStartFn: FnMut(usize) -> WriteStartFut,
         WriteStartFut: Future<Output = Result<(), Error>>,
-        WriteUpdateFn: Fn(usize, NextNode) -> WriteUpdateFut,
+        WriteUpdateFn: FnMut(usize, NextNode) -> WriteUpdateFut,
         WriteUpdateFut: Future<Output = Result<(), Error>>,
     {
         let mut next_nodes = vec![None; self.nodes.len()];

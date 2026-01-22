@@ -65,7 +65,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         params_json,
     } = options;
 
-    let ctx = Context::create(&root_path)?;
+    let mut ctx = Context::create(&root_path)?;
     let mut store = Store::new(ctx.paths().cache_dir());
 
     info!(plan = %plan_id, "using plan");
@@ -113,9 +113,12 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     emit(AppUpdate::ResourceStatesStart).await?;
     let resource_states = resources
         .map_result_async(
-            |resource| async move {
-                let state = resource.state(&mut ctx).await?;
-                Ok::<(Resource, ResourceState), ApplyError>((resource, state))
+            |resource| {
+                let mut ctx = ctx.clone();
+                async move {
+                    let state = resource.state(&mut ctx).await?;
+                    Ok::<(Resource, ResourceState), ApplyError>((resource, state))
+                }
             },
             |index| emit(AppUpdate::ResourceStatesNodeStart { index }),
             |index, (_resource, resource_state)| {
@@ -205,7 +208,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
             emit(AppUpdate::OperationApplyStart { index }).await?;
 
-            let (output, stdout, stderr) = operation.apply(&mut xtx).await?;
+            let (output, stdout, stderr) = operation.apply(&mut ctx).await?;
 
             let output_task = async {
                 output.await?;

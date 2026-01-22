@@ -13,7 +13,10 @@ use tokio::io::AsyncRead;
 
 pub mod operations;
 
-use crate::operations::apt::{Apt, AptOperation};
+use crate::operations::{
+    apt::{Apt, AptOperation},
+    file::{File, FileOperation},
+};
 
 /// OperationType specifies how to merge and apply a concrete Operation type.
 ///
@@ -42,18 +45,18 @@ pub trait OperationType {
 #[derive(Debug, Clone)]
 pub enum Operation {
     Apt(AptOperation),
+    File(FileOperation),
 }
 
 impl Operation {
     /// Merge a set of operations by type.
     pub fn merge(operations: Vec<Operation>) -> Vec<Operation> {
-        let OperationsByType { apt } = partition_by_type(operations);
+        let OperationsByType { apt, file } = partition_by_type(operations);
 
-        let mut result = Vec::new();
-
-        result.extend(Apt::merge(apt).into_iter().map(Operation::Apt));
-
-        result
+        std::iter::empty()
+            .chain(Apt::merge(apt).into_iter().map(Operation::Apt))
+            .chain(File::merge(file).into_iter().map(Operation::File))
+            .collect()
     }
 }
 
@@ -61,11 +64,14 @@ impl Operation {
 pub enum OperationApplyError {
     #[error("apt operation failed: {0:?}")]
     Apt(<Apt as OperationType>::ApplyError),
+    #[error("file operation failed: {0:?}")]
+    File(<File as OperationType>::ApplyError),
 }
 
 #[pin_project(project = OperationApplyOutputProject)]
 pub enum OperationApplyOutput {
     Apt(#[pin] <Apt as OperationType>::ApplyOutput),
+    File(#[pin] <File as OperationType>::ApplyOutput),
 }
 
 impl Future for OperationApplyOutput {
@@ -75,14 +81,15 @@ impl Future for OperationApplyOutput {
         use OperationApplyOutputProject::*;
         match self.project() {
             Apt(fut) => fut.poll(cx).map_err(OperationApplyError::Apt),
+            File(fut) => fut.poll(cx).map_err(OperationApplyError::File),
         }
     }
 }
 
-#[derive(Debug)]
 #[pin_project(project = OperationApplyStdoutProject)]
 pub enum OperationApplyStdout {
     Apt(#[pin] <Apt as OperationType>::ApplyStdout),
+    File(#[pin] <File as OperationType>::ApplyStdout),
 }
 
 impl AsyncRead for OperationApplyStdout {
@@ -94,14 +101,15 @@ impl AsyncRead for OperationApplyStdout {
         use OperationApplyStdoutProject::*;
         match self.project() {
             Apt(stream) => stream.poll_read(cx, buf),
+            File(stream) => stream.poll_read(cx, buf),
         }
     }
 }
 
-#[derive(Debug)]
 #[pin_project(project = OperationApplyStderrProject)]
 pub enum OperationApplyStderr {
     Apt(#[pin] <Apt as OperationType>::ApplyStderr),
+    File(#[pin] <File as OperationType>::ApplyStderr),
 }
 
 impl AsyncRead for OperationApplyStderr {
@@ -113,6 +121,7 @@ impl AsyncRead for OperationApplyStderr {
         use OperationApplyStderrProject::*;
         match self.project() {
             Apt(stream) => stream.poll_read(cx, buf),
+            File(stream) => stream.poll_read(cx, buf),
         }
     }
 }
@@ -141,6 +150,16 @@ impl Operation {
                     OperationApplyStderr::Apt(stderr),
                 ))
             }
+            Operation::File(op) => {
+                let (output, stdout, stderr) = File::apply(ctx, op)
+                    .await
+                    .map_err(OperationApplyError::File)?;
+                Ok((
+                    OperationApplyOutput::File(output),
+                    OperationApplyStdout::File(stdout),
+                    OperationApplyStderr::File(stderr),
+                ))
+            }
         }
     }
 }
@@ -149,7 +168,8 @@ impl Display for Operation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use Operation::*;
         match self {
-            Apt(apt) => Display::fmt(apt, f),
+            Apt(op) => Display::fmt(op, f),
+            File(op) => Display::fmt(op, f),
         }
     }
 }
@@ -157,15 +177,18 @@ impl Display for Operation {
 #[derive(Debug, Clone)]
 pub struct OperationsByType {
     apt: Vec<AptOperation>,
+    file: Vec<FileOperation>,
 }
 
 /// Merge a set of operations by type.
 fn partition_by_type(operations: Vec<Operation>) -> OperationsByType {
     let mut apt: Vec<AptOperation> = Vec::new();
+    let mut file: Vec<FileOperation> = Vec::new();
     for operation in operations {
         match operation {
             Operation::Apt(op) => apt.push(op),
+            Operation::File(op) => file.push(op),
         }
     }
-    OperationsByType { apt }
+    OperationsByType { apt, file }
 }
