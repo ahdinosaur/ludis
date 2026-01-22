@@ -1,5 +1,7 @@
 //! Parameter schemas and values.
 
+use std::path::Path;
+
 use displaydoc::Display;
 use indexmap::IndexMap;
 use rimu::{from_serde_value, SerdeValue, SerdeValueError, SourceId, Span, Spanned, Value};
@@ -15,7 +17,8 @@ pub enum ParamType {
     Number,
     List { item: Box<Spanned<ParamType>> },
     Object { value: Box<Spanned<ParamType>> },
-    Path,
+    HostPath,
+    TargetPath,
 }
 
 #[derive(Debug, Clone)]
@@ -152,8 +155,8 @@ impl FromRimu for ParamType {
             "boolean" => Ok(ParamType::Boolean),
             "string" => Ok(ParamType::String),
             "number" => Ok(ParamType::Number),
-            "path" => Ok(ParamType::Path),
-            "host-path" => Ok(ParamType::Number),
+            "host-path" => Ok(ParamType::HostPath),
+            "target-path" => Ok(ParamType::TargetPath),
             "list" => {
                 let item = object
                     .swap_remove("item")
@@ -396,10 +399,20 @@ fn validate_type(
             _ => Err(mismatch(param_type, value)),
         },
 
-        ParamType::Path => {
+        ParamType::HostPath => {
             #[allow(clippy::collapsible_if)]
             if let Value::String(path) = value_inner {
-                if is_like_unix_path(path) {
+                if Path::new(path).is_relative() {
+                    return Ok(());
+                }
+            }
+            Err(mismatch(param_type, value))
+        }
+
+        ParamType::TargetPath => {
+            #[allow(clippy::collapsible_if)]
+            if let Value::String(path) = value_inner {
+                if Path::new(path).is_absolute() {
                     return Ok(());
                 }
             }
@@ -440,10 +453,6 @@ fn validate_type(
             Ok(())
         }
     }
-}
-
-fn is_like_unix_path(path: &str) -> bool {
-    !path.is_empty() && !path.contains('\\') && !path.contains(':') && path.contains('/')
 }
 
 fn validate_struct(

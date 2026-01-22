@@ -10,8 +10,15 @@ setup: (params) =>
     id: "install-nvim"
     params:
       packages: ["neovim"]
+
   - module: "@core/apt"
     before:
       - "install-nvim"
     params:
       package: "curl"
+
+  - module: "@core/file"
+    params:
+      type: "source"
+      source: "./hello.txt"
+      path: "/tmp/hello.txt"
