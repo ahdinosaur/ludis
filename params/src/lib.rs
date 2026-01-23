@@ -1,10 +1,10 @@
 //! Parameter schemas and values.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use displaydoc::Display;
 use indexmap::IndexMap;
-use rimu::{from_serde_value, SerdeValue, SerdeValueError, SourceId, Span, Spanned, Value};
+use rimu::{from_serde_value, Number, SerdeValue, SerdeValueError, SourceId, Span, Spanned, Value};
 use rimu_interop::{to_rimu, FromRimu, ToRimuError};
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -52,8 +52,24 @@ pub enum ParamTypes {
     Union(Vec<IndexMap<String, Spanned<ParamField>>>),
 }
 
+#[derive(Debug, Clone)]
+pub enum ParamValue {
+    Literal(Value),
+    Boolean(bool),
+    String(String),
+    Number(Number),
+    List {
+        items: Vec<Spanned<ParamValue>>,
+    },
+    Object {
+        value: IndexMap<String, Spanned<ParamValue>>,
+    },
+    HostPath(PathBuf),
+    TargetPath(String),
+}
+
 #[derive(Debug, Clone, Default)]
-pub struct ParamValues(IndexMap<String, Spanned<Value>>);
+pub struct ParamValues(IndexMap<String, Spanned<ParamValue>>);
 
 #[derive(Debug, Clone, Error, Display)]
 pub enum ParamValuesFromTypeError {
@@ -84,13 +100,25 @@ pub enum ParamValuesFromRimuError {
     NotAnObject,
 }
 
-impl FromRimu for ParamValues {
-    type Error = ParamValuesFromRimuError;
+impl ParamValues {
+    fn from_rimu_spanned(
+        value: Spanned<Value>,
+        typ: ParamTypes,
+    ) -> Result<Spanned<Self>, Spanned<ParamValuesFromRimuError>> {
+        let (value, span) = value.take();
 
-    fn from_rimu(value: Value) -> Result<Self, Self::Error> {
-        let Value::Object(object) = value else {
-            return Err(ParamValuesFromRimuError::NotAnObject);
+        let Value::Object(object_value) = value else {
+            return Err(Spanned::new(ParamValuesFromRimuError::NotAnObject, span));
         };
+        let ParamType::Object { value: object_type } = typ else {
+            panic!("params type is not an object, despite passing validation!?")
+        };
+        let object_type = object_type.into_inner();
+
+        for (key, field_value) in object_value.into_iter() {
+            let field_type = object_type
+        }
+
         Ok(ParamValues(object))
     }
 }
