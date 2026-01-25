@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 
 use displaydoc::Display;
 use indexmap::IndexMap;
-use rimu::{from_serde_value, Number, SerdeValue, SerdeValueError, SourceId, Span, Spanned, Value};
+use rimu::{
+    from_serde_value, Number, SerdeValue, SerdeValueError, SourceId, Span, Spanned, Value,
+    ValueObject,
+};
 use rimu_interop::{to_rimu, FromRimu, ToRimuError};
 use serde::{de::DeserializeOwned, Serialize};
 use thiserror::Error;
@@ -44,12 +47,14 @@ impl ParamField {
     }
 }
 
+pub type ParamStruct = IndexMap<String, Spanned<ParamField>>;
+
 #[derive(Debug, Clone)]
 pub enum ParamTypes {
     // A single object structure: keys -> fields
-    Struct(IndexMap<String, Spanned<ParamField>>),
+    Struct(ParamStruct),
     // A union of possible object structures.
-    Union(Vec<IndexMap<String, Spanned<ParamField>>>),
+    Union(Vec<ParamStruct>),
 }
 
 #[derive(Debug, Clone)]
@@ -77,19 +82,23 @@ pub enum ParamValuesFromTypeError {
     ToRimu(#[from] ToRimuError),
     /// Failed to convert Rimu value into parameter values
     FromRimu(#[from] ParamValuesFromRimuError),
+    /// Failed validation
+    Validation(#[from] ParamsValidationError),
 }
 
 impl ParamValues {
     pub fn from_type<T>(
         value: T,
+        typ: &Spanned<ParamTypes>,
         source_id: SourceId,
     ) -> Result<Spanned<Self>, ParamValuesFromTypeError>
     where
         T: Serialize,
     {
         let rimu_value = to_rimu(value, source_id)?;
+        let type_struct = validate(Some(typ), Some(&rimu_value))?.expect("Some");
         let param_values =
-            ParamValues::from_rimu_spanned(rimu_value).map_err(Spanned::into_inner)?;
+            ParamValues::from_rimu_spanned(rimu_value, type_struct).map_err(Spanned::into_inner)?;
         Ok(param_values)
     }
 }
@@ -103,20 +112,16 @@ pub enum ParamValuesFromRimuError {
 impl ParamValues {
     fn from_rimu_spanned(
         value: Spanned<Value>,
-        typ: ParamTypes,
+        type_struct: ParamStruct,
     ) -> Result<Spanned<Self>, Spanned<ParamValuesFromRimuError>> {
         let (value, span) = value.take();
 
         let Value::Object(object_value) = value else {
             return Err(Spanned::new(ParamValuesFromRimuError::NotAnObject, span));
         };
-        let ParamType::Object { value: object_type } = typ else {
-            panic!("params type is not an object, despite passing validation!?")
-        };
-        let object_type = object_type.into_inner();
 
         for (key, field_value) in object_value.into_iter() {
-            let field_type = object_type
+            let field_type = type_struct.get(&key).expect("key to exist");
         }
 
         Ok(ParamValues(object))
@@ -485,7 +490,7 @@ fn validate_type(
 
 fn validate_struct(
     fields: &IndexMap<String, Spanned<ParamField>>,
-    values: &ParamValues,
+    values: &ValueObject,
 ) -> Result<(), ParamsStructValidationError> {
     let mut errors: Vec<ParamValidationError> = Vec::new();
 
@@ -494,7 +499,7 @@ fn validate_struct(
         let (field, field_span) = spanned_field.clone().take();
         let spanned_type = Spanned::new(field.typ().clone(), field_span);
 
-        match values.0.get(key) {
+        match values.get(key) {
             Some(spanned_value) => {
                 if let Err(error) = validate_type(&spanned_type, spanned_value) {
                     errors.push(ParamValidationError::InvalidParam {
@@ -515,7 +520,7 @@ fn validate_struct(
     }
 
     // Unknown keys.
-    for (key, spanned_value) in values.0.iter() {
+    for (key, spanned_value) in values.iter() {
         if !fields.contains_key(key) {
             errors.push(ParamValidationError::UnknownParam {
                 key: key.clone(),
@@ -535,8 +540,8 @@ fn validate_struct(
 // For Union: succeed if any one case validates; otherwise return all case errors.
 pub fn validate(
     param_types: Option<&Spanned<ParamTypes>>,
-    param_values: Option<&Spanned<ParamValues>>,
-) -> Result<(), ParamsValidationError> {
+    param_values: Option<&Spanned<Value>>,
+) -> Result<Option<ParamStruct>, ParamsValidationError> {
     let (param_types, param_values) = match (param_types, param_values) {
         (Some(param_types), Some(param_values)) => (param_types, param_values),
         (Some(_), None) => {
@@ -546,7 +551,7 @@ pub fn validate(
             return Err(ParamsValidationError::ValuesWithoutTypes);
         }
         (None, None) => {
-            return Ok(());
+            return Ok(None);
         }
     };
 
@@ -557,7 +562,7 @@ pub fn validate(
         ParamTypes::Struct(map) => {
             validate_struct(map, param_values).map_err(Box::new)?;
 
-            Ok(())
+            Ok(Some(map.clone()))
         }
         ParamTypes::Union(cases) => {
             if cases.is_empty() {
@@ -568,7 +573,7 @@ pub fn validate(
 
             for case in cases {
                 match validate_struct(case, param_values) {
-                    Ok(()) => return Ok(()),
+                    Ok(()) => return Ok(Some(case.clone())),
                     Err(error) => case_errors.push(error),
                 }
             }
