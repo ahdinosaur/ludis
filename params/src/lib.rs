@@ -63,14 +63,59 @@ pub enum ParamValue {
     Boolean(bool),
     String(String),
     Number(Number),
-    List {
-        items: Vec<Spanned<ParamValue>>,
-    },
-    Object {
-        value: IndexMap<String, Spanned<ParamValue>>,
-    },
+    List(Vec<Spanned<ParamValue>>),
+    Object(IndexMap<String, Spanned<ParamValue>>),
     HostPath(PathBuf),
     TargetPath(String),
+}
+
+impl ParamValue {
+    fn from_rimu_spanned(
+        value: Spanned<Value>,
+        typ: ParamType,
+    ) -> Result<Spanned<Self>, Spanned<ParamValuesFromRimuError>> {
+        let (value, span) = value.take();
+
+        let param_value = match (typ, value) {
+            (ParamType::Literal(literal), value) => {
+                if literal != value {
+                    panic!("Expected literal to equal value")
+                }
+                ParamValue::Literal(literal)
+            }
+            (ParamType::Boolean, Value::Boolean(value)) => ParamValue::Boolean(value),
+            (ParamType::String, Value::String(value)) => ParamValue::String(value),
+            (ParamType::Number, Value::Number(value)) => ParamValue::Number(value),
+            (ParamType::List { item: item_type }, Value::List(items)) => {
+                let items = items
+                    .into_iter()
+                    .map(|item| ParamValue::from_rimu_spanned(item, item_type.into_inner()))
+                    .collect()?;
+                ParamValue::List(items)
+            }
+            (ParamType::Object { value: value_type }, Value::Object(object)) => {
+                let object = object
+                    .into_iter()
+                    .map(|(key, value)| {
+                        (
+                            key,
+                            ParamValue::from_rimu_spanned(value, value_type.into_inner()),
+                        )
+                    })
+                    .collect()?;
+                ParamValue::Object(object)
+            }
+            (ParamType::HostPath, Value::String(value)) => {
+                ParamValue::HostPath(PathBuf::from(value))
+            }
+            (ParamType::TargetPath, Value::String(value)) => ParamValue::TargetPath(value),
+            _ => {
+                panic!("Unexpected param type + value case")
+            }
+        };
+
+        Ok(Spanned::new(param_value, span))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -84,6 +129,12 @@ pub enum ParamValuesFromTypeError {
     FromRimu(#[from] ParamValuesFromRimuError),
     /// Failed validation
     Validation(#[from] ParamsValidationError),
+}
+
+#[derive(Debug, Clone, Error, Display)]
+pub enum ParamValuesFromRimuError {
+    /// Expected an object mapping parameter names to values
+    NotAnObject,
 }
 
 impl ParamValues {
@@ -101,16 +152,8 @@ impl ParamValues {
             ParamValues::from_rimu_spanned(rimu_value, type_struct).map_err(Spanned::into_inner)?;
         Ok(param_values)
     }
-}
 
-#[derive(Debug, Clone, Error, Display)]
-pub enum ParamValuesFromRimuError {
-    /// Expected an object mapping parameter names to values
-    NotAnObject,
-}
-
-impl ParamValues {
-    fn from_rimu_spanned(
+    pub fn from_rimu_spanned(
         value: Spanned<Value>,
         type_struct: ParamStruct,
     ) -> Result<Spanned<Self>, Spanned<ParamValuesFromRimuError>> {
@@ -120,11 +163,20 @@ impl ParamValues {
             return Err(Spanned::new(ParamValuesFromRimuError::NotAnObject, span));
         };
 
+        let mut param_values = IndexMap::new();
+
         for (key, field_value) in object_value.into_iter() {
-            let field_type = type_struct.get(&key).expect("key to exist");
+            let field_type = type_struct.get(&key).expect("key to exist").inner();
+
+            if *field_type.optional() && matches!(field_value.inner(), Value::Null) {
+                continue;
+            }
+
+            let param_value = ParamValue::from_rimu_spanned(field_value, field_type.typ().clone())?;
+            param_values.insert(key, param_value);
         }
 
-        Ok(ParamValues(object))
+        Ok(Spanned::new(ParamValues(param_values), span))
     }
 }
 
@@ -133,7 +185,7 @@ impl ParamValues {
         Value::Object(self.0)
     }
 
-    pub fn get(&self, key: &str) -> Option<&Spanned<Value>> {
+    pub fn get(&self, key: &str) -> Option<&Spanned<ParamValue>> {
         self.0.get(key)
     }
 
@@ -385,6 +437,8 @@ pub enum ParamsValidationError {
     ValuesWithoutTypes,
     /// Parameter types without parameter values
     TypesWithoutValues,
+    /// Expected an object for parameter values
+    ValuesNotAnObject,
     /// Parameter struct did not match all fields
     Struct(#[from] Box<ParamsStructValidationError>),
     /// Parameter union did not match any case
@@ -557,6 +611,10 @@ pub fn validate(
 
     let param_types = param_types.inner();
     let param_values = param_values.inner();
+
+    let Value::Object(param_values) = param_values else {
+        return Err(ParamsValidationError::ValuesNotAnObject);
+    };
 
     match param_types {
         ParamTypes::Struct(map) => {
