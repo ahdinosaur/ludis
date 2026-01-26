@@ -1,5 +1,5 @@
 use displaydoc::Display;
-use lusid_params::{validate, ParamsValidationError};
+use lusid_params::{validate, ParamValuesFromRimuError, ParamsValidationError};
 use lusid_resource::ResourceParams;
 use lusid_store::{Store, StoreError, StoreItemId};
 use rimu::{Spanned, Value};
@@ -108,6 +108,9 @@ pub enum PlanItemToResourceError {
 
     /// Parameters validation for resource failed
     ParamsValidation(#[from] ParamsValidationError),
+
+    /// Parameters value from rimu value for resource failed
+    ParamsValueFromRimu(Spanned<ParamValuesFromRimuError>),
 
     /// Failed to convert parameter values to resource params
     SerdeValue(#[from] rimu::SerdeValueError),
