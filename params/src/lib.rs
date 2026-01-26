@@ -170,21 +170,6 @@ pub enum ParamValuesFromRimuError {
 }
 
 impl ParamValues {
-    pub fn from_type<T>(
-        value: T,
-        typ: &Spanned<ParamTypes>,
-        source_id: SourceId,
-    ) -> Result<Spanned<Self>, ParamValuesFromTypeError>
-    where
-        T: Serialize,
-    {
-        let rimu_value = to_rimu(value, source_id)?;
-        let type_struct = validate(Some(typ), Some(&rimu_value))?.expect("Some");
-        let param_values =
-            ParamValues::from_rimu_spanned(rimu_value, type_struct).map_err(Spanned::into_inner)?;
-        Ok(param_values)
-    }
-
     pub fn from_rimu_spanned(
         value: Spanned<Value>,
         type_struct: ParamsStruct,
@@ -210,9 +195,7 @@ impl ParamValues {
 
         Ok(Spanned::new(ParamValues(param_values), span))
     }
-}
 
-impl ParamValues {
     pub fn into_rimu_spanned(value: Spanned<Self>) -> Spanned<Value> {
         let (value, span) = value.take();
         Spanned::new(value.into_rimu(), span)

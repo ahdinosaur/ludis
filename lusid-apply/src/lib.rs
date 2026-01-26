@@ -4,13 +4,13 @@ use lusid_apply_stdio::AppUpdate;
 use lusid_causality::{compute_epochs, CausalityTree, EpochError};
 use lusid_ctx::{Context, ContextError};
 use lusid_operation::{Operation, OperationApplyError};
-use lusid_params::{ParamValues, ParamValuesFromTypeError};
 use lusid_plan::{self, map_plan_subitems, plan, render_plan_tree, PlanError, PlanId, PlanNodeId};
 use lusid_resource::{Resource, ResourceState, ResourceStateError};
 use lusid_store::Store;
 use lusid_tree::FlatTree;
 use lusid_view::Render;
 use rimu::SourceId;
+use rimu_interop::{to_rimu, ToRimuError};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error, info};
@@ -29,6 +29,9 @@ pub enum ApplyError {
     #[error("failed to parse JSON parameters: {0}")]
     JsonParameters(#[source] serde_json::Error),
 
+    #[error("failed to parse parameters into rimu value: {0}")]
+    RimuParameters(#[from] ToRimuError),
+
     #[error("failed to output JSON: {0}")]
     JsonOutput(#[source] serde_json::Error),
 
@@ -40,9 +43,6 @@ pub enum ApplyError {
 
     #[error("failed to flush stdout: {0}")]
     FlushStdout(#[source] tokio::io::Error),
-
-    #[error("failed to convert parameters for Lusid: {0}")]
-    ParamValuesFromType(#[from] ParamValuesFromTypeError),
 
     #[error(transparent)]
     Plan(#[from] PlanError),
@@ -78,9 +78,8 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         Some(json) => {
             let value: serde_json::Value =
                 serde_json::from_str(&json).map_err(ApplyError::JsonParameters)?;
-            let source_id = SourceId::empty();
-            let params = ParamValues::from_type(value, source_id)?;
-            Some(params)
+            let value = to_rimu(value, SourceId::empty())?;
+            Some(value)
         }
     };
 
