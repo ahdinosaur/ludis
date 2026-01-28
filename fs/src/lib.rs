@@ -459,7 +459,7 @@ pub async fn write_file_atomic<P: AsRef<Path>>(path: P, data: &[u8]) -> Result<(
 
     if path_exists(dest_path).await? {
         // Copy metadata from destination path.
-        copy_metadata(&temp_path, dest_path).await?;
+        copy_metadata(dest_path, &temp_path).await?;
     }
 
     // Rename temporary path to destination path.
@@ -559,9 +559,12 @@ pub async fn copy_file_atomic<F: AsRef<Path>, T: AsRef<Path>>(
                 to: temp_path.to_path_buf(),
                 source,
             })?;
+
+        // Copy metadata from destination path.
+        copy_metadata(from_path, &temp_path).await?;
     }
 
-    rename_file(from_path, to_path).await?;
+    rename_file(&temp_path, to_path).await?;
 
     Ok(())
 }

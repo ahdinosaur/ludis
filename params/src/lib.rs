@@ -98,9 +98,7 @@ impl ParamValue {
                     .collect();
                 Value::Object(map)
             }
-            ParamValue::HostPath(path) => {
-                Value::String(format!("lusid://{}", path.to_string_lossy().into_owned()))
-            }
+            ParamValue::HostPath(path) => Value::String(path.to_string_lossy().into_owned()),
             ParamValue::TargetPath(path) => Value::String(path),
         }
     }
@@ -141,19 +139,13 @@ impl ParamValue {
                 ParamValue::Object(object)
             }
             (ParamType::HostPath, Value::String(value)) => {
-                if value.starts_with("lusid://") {
-                    let host_path = PathBuf::from(value.strip_prefix("lusid://").unwrap());
-                    println!("host path {}", host_path.display());
-                    ParamValue::HostPath(host_path)
-                } else {
-                    let value_path = PathBuf::from(value);
-                    let source_path = PathBuf::from(span.source().as_str());
-                    let source_dir_path = source_path
-                        .parent()
-                        .expect("source should have parent directory");
-                    let host_path = source_dir_path.join(value_path);
-                    ParamValue::HostPath(host_path)
-                }
+                let value_path = PathBuf::from(value);
+                let source_path = PathBuf::from(span.source().as_str());
+                let source_dir_path = source_path
+                    .parent()
+                    .expect("source should have parent directory");
+                let host_path = source_dir_path.join(value_path);
+                ParamValue::HostPath(host_path)
             }
             (ParamType::TargetPath, Value::String(value)) => ParamValue::TargetPath(value),
             _ => {
