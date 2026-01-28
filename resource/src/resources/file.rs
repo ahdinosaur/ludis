@@ -544,6 +544,9 @@ impl ResourceType for File {
             (FileResource::Group { .. }, FileState::GroupCorrect) => None,
 
             _ => {
+                // TODO (mw): Return an error. Which means changing the trait's change method.
+                // Or, alternatively, we have separate resources for each case, so there's no
+                // possible mismatch.
                 panic!("Unexpected case in change method for File resource.")
             }
         }
