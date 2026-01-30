@@ -52,17 +52,21 @@ impl VmImageRef {
 pub enum VmImageHashRef {
     #[serde(rename = "sha512sums")]
     Sha512Sums { url: String },
+    #[serde(rename = "sha256sums")]
+    Sha256Sums { url: String },
 }
 
 impl VmImageHashRef {
     pub fn to_url(&self) -> &str {
         match self {
             VmImageHashRef::Sha512Sums { url } => url,
+            VmImageHashRef::Sha256Sums { url } => url,
         }
     }
     fn to_extension(&self) -> &str {
         match self {
             VmImageHashRef::Sha512Sums { url: _ } => "sha512sums",
+            VmImageHashRef::Sha256Sums { url: _ } => "sha256sums",
         }
     }
 }

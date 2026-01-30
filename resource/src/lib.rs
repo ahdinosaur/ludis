@@ -15,9 +15,9 @@ use thiserror::Error;
 
 mod resources;
 
-use crate::resources::apt::AptParams;
-use crate::resources::apt::{Apt, AptChange, AptResource, AptState};
+use crate::resources::apt::{Apt, AptChange, AptParams, AptResource, AptState};
 use crate::resources::file::{File, FileChange, FileResource, FileState};
+use crate::resources::pacman::{Pacman, PacmanChange, PacmanParams, PacmanResource, PacmanState};
 
 /// ResourceType:
 /// - ParamTypes for Rimu schema
@@ -67,6 +67,7 @@ pub trait ResourceType {
 pub enum ResourceParams {
     Apt(AptParams),
     File(FileParams),
+    Pacman(PacmanParams),
 }
 
 impl Display for ResourceParams {
@@ -75,6 +76,7 @@ impl Display for ResourceParams {
         match self {
             Apt(params) => params.fmt(f),
             File(params) => params.fmt(f),
+            Pacman(params) => params.fmt(f),
         }
     }
 }
@@ -83,6 +85,7 @@ impl Display for ResourceParams {
 pub enum Resource {
     Apt(AptResource),
     File(FileResource),
+    Pacman(PacmanResource),
 }
 
 impl Display for Resource {
@@ -91,6 +94,7 @@ impl Display for Resource {
         match self {
             Apt(apt) => apt.fmt(f),
             File(file) => file.fmt(f),
+            Pacman(pacman) => pacman.fmt(f),
         }
     }
 }
@@ -99,6 +103,7 @@ impl Display for Resource {
 pub enum ResourceState {
     Apt(AptState),
     File(FileState),
+    Pacman(PacmanState),
 }
 
 impl Display for ResourceState {
@@ -107,6 +112,7 @@ impl Display for ResourceState {
         match self {
             Apt(apt) => apt.fmt(f),
             File(file) => file.fmt(f),
+            Pacman(pacman) => pacman.fmt(f),
         }
     }
 }
@@ -117,12 +123,15 @@ pub enum ResourceStateError {
     Apt(#[from] <Apt as ResourceType>::StateError),
     #[error("file state error: {0}")]
     File(#[from] <File as ResourceType>::StateError),
+    #[error("pacman state error: {0}")]
+    Pacman(#[from] <Pacman as ResourceType>::StateError),
 }
 
 #[derive(Debug, Clone)]
 pub enum ResourceChange {
     Apt(AptChange),
     File(FileChange),
+    Pacman(PacmanChange),
 }
 
 impl Display for ResourceChange {
@@ -131,6 +140,7 @@ impl Display for ResourceChange {
         match self {
             Apt(apt) => apt.fmt(f),
             File(file) => file.fmt(f),
+            Pacman(pacman) => pacman.fmt(f),
         }
     }
 }
@@ -150,6 +160,7 @@ impl ResourceParams {
         match self {
             ResourceParams::Apt(params) => typed::<Apt>(params, Resource::Apt),
             ResourceParams::File(params) => typed::<File>(params, Resource::File),
+            ResourceParams::Pacman(params) => typed::<Pacman>(params, Resource::Pacman),
         }
     }
 }
@@ -172,6 +183,15 @@ impl Resource {
             Resource::File(resource) => {
                 typed::<File>(ctx, resource, ResourceState::File, ResourceStateError::File).await
             }
+            Resource::Pacman(resource) => {
+                typed::<Pacman>(
+                    ctx,
+                    resource,
+                    ResourceState::Pacman,
+                    ResourceStateError::Pacman,
+                )
+                .await
+            }
         }
     }
 
@@ -193,6 +213,9 @@ impl Resource {
             (Resource::File(resource), ResourceState::File(state)) => {
                 typed::<File>(resource, state, ResourceChange::File)
             }
+            (Resource::Pacman(resource), ResourceState::Pacman(state)) => {
+                typed::<Pacman>(resource, state, ResourceChange::Pacman)
+            }
             _ => {
                 // Programmer error, should never happen, or if it does should be immediately obvious.
                 panic!("Unmatched resource and state")
@@ -206,6 +229,7 @@ impl ResourceChange {
         match self {
             ResourceChange::Apt(change) => Apt::operations(change),
             ResourceChange::File(change) => File::operations(change),
+            ResourceChange::Pacman(change) => Pacman::operations(change),
         }
     }
 }

@@ -1,5 +1,5 @@
 use lusid_params::{validate, ParamValues};
-use lusid_resource::{apt::Apt, file::File, ResourceParams, ResourceType};
+use lusid_resource::{apt::Apt, file::File, pacman::Pacman, ResourceParams, ResourceType};
 use rimu::{Spanned, Value};
 
 use crate::PlanItemToResourceError;
@@ -15,6 +15,7 @@ pub fn core_module(
     match core_module_id {
         Apt::ID => core_module_for_resource::<Apt>(params).map(ResourceParams::Apt),
         File::ID => core_module_for_resource::<File>(params).map(ResourceParams::File),
+        Pacman::ID => core_module_for_resource::<Pacman>(params).map(ResourceParams::Pacman),
         other => Err(PlanItemToResourceError::UnsupportedCoreModuleId {
             id: other.to_string(),
         }),

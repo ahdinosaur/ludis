@@ -1,4 +1,4 @@
-name: "simple"
+name: "simple-arch"
 version: "0.1.0"
 
 params:
@@ -6,12 +6,12 @@ params:
     type: "boolean"
 
 setup: (params) =>
-  - module: "@core/apt"
+  - module: "@core/pacman"
     id: "install-nvim"
     params:
       packages: ["neovim"]
 
-  - module: "@core/apt"
+  - module: "@core/pacman"
     before:
       - "install-nvim"
     params:

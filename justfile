@@ -8,11 +8,17 @@ build-lusid-apply:
 lusid-local-apply: build-lusid-apply
   cargo run -p lusid --release -- local apply --config ./examples/lusid.toml
 
-lusid-dev-apply: build-lusid-apply
+lusid-dev-a-apply: build-lusid-apply
   cargo run -p lusid --release -- dev apply --config ./examples/lusid.toml --machine a
 
-lusid-dev-ssh:
+lusid-dev-a-ssh:
   cargo run -p lusid --release -- dev ssh --config ./examples/lusid.toml --machine a
+
+lusid-dev-b-apply: build-lusid-apply
+  cargo run -p lusid --release -- dev apply --config ./examples/lusid.toml --machine b
+
+lusid-dev-b-ssh:
+  cargo run -p lusid --release -- dev ssh --config ./examples/lusid.toml --machine b
 
 lusid-apply-example-simple:
   cargo run -p lusid-apply -- --root . --plan ./examples/simple.lusid --params '{ "whatever": true }' --log trace

@@ -3,5 +3,13 @@ id = "a"
 hostname = "amber-aura"
 os = { type = "linux", linux = "debian", debian = 13 }
 arch = "x86-64"
-plan = "./simple.lusid"
+plan = "./simple-debian.lusid"
+params = { whatever = true }
+
+[machines.b]
+id = "b"
+hostname = "bronze-blossom"
+os = { type = "linux", linux = "arch" }
+arch = "x86-64"
+plan = "./simple-arch.lusid"
 params = { whatever = true }
