@@ -11,22 +11,22 @@ use crate::OperationType;
 
 #[derive(Debug, Clone)]
 pub enum SystemdOperation {
-    Enable { name: String },
-    Disable { name: String },
-    Start { name: String },
-    Stop { name: String },
+    Enable { name: String, user: bool },
+    Disable { name: String, user: bool },
+    Start { name: String, user: bool },
+    Stop { name: String, user: bool },
 }
 
 impl Display for SystemdOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SystemdOperation::Enable { name } => write!(f, "Systemd::Enable({name})"),
-            SystemdOperation::Disable { name } => {
-                write!(f, "Systemd::Disable({name})")
-            }
-            SystemdOperation::Start { name } => write!(f, "Systemd::Start({name})"),
-            SystemdOperation::Stop { name } => write!(f, "Systemd::Stop({name})"),
-        }
+        let (verb, name, user) = match self {
+            SystemdOperation::Enable { name, user } => ("Enable", name, user),
+            SystemdOperation::Disable { name, user } => ("Disable", name, user),
+            SystemdOperation::Start { name, user } => ("Start", name, user),
+            SystemdOperation::Stop { name, user } => ("Stop", name, user),
+        };
+        let scope = if *user { " --user" } else { "" };
+        write!(f, "Systemd::{verb}({name}){scope}")
     }
 }
 
@@ -62,17 +62,34 @@ impl OperationType for Systemd {
         _ctx: &mut Context,
         operation: &Self::Operation,
     ) -> Result<(Self::ApplyOutput, Self::ApplyStdout, Self::ApplyStderr), Self::ApplyError> {
-        let (verb, name) = match operation {
-            SystemdOperation::Enable { name } => ("enable", name),
-            SystemdOperation::Disable { name } => ("disable", name),
-            SystemdOperation::Start { name } => ("start", name),
-            SystemdOperation::Stop { name } => ("stop", name),
+        let (verb, name, user) = match operation {
+            SystemdOperation::Enable { name, user } => ("enable", name, *user),
+            SystemdOperation::Disable { name, user } => ("disable", name, *user),
+            SystemdOperation::Start { name, user } => ("start", name, *user),
+            SystemdOperation::Stop { name, user } => ("stop", name, *user),
         };
-        info!("[systemd] {verb}: {name}");
+        info!(user, "[systemd] {verb}: {name}");
 
         let mut cmd = Command::new("systemctl");
+
+        if user {
+            cmd.arg("--user");
+        }
+
+        // `--no-ask-password` is kept for both buses: on the system bus it prevents
+        // sudo/polkit from blocking on a tty prompt; on the user bus it's a no-op
+        // because the per-user systemd instance never asks for a password.
         cmd.arg("--no-ask-password").arg(verb).arg(name);
-        let output = cmd.sudo().output().await?;
+
+        // User-instance commands talk to `$XDG_RUNTIME_DIR/systemd/private` as the
+        // invoking user — wrapping in `sudo` would target root's user instance (or
+        // fail entirely without a session bus), which is the opposite of what we want.
+        if !user {
+            cmd = cmd.sudo();
+        }
+
+        let output = cmd.output().await?;
+
         Ok((
             Box::pin(async move {
                 output.status.await?;

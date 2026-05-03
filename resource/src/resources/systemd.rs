@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use lusid_causality::{CausalityMeta, CausalityTree};
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
-use lusid_operation::{Operation, operations::systemd::SystemdOperation};
+use lusid_operation::{operations::systemd::SystemdOperation, Operation};
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
@@ -17,6 +17,8 @@ pub struct SystemdParams {
     pub name: String,
     pub enabled: Option<bool>,
     pub active: Option<bool>,
+    /// `None` defaults to the system instance.
+    pub user: Option<bool>,
 }
 
 impl ParseParams for SystemdParams {
@@ -25,11 +27,13 @@ impl ParseParams for SystemdParams {
         let name = fields.required_string("name")?;
         let enabled = fields.optional_bool("enabled")?;
         let active = fields.optional_bool("active")?;
+        let user = fields.optional_bool("user")?;
         fields.finish()?;
         Ok(SystemdParams {
             name,
             enabled,
             active,
+            user,
         })
     }
 }
@@ -40,10 +44,11 @@ impl Display for SystemdParams {
             name,
             enabled,
             active,
+            user,
         } = self;
         write!(
             f,
-            "Systemd(name = {name}, enabled = {enabled:?}, active = {active:?})"
+            "Systemd(name = {name}, enabled = {enabled:?}, active = {active:?}, user = {user:?})"
         )
     }
 }
@@ -55,6 +60,9 @@ pub struct SystemdResource {
     pub name: String,
     pub enabled: bool,
     pub active: bool,
+    /// `true` ⇒ the per-user systemd instance, `false` ⇒ the system instance.
+    /// Determines whether `systemctl` runs with `--user` and without `sudo`.
+    pub user: bool,
 }
 
 impl Display for SystemdResource {
@@ -63,10 +71,11 @@ impl Display for SystemdResource {
             name,
             enabled,
             active,
+            user,
         } = self;
         write!(
             f,
-            "Systemd(name = {name}, enabled = {enabled}, active = {active})"
+            "Systemd(name = {name}, enabled = {enabled}, active = {active}, user = {user})"
         )
     }
 }
@@ -111,6 +120,7 @@ pub struct SystemdChange {
     pub name: String,
     pub enable: Option<bool>,
     pub active: Option<bool>,
+    pub user: bool,
 }
 
 impl Display for SystemdChange {
@@ -119,6 +129,7 @@ impl Display for SystemdChange {
             name,
             enable,
             active,
+            user,
         } = self;
         let mut verbs: Vec<&'static str> = Vec::new();
         if let Some(enable) = enable {
@@ -127,7 +138,8 @@ impl Display for SystemdChange {
         if let Some(active) = active {
             verbs.push(if *active { "start" } else { "stop" });
         }
-        write!(f, "Systemd::{}({})", verbs.join("+"), name)
+        let scope = if *user { " --user" } else { "" };
+        write!(f, "Systemd::{}({name}){scope}", verbs.join("+"))
     }
 }
 
@@ -150,6 +162,7 @@ impl ResourceType for Systemd {
                 name: params.name,
                 enabled: params.enabled.unwrap_or(true),
                 active: params.active.unwrap_or(true),
+                user: params.user.unwrap_or(false),
             },
         )]
     }
@@ -165,7 +178,23 @@ impl ResourceType for Systemd {
         // emits `Key=Value` lines. For a missing unit it still exits 0 with
         // `LoadState=not-found`, so we detect missing units from the output rather than
         // from exit status.
-        let output = Command::new("systemctl")
+        //
+        // System and user instances are entirely separate — `systemctl show foo` on the
+        // system bus reports `not-found` for a unit that exists on the user bus, and
+        // vice versa — so we must probe whichever bus the resource targets. `--user`
+        // also routes the IPC over `$XDG_RUNTIME_DIR/systemd/private` so it requires
+        // no privilege escalation.
+        //
+        // Note(cc): user-bus access depends on the invoking process inheriting
+        // `XDG_RUNTIME_DIR` (and, for some unit operations, `DBUS_SESSION_BUS_ADDRESS`)
+        // from an active login session. A future remote-apply over SSH without a tty
+        // session may need `loginctl enable-linger` on the target account, or an
+        // explicit `XDG_RUNTIME_DIR=/run/user/<uid>` in the apply environment.
+        let mut cmd = Command::new("systemctl");
+        if resource.user {
+            cmd.arg("--user");
+        }
+        let output = cmd
             .args([
                 "show",
                 "--property=LoadState,ActiveState,UnitFileState",
@@ -230,6 +259,7 @@ impl ResourceType for Systemd {
             name: resource.name.clone(),
             enable,
             active,
+            user: resource.user,
         })
     }
 
@@ -238,13 +268,20 @@ impl ResourceType for Systemd {
             name,
             enable,
             active,
+            user,
         } = change;
         let mut ops: Vec<CausalityTree<Operation>> = Vec::new();
         if let Some(enable) = enable {
             let op = if enable {
-                SystemdOperation::Enable { name: name.clone() }
+                SystemdOperation::Enable {
+                    name: name.clone(),
+                    user,
+                }
             } else {
-                SystemdOperation::Disable { name: name.clone() }
+                SystemdOperation::Disable {
+                    name: name.clone(),
+                    user,
+                }
             };
             ops.push(CausalityTree::leaf(
                 CausalityMeta::default(),
@@ -253,9 +290,9 @@ impl ResourceType for Systemd {
         }
         if let Some(active) = active {
             let op = if active {
-                SystemdOperation::Start { name }
+                SystemdOperation::Start { name, user }
             } else {
-                SystemdOperation::Stop { name }
+                SystemdOperation::Stop { name, user }
             };
             ops.push(CausalityTree::leaf(
                 CausalityMeta::default(),
