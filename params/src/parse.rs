@@ -14,8 +14,9 @@
 //! also accept plain [`Value::String`]s for plans that pre-date typed paths:
 //!
 //! - [`parse_host_path`] resolves a relative string against the source
-//!   span's parent directory; see its docstring for the absolute-vs-relative
-//!   caveat.
+//!   span's parent directory. Absolute strings are rejected — they have no
+//!   anchoring source dir to credit, and forwarded host paths now arrive
+//!   typed.
 //! - [`parse_target_path`] requires absolute strings.
 //!
 //! Once typed paths are universal in plans, the string-fallback arms can go.
@@ -400,20 +401,15 @@ pub fn parse_host_path(value: Spanned<Value>) -> Result<PathBuf, Spanned<ParseEr
         Value::HostPath(path) => Ok(path),
         Value::String(s) => {
             let value_path = PathBuf::from(&s);
-            // An absolute string here is treated as already-resolved. This
-            // covers two cases: (a) a plan that wrote a literal absolute
-            // string for a host-path field (uncommon but legal); (b) a
-            // forwarded `host-path` whose typed `Value::HostPath` got
-            // flattened to `SerdeValue::String` when rimu's `Environment`
-            // stored it across a function-call boundary, then was re-read
-            // as `Value::String`. Rejecting (b) would break sub-plan
-            // forwarding entirely; the relative-string anchoring below
-            // still does the right thing for in-plan literals. The
-            // principled fix is upstream in rimu (extend `SerdeValue` with
-            // `HostPath`/`TargetPath` variants, or store typed `Value` in
-            // the `Environment`); see `params/README.md`.
+            // Forwarded host paths now arrive typed as `Value::HostPath` —
+            // an absolute *string* for a `host-path` field is unambiguously
+            // a bug at the call site (no source-dir to anchor against, no
+            // path-typed sender to credit). Reject up front.
             if value_path.is_absolute() {
-                return Ok(value_path);
+                return Err(Spanned::new(
+                    ParseError::HostPathNotRelative { value: s },
+                    span,
+                ));
             }
             let source_id = span.source().as_str().to_owned();
             let Some(source_dir) = Path::new(&source_id).parent() else {
@@ -529,12 +525,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_host_path_accepts_absolute_string_as_resolved() {
-        // Absolute strings here come from rimu's `Environment` flattening
-        // a typed `Value::HostPath` to `SerdeValue::String` across a
-        // function-call boundary. We treat them as already-resolved.
+    fn parse_host_path_rejects_absolute_string() {
+        // With typed env, an absolute string for a `host-path` field can no
+        // longer be a flattened forwarded value — it's always a bug.
         let value = Spanned::new(Value::String("/abs".into()), span("/plans/foo.lusid"));
-        assert_eq!(parse_host_path(value).expect("ok"), PathBuf::from("/abs"));
+        let err = parse_host_path(value).unwrap_err();
+        assert!(matches!(
+            err.inner(),
+            ParseError::HostPathNotRelative { .. }
+        ));
     }
 
     /// Empty span source means the value has no anchoring file (CLI params,
