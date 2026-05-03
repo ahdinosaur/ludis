@@ -4,7 +4,7 @@
 
 use lusid_params::ParseParams;
 use lusid_resource::{
-    ResourceParams, ResourceType, apt::Apt, apt_repo::AptRepo, command::Command,
+    ResourceParams, ResourceType, apt::Apt, apt_repo::AptRepo, aur::Aur, command::Command,
     directory::Directory, file::File, git::Git, group::Group, pacman::Pacman, podman::Podman,
     secret::Secret, systemd::Systemd, user::User,
 };
@@ -27,6 +27,7 @@ pub fn core_module(
     match core_module_id {
         Apt::ID => core_module_for_resource::<Apt>(params).map(ResourceParams::Apt),
         AptRepo::ID => core_module_for_resource::<AptRepo>(params).map(ResourceParams::AptRepo),
+        Aur::ID => core_module_for_resource::<Aur>(params).map(ResourceParams::Aur),
         File::ID => core_module_for_resource::<File>(params).map(ResourceParams::File),
         Directory::ID => {
             core_module_for_resource::<Directory>(params).map(ResourceParams::Directory)

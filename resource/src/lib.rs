@@ -42,6 +42,7 @@ use crate::resources::apt::{Apt, AptChange, AptParams, AptResource, AptState};
 use crate::resources::apt_repo::{
     AptRepo, AptRepoChange, AptRepoParams, AptRepoResource, AptRepoState,
 };
+use crate::resources::aur::{Aur, AurChange, AurParams, AurResource, AurState};
 use crate::resources::command::{
     Command, CommandChange, CommandParams, CommandResource, CommandState,
 };
@@ -120,6 +121,7 @@ pub trait ResourceType {
 pub enum ResourceParams {
     Apt(AptParams),
     AptRepo(AptRepoParams),
+    Aur(AurParams),
     File(FileParams),
     Directory(DirectoryParams),
     Pacman(PacmanParams),
@@ -138,6 +140,7 @@ impl Display for ResourceParams {
         match self {
             Apt(params) => params.fmt(f),
             AptRepo(params) => params.fmt(f),
+            Aur(params) => params.fmt(f),
             File(params) => params.fmt(f),
             Directory(params) => params.fmt(f),
             Pacman(params) => params.fmt(f),
@@ -158,6 +161,7 @@ impl Render for ResourceParams {
         match self {
             Apt(params) => params.render(),
             AptRepo(params) => params.render(),
+            Aur(params) => params.render(),
             File(params) => params.render(),
             Directory(params) => params.render(),
             Pacman(params) => params.render(),
@@ -177,6 +181,7 @@ impl Render for ResourceParams {
 pub enum Resource {
     Apt(AptResource),
     AptRepo(AptRepoResource),
+    Aur(AurResource),
     File(FileResource),
     Directory(DirectoryResource),
     Pacman(PacmanResource),
@@ -194,6 +199,7 @@ impl Display for Resource {
         match self {
             Apt(apt) => apt.fmt(f),
             AptRepo(apt_repo) => apt_repo.fmt(f),
+            Aur(aur) => aur.fmt(f),
             File(file) => file.fmt(f),
             Directory(directory) => directory.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
@@ -213,6 +219,7 @@ impl Render for Resource {
         match self {
             Apt(params) => params.render(),
             AptRepo(params) => params.render(),
+            Aur(params) => params.render(),
             File(params) => params.render(),
             Directory(params) => params.render(),
             Pacman(params) => params.render(),
@@ -234,6 +241,7 @@ impl Render for Resource {
 pub enum ResourceState {
     Apt(AptState),
     AptRepo(AptRepoState),
+    Aur(AurState),
     File(FileState),
     Directory(DirectoryState),
     Pacman(PacmanState),
@@ -251,6 +259,7 @@ impl Display for ResourceState {
         match self {
             Apt(apt) => apt.fmt(f),
             AptRepo(apt_repo) => apt_repo.fmt(f),
+            Aur(aur) => aur.fmt(f),
             File(file) => file.fmt(f),
             Directory(directory) => directory.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
@@ -270,6 +279,7 @@ impl Render for ResourceState {
         match self {
             Apt(params) => params.render(),
             AptRepo(params) => params.render(),
+            Aur(params) => params.render(),
             File(params) => params.render(),
             Directory(params) => params.render(),
             Pacman(params) => params.render(),
@@ -292,6 +302,9 @@ pub enum ResourceStateError {
 
     #[error("apt-repo state error: {0}")]
     AptRepo(#[from] <AptRepo as ResourceType>::StateError),
+
+    #[error("aur state error: {0}")]
+    Aur(#[from] <Aur as ResourceType>::StateError),
 
     #[error("file state error: {0}")]
     File(#[from] <File as ResourceType>::StateError),
@@ -326,6 +339,7 @@ pub enum ResourceStateError {
 pub enum ResourceChange {
     Apt(AptChange),
     AptRepo(AptRepoChange),
+    Aur(AurChange),
     File(FileChange),
     Directory(DirectoryChange),
     Pacman(PacmanChange),
@@ -343,6 +357,7 @@ impl Display for ResourceChange {
         match self {
             Apt(apt) => apt.fmt(f),
             AptRepo(apt_repo) => apt_repo.fmt(f),
+            Aur(aur) => aur.fmt(f),
             File(file) => file.fmt(f),
             Directory(directory) => directory.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
@@ -362,6 +377,7 @@ impl Render for ResourceChange {
         match self {
             Apt(params) => params.render(),
             AptRepo(params) => params.render(),
+            Aur(params) => params.render(),
             File(params) => params.render(),
             Directory(params) => params.render(),
             Pacman(params) => params.render(),
@@ -392,6 +408,7 @@ impl ResourceParams {
         match self {
             ResourceParams::Apt(params) => typed::<Apt>(params, Resource::Apt),
             ResourceParams::AptRepo(params) => typed::<AptRepo>(params, Resource::AptRepo),
+            ResourceParams::Aur(params) => typed::<Aur>(params, Resource::Aur),
             ResourceParams::File(params) => typed::<File>(params, Resource::File),
             ResourceParams::Directory(params) => typed::<Directory>(params, Resource::Directory),
             ResourceParams::Pacman(params) => typed::<Pacman>(params, Resource::Pacman),
@@ -431,6 +448,9 @@ impl Resource {
                     ResourceStateError::AptRepo,
                 )
                 .await
+            }
+            Resource::Aur(resource) => {
+                typed::<Aur>(ctx, resource, ResourceState::Aur, ResourceStateError::Aur).await
             }
             Resource::File(resource) => {
                 typed::<File>(ctx, resource, ResourceState::File, ResourceStateError::File).await
@@ -517,6 +537,9 @@ impl Resource {
             }
             (Resource::AptRepo(resource), ResourceState::AptRepo(state)) => {
                 typed::<AptRepo>(resource, state, ResourceChange::AptRepo)
+            }
+            (Resource::Aur(resource), ResourceState::Aur(state)) => {
+                typed::<Aur>(resource, state, ResourceChange::Aur)
             }
             (Resource::File(resource), ResourceState::File(state)) => {
                 typed::<File>(resource, state, ResourceChange::File)
@@ -708,6 +731,7 @@ impl ResourceChange {
         match self {
             ResourceChange::Apt(change) => Apt::operations(change),
             ResourceChange::AptRepo(change) => AptRepo::operations(change),
+            ResourceChange::Aur(change) => Aur::operations(change),
             ResourceChange::File(change) => File::operations(change),
             ResourceChange::Directory(change) => Directory::operations(change),
             ResourceChange::Pacman(change) => Pacman::operations(change),

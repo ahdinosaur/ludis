@@ -1,5 +1,6 @@
 pub mod apt;
 pub mod apt_repo;
+pub mod aur;
 pub mod command;
 pub mod directory;
 pub mod file;
