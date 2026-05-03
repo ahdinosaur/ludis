@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use lusid_causality::{CausalityMeta, CausalityTree};
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
-use lusid_operation::{Operation, operations::systemd::SystemdOperation};
+use lusid_operation::{operations::systemd::SystemdOperation, Operation};
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
@@ -120,9 +120,6 @@ pub struct SystemdChange {
     pub name: String,
     pub enable: Option<bool>,
     pub active: Option<bool>,
-    /// Carried from the resource so the emitted [`SystemdOperation`]s know whether
-    /// to run against the user or system bus. Not part of the diff itself — switching
-    /// a unit between system and user instances means a different unit identity.
     pub user: bool,
 }
 

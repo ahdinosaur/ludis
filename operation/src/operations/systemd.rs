@@ -70,21 +70,26 @@ impl OperationType for Systemd {
         };
         info!(user, "[systemd] {verb}: {name}");
 
-        // `--no-ask-password` is kept for both buses: on the system bus it prevents
-        // sudo/polkit from blocking on a tty prompt; on the user bus it's a no-op
-        // because the per-user systemd instance never asks for a password.
         let mut cmd = Command::new("systemctl");
+
         if user {
             cmd.arg("--user");
         }
+
+        // `--no-ask-password` is kept for both buses: on the system bus it prevents
+        // sudo/polkit from blocking on a tty prompt; on the user bus it's a no-op
+        // because the per-user systemd instance never asks for a password.
         cmd.arg("--no-ask-password").arg(verb).arg(name);
+
         // User-instance commands talk to `$XDG_RUNTIME_DIR/systemd/private` as the
         // invoking user — wrapping in `sudo` would target root's user instance (or
         // fail entirely without a session bus), which is the opposite of what we want.
         if !user {
             cmd = cmd.sudo();
         }
+
         let output = cmd.output().await?;
+
         Ok((
             Box::pin(async move {
                 output.status.await?;
