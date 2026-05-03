@@ -477,13 +477,18 @@ fn coerce_type(
         // HostPath: typed values pass through unchanged; relative strings get
         // resolved against the value-span's source dir (or `ctx.root_path` if
         // the span has no real source) and re-emitted as a typed `Value::HostPath`.
-        // The rewrite is what fixes parent → sub-plan forwarding: the parent's
-        // validate produces a typed path, so the sub-plan never sees a string.
+        // Absolute strings are accepted as already-resolved — this happens
+        // when a parent plan's validated `Value::HostPath` is forwarded into
+        // a sub-plan: rimu's `Environment` stores function arguments as
+        // `SerdeValue`, which has no `HostPath` variant, so the typed value
+        // flattens to `SerdeValue::String` and re-emerges here as
+        // `Value::String(<absolute>)`. Rejecting that case would break
+        // forwarding entirely. The principled fix is upstream in rimu.
         (ParamType::HostPath, val @ Value::HostPath(_)) => Ok(Spanned::new(val, span)),
         (ParamType::HostPath, Value::String(s)) => {
             let path = Path::new(&s);
-            if !path.is_relative() {
-                return Err(mismatch(param_type, &Spanned::new(Value::String(s), span)));
+            if path.is_absolute() {
+                return Ok(Spanned::new(Value::HostPath(path.to_path_buf()), span));
             }
             let origin = coerce_origin(&span, ctx);
             Ok(Spanned::new(Value::HostPath(origin.join(path)), span))
@@ -773,20 +778,23 @@ mod tests {
     }
 
     #[test]
-    fn rejects_absolute_string_for_host_path() {
+    fn accepts_absolute_string_for_host_path_as_resolved() {
+        // Absolute strings reaching `coerce_type` are treated as
+        // already-resolved host paths — see the `coerce_type` arm comment
+        // for the rimu-env-flattening rationale.
         let schema = struct_schema(vec![("path", ParamType::HostPath, false)]);
         let value = obj(
             vec![("path", Value::String("/abs/path".into()))],
             empty_span(),
         );
-        let err = validate(Some(&schema), Some(value), &ctx()).unwrap_err();
-        let ParamsValidationError::Struct(boxed) = err else {
-            panic!("expected Struct error");
-        };
-        assert!(matches!(
-            boxed.errors.first(),
-            Some(ParamValidationError::InvalidParam { .. })
-        ));
+        let coerced = validate(Some(&schema), Some(value), &ctx())
+            .expect("ok")
+            .expect("some");
+        let map = unwrap_object(coerced);
+        match map.get("path").expect("path field").inner() {
+            Value::HostPath(p) => assert_eq!(p, &PathBuf::from("/abs/path")),
+            other => panic!("expected HostPath, got {other:?}"),
+        }
     }
 
     #[test]
