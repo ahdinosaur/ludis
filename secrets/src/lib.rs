@@ -42,7 +42,7 @@ mod reencrypt;
 mod secrets;
 
 pub use crate::load::LoadError;
-pub use crate::recipients::RecipientsError;
+pub use crate::recipients::{MachinePubkeyError, RecipientsError, machine_pubkey};
 pub use crate::redactor::Redactor;
 pub use crate::reencrypt::{ReencryptForTargetError, ReencryptedSecret, reencrypt_for_target};
 pub use crate::secrets::{Secret, Secrets};
