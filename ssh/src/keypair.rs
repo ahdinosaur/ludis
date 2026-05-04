@@ -106,6 +106,16 @@ impl SshKeypair {
             .to_string())
     }
 
+    /// Load just the OpenSSH private key from a file path. Use when only the
+    /// private key is needed (e.g. SSH-client auth where the matching `.pub`
+    /// isn't on disk in the conventional location).
+    #[tracing::instrument(skip_all, fields(path = %path.display()))]
+    pub async fn load_private_key(path: &Path) -> Result<PrivateKey, SshKeypairError> {
+        let private_key_string = fs::read_file_to_string(path).await?;
+        let private_key = PrivateKey::from_openssh(&private_key_string)?;
+        Ok(private_key)
+    }
+
     /// Load a keypair from the directory.
     #[tracing::instrument(skip_all)]
     pub async fn load(directory: &Path) -> Result<Self, SshKeypairError> {

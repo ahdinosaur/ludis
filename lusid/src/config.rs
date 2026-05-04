@@ -151,7 +151,7 @@ impl Config {
             .load_preset(comfy_table::presets::UTF8_FULL)
             .apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS)
             .set_content_arrangement(comfy_table::ContentArrangement::Dynamic)
-            .set_header(vec!["id", "plan", "hostname", "arch", "os"]);
+            .set_header(vec!["id", "plan", "hostname", "arch", "os", "remote"]);
 
         for (machine_id, config) in self.machines.iter() {
             let MachineConfig {
@@ -164,13 +164,19 @@ impl Config {
                 arch,
                 os,
                 vm: _,
+                remote,
             } = machine;
+            let remote_cell = match remote {
+                Some(r) => format!("{}@{}:{}", r.user(), r.host, r.port()),
+                None => "—".to_string(),
+            };
             table.add_row(vec![
                 machine_id,
                 &plan.to_string_lossy().to_string(),
                 &hostname.to_string(),
                 &arch.to_string(),
                 &os.to_string(),
+                &remote_cell,
             ]);
         }
 
