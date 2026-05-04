@@ -14,8 +14,9 @@
 //! also accept plain [`Value::String`]s for plans that pre-date typed paths:
 //!
 //! - [`parse_host_path`] resolves a relative string against the source
-//!   span's parent directory; see its docstring for the absolute-vs-relative
-//!   caveat.
+//!   span's parent directory. Absolute strings are rejected — they have no
+//!   anchoring source dir to credit, and forwarded host paths arrive
+//!   typed.
 //! - [`parse_target_path`] requires absolute strings.
 //!
 //! Once typed paths are universal in plans, the string-fallback arms can go.
@@ -400,6 +401,10 @@ pub fn parse_host_path(value: Spanned<Value>) -> Result<PathBuf, Spanned<ParseEr
         Value::HostPath(path) => Ok(path),
         Value::String(s) => {
             let value_path = PathBuf::from(&s);
+            // Forwarded host paths arrive typed as `Value::HostPath` —
+            // an absolute *string* for a `host-path` field is
+            // a bug at the call site (no source-dir to anchor against, no
+            // path-typed sender to credit). Reject up front.
             if value_path.is_absolute() {
                 return Err(Spanned::new(
                     ParseError::HostPathNotRelative { value: s },
@@ -521,6 +526,7 @@ mod tests {
 
     #[test]
     fn parse_host_path_rejects_absolute_string() {
+        // An absolute string for a `host-path` field cannot be a flattened forwarded value.
         let value = Spanned::new(Value::String("/abs".into()), span("/plans/foo.lusid"));
         let err = parse_host_path(value).unwrap_err();
         assert!(matches!(
