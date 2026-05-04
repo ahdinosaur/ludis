@@ -31,7 +31,7 @@ clap = { version = "4.5.52", features = ["derive", "env"] }
 displaydoc = "0.2.5"
 indexmap = "2.12.0"
 nix = { version = "0.30.1", features = ["signal", "user"] }
-rimu = { path = "../rimu/rimu" }
+rimu = { version = "0.2.0", git = "https://github.com/ahdinosaur/rimu" }
 russh = "0.60"
 secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive", "rc"] }

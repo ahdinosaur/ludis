@@ -49,8 +49,8 @@
 pub mod parse;
 
 pub use crate::parse::{
-    ParseError, ParseParams, StructFields, parse_bool, parse_host_path, parse_list, parse_number,
-    parse_string, parse_target_path, parse_u32,
+    parse_bool, parse_host_path, parse_list, parse_number, parse_string, parse_target_path,
+    parse_u32, ParseError, ParseParams, StructFields,
 };
 
 use std::path::{Path, PathBuf};
@@ -478,7 +478,7 @@ fn coerce_type(
         // resolved against the value-span's source dir (or `ctx.root_path` if
         // the span has no real source) and re-emitted as a typed `Value::HostPath`.
         // The rewrite is what fixes parent → sub-plan forwarding: the parent's
-        // validate produces a typed path, and rimu's `Environment` now stores
+        // validate produces a typed path, and rimu's `Environment` stores
         // typed `SpannedValue` directly, so the sub-plan never sees a string.
         (ParamType::HostPath, val @ Value::HostPath(_)) => Ok(Spanned::new(val, span)),
         (ParamType::HostPath, Value::String(s)) => {
@@ -775,8 +775,8 @@ mod tests {
 
     #[test]
     fn rejects_absolute_string_for_host_path() {
-        // Forwarded host paths now arrive typed as `Value::HostPath` — an
-        // absolute *string* for a `host-path` field is unambiguously a bug
+        // Forwarded host paths arrive typed as `Value::HostPath` — an
+        // absolute *string* for a `host-path` field is a bug
         // (no source-dir to anchor against, no path-typed sender to credit).
         let schema = struct_schema(vec![("path", ParamType::HostPath, false)]);
         let value = obj(
