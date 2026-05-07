@@ -142,19 +142,23 @@ planning.
 
 ## Per-target re-encryption
 
-Two flavours, depending on whether the target is declared in
-`lusid-secrets.toml`:
+Two functions, both scoping the bundle to what the named machine is
+declared a recipient of in `[files]`. They differ only in the
+cryptographic recipient:
 
-- **`reencrypt_all(host_identity, secrets_dir, recipient_pubkey)`** —
-  walks `secrets_dir` and re-encrypts every `*.age` to `recipient_pubkey`
-  alone. Used by `dev apply`: VM keypair is ephemeral and not in
-  `[machines]`, so we trust the operator to test their plan with every
-  secret.
 - **`reencrypt_for_machine(host_identity, secrets_dir, machine_id)`** —
-  looks `machine_id` up in `[machines]`, computes the file set via
-  `files_for_alias(machine_id)` from `[files]`, decrypts each, re-encrypts
-  to the machine's key alone. Used by `remote apply`: long-lived target
-  declared in the toml only gets the secrets it's listed for.
+  encrypts to the machine's own `[machines]` key. Used by `remote apply`:
+  the target IS the declared machine.
+- **`reencrypt_for_dev_vm(host_identity, secrets_dir, machine_id, vm_pubkey)`** —
+  encrypts to a separate `vm_pubkey` (an ephemeral dev-VM keypair). Used
+  by `dev apply`: the VM SHADOWS the production target, so it sees the
+  same `[files]` scope but under its own throwaway key.
+
+Both call `Recipients::files_for_alias(machine_id)` for the file list.
+A machine that's in `[machines]` but on no `[files]` entry yields an
+`Ok(vec![])` (warn-logged). A machine that's not in `[machines]` at all
+yields `UnknownMachine` — call sites typically degrade gracefully (no
+secrets shipped) so a partially-configured project still applies.
 
 Callers SFTP the resulting bundle to the guest and run `lusid-apply
 --guest-mode --identity=<guest identity>` there.
@@ -162,12 +166,14 @@ Callers SFTP the resulting bundle to the guest and run `lusid-apply
 - **Operator identity never leaves the host.** The guest only ever holds
   ciphertext encrypted to its own key, plus the identity file it decrypts
   them with.
-- **Multi-operator caveat (both flavours).** Both functions decrypt with
-  the operator's identity first; if the running operator isn't a
-  recipient on a file the function tries to re-encrypt, decryption fails
-  on that file. Fine in the implicit-operators schema (every operator can
-  decrypt every file by definition); revisit if scoped operator access
-  ever lands.
+- **Dev = production scope.** `dev apply --machine X` ships exactly what
+  `remote apply --machine X` would ship — there's no "dev sees more"
+  privilege expansion.
+- **Multi-operator caveat.** Both functions decrypt with the operator's
+  identity first; if the running operator isn't a recipient on a file the
+  function tries to re-encrypt, decryption fails on that file. Fine in
+  the implicit-operators schema (every operator can decrypt every file
+  by definition); revisit if scoped operator access ever lands.
 
 ## Redactor
 

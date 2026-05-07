@@ -26,7 +26,7 @@ use lusid_apply_stdio::AppViewError;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_secrets::cli::{CliEnv as SecretsCliEnv, CliError as SecretsCliError, SecretsCommand};
-use lusid_secrets::{ReencryptForMachineError, reencrypt_all};
+use lusid_secrets::{RecipientsError, ReencryptForMachineError, reencrypt_for_dev_vm};
 use lusid_ssh::{Ssh, SshConnectOptions, SshError, SshKeypairError, SshVolume};
 use lusid_vm::{Vm, VmError, VmOptions};
 use thiserror::Error;
@@ -383,36 +383,51 @@ async fn cmd_dev_apply(
         },
     ];
 
-    // Secrets forwarding mirrors `cmd_local_apply`'s gating on
-    // `identity_path`: no identity → no secrets shipped, and the guest
-    // will run without a secrets context (plans referencing
-    // `@core/secret` will error loudly).
+    // Secrets forwarding. The dev VM SHADOWS the production target named
+    // by `--machine`: it should see exactly the [files]-scoped subset
+    // that `lusid remote apply --machine <id>` would ship, just under
+    // the VM's ephemeral keypair. So we use `reencrypt_for_dev_vm` —
+    // same `[files]` scoping as the remote path, different cryptographic
+    // recipient.
+    //
+    // Gracefully fall through to "no secrets" when:
+    //   - no --identity supplied,
+    //   - lusid-secrets.toml absent (no project secrets at all),
+    //   - this machine isn't yet in [machines] (operator iterating on a
+    //     not-yet-configured target).
+    // Plans referencing `@core/secret` will fail at apply time with a
+    // clear missing-secret error in those cases.
     let guest_identity_path = format!("{dev_dir}/identity");
     let guest_secrets_dir = format!("{dev_dir}/secrets");
     let forward_secrets = if let Some(identity_path) = identity_path.as_deref() {
-        // The VM's auth keypair doubles as the age recipient/identity: it
-        // already lives on both sides (instance dir on host, authorized_keys
-        // on guest via cloud-init), is ephemeral per-VM, and re-using it
-        // avoids a second keygen + a cloud-init host-key injection path.
-        // The VM isn't declared in `[machines]`, so we use the
-        // walk-the-dir variant rather than the [files]-scoped one.
-        let recipient_pubkey = vm_keypair.public_openssh()?;
-        let reencrypted = reencrypt_all(identity_path, &secrets_dir, &recipient_pubkey).await?;
-
-        let private_pem = vm_keypair.private_openssh()?;
-        volumes.push(SshVolume::FileBytes {
-            local: private_pem.into_bytes(),
-            permissions: Some(0o600),
-            remote: guest_identity_path.clone(),
-        });
-        for secret in reencrypted {
-            volumes.push(SshVolume::FileBytes {
-                local: secret.ciphertext,
-                permissions: None,
-                remote: format!("{guest_secrets_dir}/{}.age", secret.stem),
-            });
+        // The VM keypair: the encryption recipient (host side) AND the
+        // guest's decryption identity (guest side). Re-using it avoids
+        // a second keygen and a separate cloud-init injection path.
+        let vm_pubkey = vm_keypair.public_openssh()?;
+        match reencrypt_for_dev_vm(identity_path, &secrets_dir, &machine_id, &vm_pubkey).await {
+            Ok(reencrypted) if !reencrypted.is_empty() => {
+                let private_pem = vm_keypair.private_openssh()?;
+                volumes.push(SshVolume::FileBytes {
+                    local: private_pem.into_bytes(),
+                    permissions: Some(0o600),
+                    remote: guest_identity_path.clone(),
+                });
+                for secret in reencrypted {
+                    volumes.push(SshVolume::FileBytes {
+                        local: secret.ciphertext,
+                        permissions: None,
+                        remote: format!("{guest_secrets_dir}/{}.age", secret.stem),
+                    });
+                }
+                true
+            }
+            // Machine declared but on no [files] entry — same shape as
+            // the missing-toml / unknown-machine paths: nothing to ship.
+            Ok(_) => false,
+            Err(ReencryptForMachineError::Recipients(RecipientsError::Missing { .. }))
+            | Err(ReencryptForMachineError::UnknownMachine { .. }) => false,
+            Err(other) => return Err(other.into()),
         }
-        true
     } else {
         false
     };
