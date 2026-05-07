@@ -26,7 +26,7 @@ use lusid_apply_stdio::AppViewError;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_secrets::cli::{CliEnv as SecretsCliEnv, CliError as SecretsCliError, SecretsCommand};
-use lusid_secrets::{ReencryptForMachineError, reencrypt_for_machine};
+use lusid_secrets::{ReencryptForMachineError, reencrypt_all};
 use lusid_ssh::{Ssh, SshConnectOptions, SshError, SshKeypairError, SshVolume};
 use lusid_vm::{Vm, VmError, VmOptions};
 use thiserror::Error;
@@ -394,9 +394,10 @@ async fn cmd_dev_apply(
         // already lives on both sides (instance dir on host, authorized_keys
         // on guest via cloud-init), is ephemeral per-VM, and re-using it
         // avoids a second keygen + a cloud-init host-key injection path.
-        let machine_pubkey = vm_keypair.public_openssh()?;
-        let reencrypted =
-            reencrypt_for_machine(identity_path, &secrets_dir, &machine_pubkey).await?;
+        // The VM isn't declared in `[machines]`, so we use the
+        // walk-the-dir variant rather than the [files]-scoped one.
+        let recipient_pubkey = vm_keypair.public_openssh()?;
+        let reencrypted = reencrypt_all(identity_path, &secrets_dir, &recipient_pubkey).await?;
 
         let private_pem = vm_keypair.private_openssh()?;
         volumes.push(SshVolume::FileBytes {

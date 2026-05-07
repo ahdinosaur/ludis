@@ -52,17 +52,43 @@ mikey = "age1..."                     # x25519 public key
 rpi4b-1 = "ssh-ed25519 AAAA..."       # SSH host key
 
 [groups]
-admins = ["mikey"]
+prod = ["rpi4b-1"]                    # machine groups only
 
 [files]
-"api_token"   = { recipients = ["@admins", "rpi4b-1"] }
-"db_password" = { recipients = ["mikey", "rpi4b-1"] }
+"api_token"   = { recipients = ["@prod"] }     # effective: mikey, rpi4b-1
+"db_password" = { recipients = ["rpi4b-1"] }   # effective: mikey, rpi4b-1
+"admin_only"  = { recipients = [] }            # effective: mikey
 ```
 
-- Operators and machines share one alias namespace; collisions are rejected
-  at load.
-- `@name` expands via `[groups]`; expansion is shallow (no nested groups).
-- Unknown aliases, unknown groups, and empty recipient lists are hard errors.
+### Schema rules
+
+- **Operators are implicit recipients on every `[files]` entry.** Don't
+  list operator aliases under `[files].recipients` or in `[groups]` —
+  both are load errors. The operator-implicit rule is the whole point:
+  if you can decrypt, you can re-encrypt for any target.
+- `[machines]` aliases and `[operators]` aliases share one namespace;
+  collisions are rejected at load.
+- `[groups]` members must be machine aliases. Empty groups are rejected.
+- `@name` references in `[files].recipients` expand via `[groups]`;
+  expansion is shallow (no nested groups).
+- `[files].recipients` may be empty (`[]`) — yields an operator-only
+  secret. The both-empty case (no operators *and* empty recipients) is
+  rejected per file (`EmptyEffectiveRecipients`).
+- Duplicate pubkey *values* across `[operators]` ∪ `[machines]` are
+  rejected, with the diagnostic naming both alias kinds.
+
+### Drift behaviour
+
+- Adding an operator to `[operators]` causes drift on every `*.age` file
+  (the new operator's stanza isn't in the existing headers). `lusid
+  secrets check` flags every file; `rekey` rewrites them.
+- Removing an operator does **not** revoke their access to existing
+  ciphertexts — their key material is still in each header. Run `rekey`
+  to re-encrypt without them.
+- Adding/removing/swapping a machine in `[machines]` is symmetric: drift
+  on every file the machine is a recipient of, until `rekey`.
+- Moving an alias between `[operators]` and `[machines]` triggers drift
+  on every file the alias was on. Rekey resolves.
 
 Identities come in two shapes:
 
@@ -116,28 +142,32 @@ planning.
 
 ## Per-target re-encryption
 
-`reencrypt_for_machine(host_identity_path, secrets_dir, machine_pubkey)`
-decrypts every `*.age` on the host, re-encrypts each plaintext to
-`machine_pubkey` alone, and returns the single-recipient ciphertexts.
-Callers SFTP the bundle to the guest and run `lusid-apply --guest-mode
---identity=<guest identity>` there. `machine_pubkey` is either an `age1...`
-x25519 recipient or an `ssh-ed25519 ...` / `ssh-rsa ...` SSH public key.
+Two flavours, depending on whether the target is declared in
+`lusid-secrets.toml`:
+
+- **`reencrypt_all(host_identity, secrets_dir, recipient_pubkey)`** —
+  walks `secrets_dir` and re-encrypts every `*.age` to `recipient_pubkey`
+  alone. Used by `dev apply`: VM keypair is ephemeral and not in
+  `[machines]`, so we trust the operator to test their plan with every
+  secret.
+- **`reencrypt_for_machine(host_identity, secrets_dir, machine_id)`** —
+  looks `machine_id` up in `[machines]`, computes the file set via
+  `files_for_alias(machine_id)` from `[files]`, decrypts each, re-encrypts
+  to the machine's key alone. Used by `remote apply`: long-lived target
+  declared in the toml only gets the secrets it's listed for.
+
+Callers SFTP the resulting bundle to the guest and run `lusid-apply
+--guest-mode --identity=<guest identity>` there.
 
 - **Operator identity never leaves the host.** The guest only ever holds
   ciphertext encrypted to its own key, plus the identity file it decrypts
   them with.
-- `dev apply` (VM targets): reuses the ephemeral SSH keypair lusid uses for
-  SSH auth as both the age recipient (host side) and the guest identity
-  (guest side).
-- `remote apply`: recipient is the target's entry in `[machines]` looked up
-  by `machine_id`; the guest identity is the target's existing
-  `/etc/ssh/ssh_host_ed25519_key`.
-
-This assumes the operator running `dev apply` / `remote apply` is a recipient
-on every `*.age` under `secrets_dir`. In a multi-operator world with
-scoped access, the intermediate decrypt step will fail on the first file the
-acting operator can't read. Fine for v1's one-operator-per-project flow;
-revisit when scoped access is a real use case.
+- **Multi-operator caveat (both flavours).** Both functions decrypt with
+  the operator's identity first; if the running operator isn't a
+  recipient on a file the function tries to re-encrypt, decryption fails
+  on that file. Fine in the implicit-operators schema (every operator can
+  decrypt every file by definition); revisit if scoped operator access
+  ever lands.
 
 ## Redactor
 
@@ -161,7 +191,7 @@ Limitations, read before trusting:
 
 | Command        | Needs identity | Action                                                                      |
 | -------------- | :------------: | --------------------------------------------------------------------------- |
-| `ls`           | no             | List `*.age` files and their declared recipients.                           |
+| `ls`           | no             | List `*.age` files and their *effective* recipients: `<operators>  +  <listed machines>`. The `+` and machines column are omitted when no machines are listed. |
 | `cat <name>`   | yes            | Decrypt to stdout.                                                          |
 | `edit <name>`  | yes            | Decrypt into a mode-0600 tmpfile in `$XDG_RUNTIME_DIR`, `$EDITOR`, re-encrypt on save. Tmpfile is scrubbed even on editor failure. |
 | `rekey [name]` | yes            | Re-encrypt to the current recipient list. No-op when the header already matches. Without `<name>`, rekeys every `[files]` entry. |
@@ -176,7 +206,10 @@ Limitations, read before trusting:
   `SecretBox<String>` (redacted `Debug`, zeroised on drop); the target
   filesystem is the only disk location plaintext reaches, via an atomic write.
 - **Selective decryption in host mode.** Only the files the alias is a
-  recipient for are opened. Guest mode relies on upstream filtering.
+  recipient for are opened. For an operator alias, that's every file
+  in `[files]` (operators are implicit recipients on all of them);
+  for a machine alias, only the files that name it. Guest mode relies on
+  upstream filtering.
 - **UTF-8 only.** Non-UTF-8 payloads error loudly at decrypt
   (`DecryptError::NotUtf8`). Binary support is a later change.
 - **Missing secrets are fatal**, not a silent empty file — both at state-probe

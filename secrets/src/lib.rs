@@ -15,9 +15,10 @@
 //!   guest_mode)` into a ready-to-use bundle, returning [`LoadError`].
 //! - [`Redactor`] — substring-scrubs known secret plaintexts out of
 //!   per-operation stdout/stderr.
-//! - [`reencrypt_for_machine`] — host-side re-encrypt of every `*.age` under
-//!   a directory for a single target's public key; used by `dev apply` /
-//!   `remote apply` to ship per-target ciphertext bundles.
+//! - [`reencrypt_all`] / [`reencrypt_for_machine`] — host-side
+//!   re-encryption for `dev apply` (every `*.age`, raw recipient pubkey)
+//!   and `remote apply` (only files the machine is listed for via
+//!   `[files]`, machine looked up in `[machines]`).
 //! - [`cli`] — the `lusid secrets ...` subcommands.
 //!
 //! Lower-level primitives (identity parsing, `lusid-secrets.toml` loading,
@@ -41,5 +42,7 @@ mod secrets;
 
 pub use crate::load::LoadError;
 pub use crate::redactor::Redactor;
-pub use crate::reencrypt::{ReencryptForMachineError, ReencryptedSecret, reencrypt_for_machine};
+pub use crate::reencrypt::{
+    ReencryptForMachineError, ReencryptedSecret, reencrypt_all, reencrypt_for_machine,
+};
 pub use crate::secrets::{Secret, Secrets};
