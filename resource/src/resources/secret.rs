@@ -7,19 +7,24 @@
 //!
 //! - `name` names a `*.age` secret by its file stem (e.g. `api_key` →
 //!   `secrets/api_key.age`). Plaintext never flows through the plan.
+//! - `path` is **optional**; when omitted, defaults to
+//!   [`DEFAULT_PATH_ROOT`]`/<name>` (typically `/run/lusid/secrets/<name>`,
+//!   tmpfs on systemd distros). Plans that need the bytes on persistent
+//!   disk (config files in `/etc`, etc.) opt in by passing an explicit
+//!   absolute `path`.
 //! - `mode` defaults to `0o600` (owner read/write, nothing for group/world)
 //!   when omitted. `@core/file` leaves mode to the umask.
 //!
 //! Under the hood this delegates to `@core/file`'s state/change/operation
 //! machinery — the atoms produced are ordinary [`FileResource::Secret`]
-//! variants, so downstream scheduling and application are identical. Only
-//! the default permissions and the intent expressed by the plan author differ.
+//! variants, so downstream scheduling and application are identical.
 //!
-//! Note(cc): not as strict as agenix's model (which decrypts onto a tmpfs
-//! mount, forces `0400`, root-owned). Those are bigger moves — tmpfs needs
-//! an operation that can mount/unmount, and root-owned doesn't work for the
-//! current `lusid local apply` running under the logged-in user. Revisit
-//! when remote/dev apply lands.
+//! Note(cc): the parent directory of `path` must exist before apply.
+//! For the default tmpfs root, declare `@core/directory` for
+//! `/run/lusid/secrets` (mode `0700`) once per machine. A future
+//! refactor could auto-emit that, but it would require either widening
+//! the resource type to mix file+directory atoms or restructuring
+//! `@core/secret` as a nested plan rather than a leaf module.
 
 use std::fmt::{self, Display};
 
@@ -42,6 +47,17 @@ use crate::resources::file::{File, FileChange, FileResource, FileState, FileStat
 /// deliberately group-readable for a multi-user service).
 pub const DEFAULT_MODE: u32 = 0o600;
 
+/// Default parent directory when the plan omits `path`. Resolves to a
+/// per-secret path of `<DEFAULT_PATH_ROOT>/<name>`. `/run` is tmpfs on
+/// every distro lusid targets (Debian, Arch, Fedora, openSUSE, …) — so
+/// the default puts plaintext in volatile memory, not on the SD card or
+/// hard disk. Backups that snapshot `/etc` won't sweep up the secret.
+///
+/// Operators who need the secret on persistent disk (a config file in
+/// `/etc/...`, a credential the service expects at a specific path) opt
+/// in by passing an explicit absolute `path` in the plan.
+pub const DEFAULT_PATH_ROOT: &str = "/run/lusid/secrets";
+
 #[derive(Debug, Clone)]
 pub struct SecretParams {
     pub name: String,
@@ -55,7 +71,10 @@ impl ParseParams for SecretParams {
     fn parse_params(value: Spanned<Value>) -> Result<Self, Spanned<ParseError>> {
         let mut fields = StructFields::new(value)?;
         let name = fields.required_string("name")?;
-        let path = FilePath::new(fields.required_target_path("path")?);
+        let path = match fields.optional_target_path("path")? {
+            Some(p) => FilePath::new(p),
+            None => FilePath::new(format!("{DEFAULT_PATH_ROOT}/{name}")),
+        };
         let mode = fields.optional_u32("mode")?.map(FileMode::new);
         let user = fields.optional_string("user")?.map(FileUser::new);
         let group = fields.optional_string("group")?.map(FileGroup::new);

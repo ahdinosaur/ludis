@@ -98,23 +98,45 @@ Identities come in two shapes:
 
 ## Plan integration
 
-Plans refer to secrets by name via `@core/secret`:
+Plans refer to secrets by name via `@core/secret`. By default, plaintext
+lands at `/run/lusid/secrets/<name>` — tmpfs on every distro lusid
+targets, so the bytes never touch persistent disk:
 
 ```rimu
-- module: "@core/secret"
+# Declare the tmpfs parent directory once. /run is already mounted
+# tmpfs by systemd; /run/lusid/secrets we create.
+- module: "@core/directory"
+  id: "secrets-dir"
   params:
-    name: "api_token"          # -> secrets/api_token.age
-    path: "/etc/myapp/token"
-    mode: 384                   # optional; default 0o600
+    state: "present"
+    path: "/run/lusid/secrets"
+    mode: 0o700
+
+- module: "@core/secret"
+  requires: ["secrets-dir"]
+  params:
+    name: "api_token"          # -> secrets/api_token.age on the host
+                                # -> /run/lusid/secrets/api_token on the target
+    mode: 0o600                 # optional; default 0o600
     user: "myapp"               # optional
     group: "myapp"              # optional
 ```
 
-`@core/secret` delegates to `@core/file`'s state/change/operation machinery,
-adding a `FileSource::Secret(name)` variant that resolves against
-`ctx.secrets()` inside the apply-time operation. The plaintext copy lives
-only for the duration of one atomic write. Plans never see plaintext —
-`ctx.secrets` is not exposed to Rimu.
+To put a secret on persistent disk (config file in `/etc`, a credential
+the consumer expects at a fixed path), pass an explicit `path`:
+
+```rimu
+- module: "@core/secret"
+  params:
+    name: "api_token"
+    path: "/etc/myapp/token"   # explicit; opts out of the tmpfs default
+```
+
+`@core/secret` delegates to `@core/file`'s state/change/operation
+machinery, adding a `FileSource::Secret(name)` variant that resolves
+against `ctx.secrets()` inside the apply-time operation. The plaintext
+copy lives only for the duration of one atomic write. Plans never see
+plaintext — `ctx.secrets` is not exposed to Rimu.
 
 ## Apply-time decryption
 
@@ -203,6 +225,55 @@ Limitations, read before trusting:
 | `rekey [name]` | yes            | Re-encrypt to the current recipient list. No-op when the header already matches. Without `<name>`, rekeys every `[files]` entry. |
 | `keygen [-o]`  | no             | Generate an x25519 identity at `$XDG_CONFIG_HOME/lusid/identity` (or `$HOME/.config/lusid/identity`). Refuses to overwrite. |
 | `check`        | no             | Audit `secrets/` against `lusid-secrets.toml`: orphan ciphertexts, missing ciphertexts, recipient drift. Non-zero exit on any finding; suits CI. |
+
+## Threat model
+
+What `@core/secret` defends against — and what it doesn't.
+
+**Defends against:**
+
+- **Same-host non-root processes.** Default mode is 0600; default `path`
+  resolves under `/run/lusid/secrets/` (tmpfs on systemd distros). A
+  compromised low-privileged service account can't `cat` the secret.
+- **Reading the repo without an identity.** Everything in `secrets/` is
+  ciphertext. Without an `[operators]` or `[machines]` identity, the repo
+  yields nothing.
+- **Wire interception.** Re-encrypted bundles shipped to dev VMs / remote
+  targets are encrypted to the destination's key alone; plaintext never
+  crosses a wire.
+- **Operator iteration in dev.** `dev apply --machine X` scopes the
+  bundle to exactly what `remote apply --machine X` would ship — the dev
+  VM doesn't see secrets the production target wouldn't see.
+
+**Does NOT defend against (the offline-disk gap):**
+
+- **Stolen disk / removed SD card.** If you mount the rootfs on a peer
+  machine, mode bits are kernel-checked at runtime and `dd` doesn't ask.
+  For lusid's typical audience (Pi homelab, personal infra) this is the
+  honest weak point. Mitigation: full-disk encryption + tmpfs `path` (the
+  default).
+- **Backups.** `rsync -a`, `restic`, `borg` running as root copy
+  plaintext bytes verbatim. Mitigation: encrypt the backup destination,
+  exclude `/run`, prefer the tmpfs `path` default.
+- **Swap / hibernation.** Plaintext in process memory can spill to swap.
+  Mitigation: encrypted swap (`cryptsetup`/`systemd-cryptenroll`) or
+  swap off.
+- **Other root-equivalent processes.** CI agents, monitoring/audit
+  daemons, anything with `CAP_DAC_READ_SEARCH` reads plaintext directly.
+  Mode 0600 doesn't beat root.
+- **Cold boot / kernel exploit / `/proc/<pid>/mem` from another root.**
+  Real for high-value targets; paranoid for personal infra.
+
+**Operator-side risks:**
+
+- The operator's identity (`~/.config/lusid/identity`) is the trust root;
+  losing it = full plaintext access to every project secret. Treat it
+  like an SSH private key.
+- `lusid secrets cat` writes plaintext to stdout. Terminal scrollback,
+  `script(1)`, and shell history captures it. Avoid in shared sessions.
+- `--params` JSON ends up in `/proc/<pid>/cmdline` of `lusid-apply`.
+  **Don't put secret values in `lusid.toml`'s `params`** — they leak via
+  `ps` to any UID on the host.
 
 ## Invariants
 

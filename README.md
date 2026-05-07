@@ -75,6 +75,8 @@ setup: (params, system) =>
 
 See the [examples](./examples/) for configs that use `params`, dependency ordering, and the `system` object (hostname, OS, current user).
 
+> ⚠️ Don't put secret values in `lusid.toml`'s `params`. The CLI forwards them to `lusid-apply --params <json>`, where they land in `argv[]` and are visible via `ps` / `/proc/<pid>/cmdline` to any UID on the target. Use [`@core/secret`](./secrets/README.md) for sensitive material.
+
 ### Apply a plan
 
 There are three ways to run a plan, depending on where the target machine is:

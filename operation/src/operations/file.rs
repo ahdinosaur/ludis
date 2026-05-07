@@ -189,15 +189,28 @@ impl_display_render!(FileOperation);
 
 /// Apply-time resolution of a [`FileSource`] for a write:
 ///
-/// - `Bytes` covers both inline contents and decrypted-secret plaintext.
+/// - `Bytes` covers inline plan-supplied contents.
+/// - `SecretBytes` covers decrypted-secret plaintext. Treated separately
+///   so the atomic-write helper can pin mode `0o600` on the temp file
+///   from the moment it's `open(2)`'d — closing the umask-window between
+///   write and the followup `ChangeMode` op.
 /// - `Copy` covers a path-sourced copy.
 ///
 /// Resolved up-front so the inner async block doesn't borrow `ctx` (and so
 /// secret plaintext lives only as long as the `Vec<u8>` it's copied into).
 enum WriteSource {
     Bytes(Vec<u8>),
+    SecretBytes(Vec<u8>),
     Copy(FilePath),
 }
+
+/// Initial mode pinned on the temp file when writing a decrypted secret.
+/// Matches `lusid_resource::resources::secret::DEFAULT_MODE`; if the plan
+/// declared a more permissive `mode`, the followup `ChangeMode` op
+/// relaxes it after the file lands. The point of pinning here is to
+/// ensure the bytes never sit on disk under umask perms (typically
+/// `0o644`), even briefly.
+const SECRET_INITIAL_MODE: u32 = 0o600;
 
 #[derive(Debug, Clone)]
 pub struct File;
@@ -240,7 +253,7 @@ impl OperationType for File {
                             .secrets()
                             .get(&name)
                             .ok_or_else(|| FileApplyError::MissingSecret { name: name.clone() })?;
-                        WriteSource::Bytes(secret.expose_secret().as_bytes().to_vec())
+                        WriteSource::SecretBytes(secret.expose_secret().as_bytes().to_vec())
                     }
                 };
                 Ok((
@@ -248,6 +261,14 @@ impl OperationType for File {
                         match resolved {
                             WriteSource::Bytes(bytes) => {
                                 fs::write_file_atomic(path.as_path(), &bytes).await?
+                            }
+                            WriteSource::SecretBytes(bytes) => {
+                                fs::write_file_atomic_with_initial_mode(
+                                    path.as_path(),
+                                    &bytes,
+                                    Some(SECRET_INITIAL_MODE),
+                                )
+                                .await?
                             }
                             WriteSource::Copy(source) => {
                                 fs::copy_file_atomic(source.as_path(), path.as_path()).await?

@@ -498,11 +498,46 @@ pub async fn write_file<P: AsRef<Path>>(path: P, data: &[u8]) -> Result<(), FsEr
 /// temp file (permissions, owner, times — so users don't see a file whose mode changed
 /// when it shouldn't have), then rename. Readers never observe a partial write.
 pub async fn write_file_atomic<P: AsRef<Path>>(path: P, data: &[u8]) -> Result<(), FsError> {
+    write_file_atomic_with_initial_mode(path, data, None).await
+}
+
+/// Atomically write `data` to `path`, applying `initial_mode` to the
+/// temp file before any bytes are written.
+///
+/// `initial_mode = Some(0o600)` is the secrets case: the file should
+/// never be world- or group-readable, even briefly. Without this, the
+/// temp file picks up the umask (typically `0o644`), and there's a
+/// window between rename and the eventual `chmod 0600` op where any
+/// local UID could `read(2)` the bytes.
+///
+/// `initial_mode = None` matches `write_file_atomic`'s historical
+/// behaviour: temp file gets umask perms; if the destination already
+/// exists, [`copy_metadata`] later copies its mode/owner onto the
+/// temp file before the rename.
+pub async fn write_file_atomic_with_initial_mode<P: AsRef<Path>>(
+    path: P,
+    data: &[u8],
+    initial_mode: Option<u32>,
+) -> Result<(), FsError> {
     let dest_path = path.as_ref();
     let temp_path = temporary_path_for(dest_path);
 
-    // Write file contents to temporary path in same directory as destination path.
-    write_file(&temp_path, data).await?;
+    // Open the temp file before writing bytes so we can pin the mode
+    // for `initial_mode = Some(_)` callers (secrets) up-front. The
+    // alternative — chmod after write — leaves a window where the bytes
+    // are on disk under umask perms.
+    let mut file = create_file_with_mode(&temp_path, initial_mode).await?;
+    file.write_all(data)
+        .await
+        .map_err(|source| FsError::WriteFile {
+            path: temp_path.clone(),
+            source,
+        })?;
+    file.flush().await.map_err(|source| FsError::WriteFile {
+        path: temp_path.clone(),
+        source,
+    })?;
+    drop(file);
 
     if path_exists(dest_path).await? {
         // Copy metadata from destination path.
@@ -513,6 +548,27 @@ pub async fn write_file_atomic<P: AsRef<Path>>(path: P, data: &[u8]) -> Result<(
     rename_file(&temp_path, dest_path).await?;
 
     Ok(())
+}
+
+/// Like [`create_file`] but optionally pins the mode at create time
+/// (via `OpenOptions::mode`). When `mode` is `None`, identical to
+/// [`create_file`].
+async fn create_file_with_mode<P: AsRef<Path>>(
+    path: P,
+    mode: Option<u32>,
+) -> Result<tokio::fs::File, FsError> {
+    let p = path.as_ref();
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    if let Some(m) = mode {
+        // Unix-only. The full lusid project assumes Unix targets;
+        // `lusid_system::Os` enumerates Linux variants only today.
+        opts.mode(m);
+    }
+    opts.open(p).await.map_err(|source| FsError::CreateFile {
+        path: p.to_path_buf(),
+        source,
+    })
 }
 
 pub async fn copy_metadata<Src: AsRef<Path>, Dest: AsRef<Path>>(
