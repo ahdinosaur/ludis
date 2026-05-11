@@ -510,10 +510,10 @@ pub async fn write_file_atomic<P: AsRef<Path>>(path: P, data: &[u8]) -> Result<(
 /// window between rename and the eventual `chmod 0600` op where any
 /// local UID could `read(2)` the bytes.
 ///
-/// `initial_mode = None` matches `write_file_atomic`'s historical
-/// behaviour: temp file gets umask perms; if the destination already
-/// exists, [`copy_metadata`] later copies its mode/owner onto the
-/// temp file before the rename.
+/// When `initial_mode` is `Some(_)`, the destination's existing
+/// metadata is NOT copied — the caller's explicit mode wins. Otherwise,
+/// the destination's metadata (mode/owner/times) is preserved across
+/// the write so users don't see surprising mode changes.
 pub async fn write_file_atomic_with_initial_mode<P: AsRef<Path>>(
     path: P,
     data: &[u8],
@@ -523,9 +523,7 @@ pub async fn write_file_atomic_with_initial_mode<P: AsRef<Path>>(
     let temp_path = temporary_path_for(dest_path);
 
     // Open the temp file before writing bytes so we can pin the mode
-    // for `initial_mode = Some(_)` callers (secrets) up-front. The
-    // alternative — chmod after write — leaves a window where the bytes
-    // are on disk under umask perms.
+    // for `initial_mode = Some(_)` callers (secrets) up-front.
     let mut file = create_file_with_mode(&temp_path, initial_mode).await?;
     file.write_all(data)
         .await
@@ -539,8 +537,11 @@ pub async fn write_file_atomic_with_initial_mode<P: AsRef<Path>>(
     })?;
     drop(file);
 
-    if path_exists(dest_path).await? {
-        // Copy metadata from destination path.
+    // Preserve destination metadata only when the caller hasn't asked
+    // for a specific mode. For pinned-mode (secrets), copy_metadata
+    // would overwrite our explicit 0o600 with whatever permissions the
+    // destination had — defeating the whole point.
+    if initial_mode.is_none() && path_exists(dest_path).await? {
         copy_metadata(dest_path, &temp_path).await?;
     }
 
@@ -933,5 +934,46 @@ mod tests {
             probe_symlink(&link).await.unwrap(),
             SymlinkTarget::Symlink(target)
         );
+    }
+
+    /// `initial_mode = Some(_)` must win over the destination's existing
+    /// mode. Regression: an earlier version called `copy_metadata`
+    /// unconditionally, which silently relaxed `0o600` back to whatever
+    /// the destination had (e.g. `0o644`), defeating the whole point
+    /// of pinning.
+    #[tokio::test]
+    async fn write_file_atomic_with_initial_mode_overrides_existing_dest_mode() {
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("secret");
+
+        write_file(&dest, b"old").await.unwrap();
+        fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o644))
+            .await
+            .unwrap();
+
+        write_file_atomic_with_initial_mode(&dest, b"new", Some(0o600))
+            .await
+            .unwrap();
+
+        let mode = fs::metadata(&dest).await.unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    /// `initial_mode = None` preserves the destination's existing mode,
+    /// matching `write_file_atomic`'s historical behaviour.
+    #[tokio::test]
+    async fn write_file_atomic_preserves_existing_dest_mode() {
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("config");
+
+        write_file(&dest, b"old").await.unwrap();
+        fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o640))
+            .await
+            .unwrap();
+
+        write_file_atomic(&dest, b"new").await.unwrap();
+
+        let mode = fs::metadata(&dest).await.unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640);
     }
 }
