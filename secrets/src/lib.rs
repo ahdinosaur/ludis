@@ -15,12 +15,11 @@
 //!   guest_mode)` into a ready-to-use bundle, returning [`LoadError`].
 //! - [`Redactor`] — substring-scrubs known secret plaintexts out of
 //!   per-operation stdout/stderr.
-//! - [`reencrypt_for_machine`] / [`reencrypt_for_dev_vm`] — host-side
-//!   re-encryption: both scope by `[files]` for the named machine; the
-//!   former encrypts to that machine's own `[machines]` key (production
-//!   target, `remote apply`), the latter encrypts to a separate VM
-//!   pubkey (`dev apply` shadows the production target with an
-//!   ephemeral keypair).
+//! - [`reencrypt_for_target`] — host-side re-encryption: scopes the
+//!   bundle by `[files]` for the named machine, re-encrypts each file
+//!   to a caller-supplied target pubkey. Used by `dev apply` (target =
+//!   ephemeral VM keypair) and, eventually, `remote apply` (target =
+//!   the machine's own `[machines]` key).
 //! - [`cli`] — the `lusid secrets ...` subcommands.
 //!
 //! Lower-level primitives (identity parsing, `lusid-secrets.toml` loading,
@@ -45,7 +44,5 @@ mod secrets;
 pub use crate::load::LoadError;
 pub use crate::recipients::RecipientsError;
 pub use crate::redactor::Redactor;
-pub use crate::reencrypt::{
-    ReencryptForMachineError, ReencryptedSecret, reencrypt_for_dev_vm, reencrypt_for_machine,
-};
+pub use crate::reencrypt::{ReencryptForTargetError, ReencryptedSecret, reencrypt_for_target};
 pub use crate::secrets::{Secret, Secrets};
