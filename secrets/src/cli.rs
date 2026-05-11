@@ -255,16 +255,13 @@ async fn cmd_edit(env: &CliEnv, stem: &str) -> Result<(), CliError> {
     };
 
     let tmp_path = make_tmpfile_path(stem);
-    // Drop guard ensures the plaintext tmpfile is scrubbed on every exit
-    // path: editor failure, read_back failure, encrypt/atomic_write
-    // failure, AND task cancellation (future dropped mid-await). The
-    // previous explicit `best_effort_scrub.await` only covered the
-    // sequential code path.
-    let _tmp_guard = TmpfileGuard::new(tmp_path.clone());
     write_private_tmpfile(&tmp_path, &initial_plaintext)?;
 
     let editor_result = run_editor(&tmp_path).await;
+
+    // Always best-effort cleanup, even on editor failure.
     let read_back = fs::read(&tmp_path).await;
+    best_effort_scrub(&tmp_path).await;
 
     editor_result?;
 
@@ -281,33 +278,6 @@ async fn cmd_edit(env: &CliEnv, stem: &str) -> Result<(), CliError> {
     atomic_write(&path, &ciphertext).await?;
     println!("wrote {}", path.display());
     Ok(())
-}
-
-/// Sync best-effort scrub-and-unlink for an `edit`-time tmpfile,
-/// hung off `Drop` so it runs even when the surrounding future is
-/// cancelled. Sync syscalls (not tokio::fs) so it works in any Drop
-/// context — async drop isn't a thing.
-struct TmpfileGuard {
-    path: PathBuf,
-}
-
-impl TmpfileGuard {
-    fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-}
-
-impl Drop for TmpfileGuard {
-    fn drop(&mut self) {
-        // Courtesy overwrite before unlink. COW/journaled/SSD filesystems
-        // don't guarantee the old blocks are gone; the real defence is
-        // that we put the tmpfile in `$XDG_RUNTIME_DIR` (tmpfs).
-        if let Ok(metadata) = std::fs::metadata(&self.path) {
-            let zeros = vec![0u8; metadata.len() as usize];
-            let _ = std::fs::write(&self.path, &zeros);
-        }
-        let _ = std::fs::remove_file(&self.path);
-    }
 }
 
 async fn cmd_keygen(output: Option<&Path>) -> Result<(), CliError> {
@@ -445,6 +415,17 @@ async fn run_editor(path: &Path) -> Result<(), CliError> {
         });
     }
     Ok(())
+}
+
+async fn best_effort_scrub(path: &Path) {
+    // Courtesy overwrite before unlink. COW/journaled/SSD filesystems don't
+    // guarantee the old blocks are gone; the real defence is keeping the
+    // tmpfile in `$XDG_RUNTIME_DIR` (tmpfs).
+    if let Ok(metadata) = fs::metadata(path).await {
+        let zeros = vec![0u8; metadata.len() as usize];
+        let _ = fs::write(path, &zeros).await;
+    }
+    let _ = fs::remove_file(path).await;
 }
 
 fn default_identity_path() -> Result<PathBuf, CliError> {
