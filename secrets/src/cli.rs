@@ -97,43 +97,16 @@ async fn cmd_ls(env: &CliEnv) -> Result<(), CliError> {
         return Ok(());
     }
     for stem in recipients.files.keys() {
-        // resolve() can't fail here — we just iterated the keys, so the
-        // stem is in [files] by construction. Validation at load time
-        // already pinned every reference.
+        // resolve() can't fail — we just iterated the keys, so the stem
+        // is in [files] by construction. Validation at load time pinned
+        // every reference.
         let resolved = recipients
             .resolve(stem)
             .expect("stem from files.keys() is always resolvable");
-        println!(
-            "{stem}  {}",
-            format_effective_recipients(&recipients, &resolved)
-        );
+        let aliases: Vec<&str> = resolved.iter().map(|r| r.alias.as_str()).collect();
+        println!("{stem}  {}", aliases.join(", "));
     }
     Ok(())
-}
-
-/// `<operators>  +  <machines>` — operators on the left, machine
-/// recipients on the right (with `@group` refs expanded), joined by `+`.
-///
-/// Output rules:
-/// - both populated: `<ops>  +  <machines>`
-/// - operators only (no machine recipients listed): `<ops>`
-/// - machines only (`[operators]` empty, rare): `<machines>`
-/// - both empty: unreachable — rejected at load as `EmptyEffectiveRecipients`
-fn format_effective_recipients(recipients: &Recipients, resolved: &[ResolvedRecipient]) -> String {
-    // `resolve` puts operators first (in [operators] declaration order),
-    // then unique machines. Split on the operator/machine boundary by
-    // checking each resolved alias against the operators map.
-    let (ops, machines): (Vec<&str>, Vec<&str>) = resolved
-        .iter()
-        .map(|r| r.alias.as_str())
-        .partition(|alias| recipients.operators.contains_key(*alias));
-
-    match (ops.is_empty(), machines.is_empty()) {
-        (false, false) => format!("{}  +  {}", ops.join(", "), machines.join(", ")),
-        (false, true) => ops.join(", "),
-        (true, false) => machines.join(", "),
-        (true, true) => String::new(),
-    }
 }
 
 async fn cmd_cat(env: &CliEnv, stem: &str) -> Result<(), CliError> {
@@ -537,134 +510,4 @@ pub enum CliError {
 
     /// {0}
     Check(#[from] CheckError),
-}
-
-#[cfg(test)]
-mod tests {
-    use indexmap::IndexMap;
-
-    use super::*;
-    use crate::key::Key;
-
-    /// Build a `Recipients` with the given operator aliases (each gets a
-    /// fresh x25519 pubkey) and machine aliases (also x25519). The `Key`
-    /// values aren't load-bearing for these tests; only `operators.keys()`
-    /// matters for the format helper's operator/machine partition.
-    fn recipients_with(op_aliases: &[&str], machine_aliases: &[&str]) -> Recipients {
-        let mut operators = IndexMap::new();
-        for &alias in op_aliases {
-            operators.insert(alias.to_owned(), fresh_x25519_key());
-        }
-        let mut machines = IndexMap::new();
-        for &alias in machine_aliases {
-            machines.insert(alias.to_owned(), fresh_x25519_key());
-        }
-        Recipients {
-            operators,
-            machines,
-            groups: IndexMap::new(),
-            files: IndexMap::new(),
-        }
-    }
-
-    fn fresh_x25519_key() -> Key {
-        age::x25519::Identity::generate()
-            .to_public()
-            .to_string()
-            .parse()
-            .unwrap()
-    }
-
-    fn resolved(r: &Recipients, aliases: &[&str]) -> Vec<ResolvedRecipient> {
-        // Mimic the shape `cmd_ls` hands the formatter: aliases in
-        // resolve()'s order (operators first, then machines).
-        aliases
-            .iter()
-            .map(|&a| {
-                let key = r
-                    .operators
-                    .get(a)
-                    .or_else(|| r.machines.get(a))
-                    .cloned()
-                    .expect("alias must exist in fixture");
-                ResolvedRecipient {
-                    alias: a.to_owned(),
-                    key,
-                }
-            })
-            .collect()
-    }
-
-    #[test]
-    fn ls_format_ops_and_machines() {
-        let r = recipients_with(&["mikey", "alice"], &["rpi", "web1"]);
-        let res = resolved(&r, &["mikey", "alice", "rpi", "web1"]);
-        assert_eq!(
-            format_effective_recipients(&r, &res),
-            "mikey, alice  +  rpi, web1"
-        );
-    }
-
-    #[test]
-    fn ls_format_ops_only() {
-        let r = recipients_with(&["mikey"], &[]);
-        let res = resolved(&r, &["mikey"]);
-        assert_eq!(format_effective_recipients(&r, &res), "mikey");
-    }
-
-    #[test]
-    fn ls_format_machines_only() {
-        // [operators] empty + machine recipient — valid per the schema.
-        let r = recipients_with(&[], &["rpi"]);
-        let res = resolved(&r, &["rpi"]);
-        assert_eq!(format_effective_recipients(&r, &res), "rpi");
-    }
-
-    /// `cmd_ls` calls `recipients.resolve(stem)` rather than printing the
-    /// literal `entry.recipients` list, so a `recipients = ["@prod"]`
-    /// entry with `prod = ["rpi", "web1"]` should render the expanded
-    /// machines, not `@prod`.
-    #[tokio::test]
-    async fn ls_format_expands_groups_via_resolve() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let op_pub = age::x25519::Identity::generate().to_public().to_string();
-        let m1_pub = age::x25519::Identity::generate().to_public().to_string();
-        let m2_pub = age::x25519::Identity::generate().to_public().to_string();
-        std::fs::write(
-            dir.path().join("lusid-secrets.toml"),
-            format!(
-                r#"
-[operators]
-op = "{op_pub}"
-
-[machines]
-rpi  = "{m1_pub}"
-web1 = "{m2_pub}"
-
-[groups]
-prod = ["rpi", "web1"]
-
-[files]
-"f" = {{ recipients = ["@prod"] }}
-"#
-            ),
-        )
-        .unwrap();
-        let r = Recipients::load(dir.path()).await.unwrap();
-        let resolved = r.resolve("f").unwrap();
-        assert_eq!(
-            format_effective_recipients(&r, &resolved),
-            "op  +  rpi, web1"
-        );
-    }
-
-    /// Sanity: an `entry.recipients = ["rpi"]` that doesn't reference a
-    /// group still renders the bare alias, not the literal `@`-prefixed
-    /// form.
-    #[test]
-    fn ls_format_bare_machine_alias() {
-        let r = recipients_with(&["op"], &["rpi"]);
-        let res = resolved(&r, &["op", "rpi"]);
-        assert_eq!(format_effective_recipients(&r, &res), "op  +  rpi");
-    }
 }
