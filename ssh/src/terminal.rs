@@ -7,7 +7,7 @@ use termion::raw::IntoRawMode;
 use thiserror::Error;
 use tokio::io::copy;
 
-use crate::session::{AsyncSession, NoCheckHandler};
+use crate::session::{AsyncSession, HostKeyHandler};
 
 #[derive(Error, Debug)]
 pub enum SshTerminalError {
@@ -41,7 +41,7 @@ pub enum SshTerminalError {
 
 #[tracing::instrument(skip(session))]
 pub(super) async fn ssh_terminal(
-    session: &AsyncSession<NoCheckHandler>,
+    session: &AsyncSession<HostKeyHandler>,
 ) -> Result<Option<u32>, SshTerminalError> {
     let mut channel = session
         .open_channel()

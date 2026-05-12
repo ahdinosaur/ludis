@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_promise::Promise;
@@ -24,19 +25,99 @@ use tracing::Instrument;
 
 use crate::stream::ReadStream;
 
-/// A handler that does NOT check the server's public key.
+/// How to verify the remote server's host key during the SSH handshake.
 ///
-/// Only use in controlled environments with public key authentication.
-pub struct NoCheckHandler;
+/// Stored on [`SshConnectOptions`](crate::SshConnectOptions); the
+/// [`HostKeyHandler`] picks the matching arm in `check_server_key`.
+#[derive(Debug, Clone)]
+pub enum HostKeyVerification {
+    /// Skip verification entirely.
+    ///
+    /// Only safe for ephemeral targets whose host key is locally generated
+    /// and not reused — e.g. a dev VM we just booted with a fresh keypair,
+    /// or a CI sandbox. **Never** use against real remote infrastructure;
+    /// the connection becomes trivially MITM-able.
+    Disabled,
+    /// Trust-on-first-use against an OpenSSH-format `known_hosts` file.
+    ///
+    /// On first connection the server's pubkey is appended to
+    /// `known_hosts_path`. On subsequent connections an exact match is
+    /// required; mismatch surfaces as [`russh::Error::KeyChanged`] (the
+    /// standard OpenSSH "REMOTE HOST IDENTIFICATION HAS CHANGED" failure).
+    Tofu {
+        host: String,
+        port: u16,
+        known_hosts_path: PathBuf,
+    },
+}
 
-impl Handler for NoCheckHandler {
+/// russh [`Handler`] enforcing a configured [`HostKeyVerification`] strategy.
+///
+/// The handler is `Clone` so it can be rebuilt per attempt inside a retry
+/// loop without restating the policy.
+#[derive(Clone)]
+pub struct HostKeyHandler {
+    verification: HostKeyVerification,
+}
+
+impl HostKeyHandler {
+    pub fn new(verification: HostKeyVerification) -> Self {
+        Self { verification }
+    }
+}
+
+impl Handler for HostKeyHandler {
     type Error = SshError;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &ssh_key::PublicKey,
+        server_public_key: &ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        let HostKeyVerification::Tofu {
+            host,
+            port,
+            known_hosts_path,
+        } = &self.verification
+        else {
+            return Ok(true);
+        };
+
+        match russh::keys::check_known_hosts_path(host, *port, server_public_key, known_hosts_path)
+        {
+            // Known host with matching key.
+            Ok(true) => Ok(true),
+            // Host not in `known_hosts` — trust on first use and record it.
+            Ok(false) => {
+                russh::keys::known_hosts::learn_known_hosts_path(
+                    host,
+                    *port,
+                    server_public_key,
+                    known_hosts_path,
+                )
+                .map_err(SshError::Keys)?;
+                tracing::warn!(
+                    host = %host,
+                    port = port,
+                    known_hosts = %known_hosts_path.display(),
+                    "added host key to known_hosts on first connection (trust-on-first-use)"
+                );
+                Ok(true)
+            }
+            // Known host but key differs — refuse and surface loudly.
+            Err(err @ russh::keys::Error::KeyChanged { line }) => {
+                tracing::error!(
+                    host = %host,
+                    port = port,
+                    line = line,
+                    known_hosts = %known_hosts_path.display(),
+                    "REMOTE HOST IDENTIFICATION HAS CHANGED — possible MITM, \
+                     or the host key was rotated; remove the offending line \
+                     from `known_hosts` if the change is expected"
+                );
+                Err(SshError::Keys(err))
+            }
+            Err(err) => Err(SshError::Keys(err)),
+        }
     }
 }
 
@@ -66,10 +147,8 @@ impl<H: 'static + Handler> AsyncSession<H> {
     }
 }
 
-impl AsyncSession<NoCheckHandler> {
+impl AsyncSession<HostKeyHandler> {
     /// Connect and authenticate with the given user and key_path via public key.
-    ///
-    /// Uses NoCheckHandler (skips host key verification).
     pub async fn auth_publickey(
         &mut self,
         username: impl AsRef<str>,
@@ -299,5 +378,78 @@ impl Deref for AsyncChannel {
     type Target = ChannelWriteHalf<Msg>;
     fn deref(&self) -> &Self::Target {
         &self.write_half
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two stable ed25519 host pubkeys (OpenSSH format). Distinct so the
+    /// mismatch test reliably triggers `KeyChanged`.
+    const HOSTKEY_A: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
+    const HOSTKEY_B: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILIG2T/B0l0gaqj3puu510tu9N1OkQ4znY3LYuEm5zCF";
+
+    fn pubkey(openssh: &str) -> ssh_key::PublicKey {
+        ssh_key::PublicKey::from_openssh(openssh).expect("static fixture parses")
+    }
+
+    fn handler(known_hosts_path: PathBuf) -> HostKeyHandler {
+        HostKeyHandler::new(HostKeyVerification::Tofu {
+            host: "test.example".to_owned(),
+            port: 22,
+            known_hosts_path,
+        })
+    }
+
+    #[tokio::test]
+    async fn disabled_accepts_anything() {
+        let mut h = HostKeyHandler::new(HostKeyVerification::Disabled);
+        assert!(h.check_server_key(&pubkey(HOSTKEY_A)).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn tofu_first_connection_writes_known_hosts() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("known_hosts");
+        let mut h = handler(path.clone());
+
+        assert!(h.check_server_key(&pubkey(HOSTKEY_A)).await.unwrap());
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.contains("test.example") && contents.contains(HOSTKEY_A),
+            "expected TOFU to record host+key; got: {contents:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tofu_returning_connection_accepts_matching_key() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("known_hosts");
+        let mut h = handler(path.clone());
+
+        // Seed via first call, then second call must match without rewriting.
+        h.check_server_key(&pubkey(HOSTKEY_A)).await.unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert!(h.check_server_key(&pubkey(HOSTKEY_A)).await.unwrap());
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(before, after, "second connection must not append");
+    }
+
+    #[tokio::test]
+    async fn tofu_rejects_changed_key() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("known_hosts");
+        let mut h = handler(path);
+
+        h.check_server_key(&pubkey(HOSTKEY_A)).await.unwrap();
+        let err = h.check_server_key(&pubkey(HOSTKEY_B)).await.unwrap_err();
+        assert!(
+            matches!(err, SshError::Keys(russh::keys::Error::KeyChanged { .. })),
+            "expected KeyChanged on host-key mismatch, got: {err:?}"
+        );
     }
 }

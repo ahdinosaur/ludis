@@ -41,7 +41,10 @@ use lusid_secrets::{
     MachinePubkeyError, RecipientsError, ReencryptForTargetError, machine_pubkey,
     reencrypt_for_target,
 };
-use lusid_ssh::{Ssh, SshConnectOptions, SshError, SshKeypairError, SshVolume, load_private_key};
+use lusid_ssh::{
+    HostKeyVerification, Ssh, SshConnectOptions, SshError, SshKeypairError, SshVolume,
+    load_private_key,
+};
 use lusid_system::Arch;
 use lusid_vm::{Vm, VmError, VmOptions};
 use thiserror::Error;
@@ -555,20 +558,33 @@ async fn connect_remote(remote: &Remote) -> Result<Ssh, AppError> {
                 path: key_path.clone(),
                 source,
             })?;
+    let known_hosts_path = resolve_known_hosts_path()?;
+    let host = remote.host.clone();
+    let port = remote.port();
     let ssh = Ssh::connect(SshConnectOptions {
         private_key,
-        addrs: (remote.host.clone(), remote.port()),
+        addrs: (host.clone(), port),
         username: remote.user().to_owned(),
         config: Arc::new(Default::default()),
         timeout: Duration::from_secs(10),
+        host_key_verification: HostKeyVerification::Tofu {
+            host,
+            port,
+            known_hosts_path,
+        },
     })
     .await?;
-    // TODO(cc): host-key verification is disabled — see
-    // `lusid_ssh::session::NoCheckHandler`. Acceptable for v1, but before
-    // remote apply hardens against hostile networks we need a TOFU/known_hosts
-    // handler (russh exposes `russh::keys::known_hosts`) or, at minimum, an
-    // explicit `--insecure-no-host-key-check` opt-out.
     Ok(ssh)
+}
+
+/// `~/.ssh/known_hosts` — OpenSSH's canonical location. No CLI override for
+/// now; operators who need one can shadow `HOME` or symlink. Errors when
+/// `HOME` is unset since we have nowhere sensible to default to.
+fn resolve_known_hosts_path() -> Result<PathBuf, AppError> {
+    let home = env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .ok_or(AppError::HomeUnset)?;
+    Ok(PathBuf::from(home).join(".ssh/known_hosts"))
 }
 
 /// Resolve the operator's SSH private key path: `remote.ssh_key` (with `~`
@@ -753,6 +769,8 @@ async fn cmd_dev_apply(
         username: vm.user.clone(),
         config: Arc::new(Default::default()),
         timeout: Duration::from_secs(10),
+        // Dev VM: ephemeral host key regenerated each boot, no point pinning.
+        host_key_verification: HostKeyVerification::Disabled,
     })
     .await?;
 
@@ -891,6 +909,8 @@ async fn cmd_dev_ssh(config: Config, machine_id: String) -> Result<(), AppError>
         username: vm.user,
         config: Arc::new(Default::default()),
         timeout: Duration::from_secs(10),
+        // Dev VM: ephemeral host key regenerated each boot, no point pinning.
+        host_key_verification: HostKeyVerification::Disabled,
     })
     .await?;
 

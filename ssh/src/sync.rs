@@ -16,7 +16,7 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use lusid_fs::{self as fs, FsError};
 
-use crate::session::{AsyncSession, NoCheckHandler};
+use crate::session::{AsyncSession, HostKeyHandler};
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum SshVolume {
@@ -80,7 +80,7 @@ pub enum SshSyncError {
 
 #[instrument(skip(session))]
 pub(super) async fn ssh_sync(
-    session: &AsyncSession<NoCheckHandler>,
+    session: &AsyncSession<HostKeyHandler>,
     volume: SshVolume,
 ) -> Result<(), SshSyncError> {
     info!("Starting SSH volume sync");
