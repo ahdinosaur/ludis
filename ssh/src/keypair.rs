@@ -106,16 +106,6 @@ impl SshKeypair {
             .to_string())
     }
 
-    /// Load just the OpenSSH private key from a file path. Use when only the
-    /// private key is needed (e.g. SSH-client auth where the matching `.pub`
-    /// isn't on disk in the conventional location).
-    #[tracing::instrument(skip_all, fields(path = %path.display()))]
-    pub async fn load_private_key(path: &Path) -> Result<PrivateKey, SshKeypairError> {
-        let private_key_string = fs::read_file_to_string(path).await?;
-        let private_key = PrivateKey::from_openssh(&private_key_string)?;
-        Ok(private_key)
-    }
-
     /// Load a keypair from the directory.
     #[tracing::instrument(skip_all)]
     pub async fn load(directory: &Path) -> Result<Self, SshKeypairError> {
@@ -138,5 +128,58 @@ impl SshKeypair {
             public_key,
             private_key,
         })
+    }
+}
+
+/// Load just the OpenSSH private key from a file path. Use when only the
+/// private key is needed (e.g. SSH-client auth where the matching `.pub`
+/// isn't on disk in the conventional location). Distinct from
+/// [`SshKeypair::load`] which expects both `id_ed25519` and `id_ed25519.pub`
+/// in the same directory.
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
+pub async fn load_private_key(path: &Path) -> Result<PrivateKey, SshKeypairError> {
+    let private_key_string = fs::read_file_to_string(path).await?;
+    let private_key = PrivateKey::from_openssh(&private_key_string)?;
+    Ok(private_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn load_private_key_round_trips_saved_keypair() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let saved = SshKeypair::create().unwrap();
+        saved.save(dir.path()).await.unwrap();
+
+        let loaded = load_private_key(&dir.path().join(PRIVATE_KEY_FILE))
+            .await
+            .unwrap();
+
+        // Compare via canonical OpenSSH serialization — `PrivateKey` itself
+        // isn't `PartialEq`, and round-tripping the encoded form is the
+        // contract callers depend on anyway.
+        let saved_pem = saved
+            .private_key
+            .to_openssh(LineEnding::default())
+            .unwrap()
+            .to_string();
+        let loaded_pem = loaded
+            .to_openssh(LineEnding::default())
+            .unwrap()
+            .to_string();
+        assert_eq!(saved_pem, loaded_pem);
+    }
+
+    #[tokio::test]
+    async fn load_private_key_errors_on_garbage() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("garbage");
+        tokio::fs::write(&path, b"not an openssh key")
+            .await
+            .unwrap();
+        let err = load_private_key(&path).await.unwrap_err();
+        assert!(matches!(err, SshKeypairError::RusshKey(_)));
     }
 }

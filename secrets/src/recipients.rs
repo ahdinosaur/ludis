@@ -892,17 +892,18 @@ m = "{SSH_RPI}"
     /// `Display`/`from_str` round-trip is canonical (comment dropped).
     const SSH_PUBKEY_NO_COMMENT: &str =
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN";
-    const SSH_PUBKEY_WITH_COMMENT: &str =
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN alice@rust";
+    const SSH_PUBKEY_WITH_COMMENT: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN alice@rust";
 
     #[tokio::test]
     async fn machine_pubkey_returns_ssh_key() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("lusid-secrets.toml"),
-            format!(r#"[machines]
+            format!(
+                r#"[machines]
 rpi = "{SSH_PUBKEY_WITH_COMMENT}"
-"#),
+"#
+            ),
         )
         .unwrap();
         let key = machine_pubkey(dir.path(), "rpi").await.unwrap();
@@ -919,9 +920,11 @@ rpi = "{SSH_PUBKEY_WITH_COMMENT}"
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("lusid-secrets.toml"),
-            format!(r#"[machines]
+            format!(
+                r#"[machines]
 host-a = "{pubkey}"
-"#),
+"#
+            ),
         )
         .unwrap();
         let key = machine_pubkey(dir.path(), "host-a").await.unwrap();
@@ -933,9 +936,11 @@ host-a = "{pubkey}"
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
             dir.path().join("lusid-secrets.toml"),
-            format!(r#"[machines]
+            format!(
+                r#"[machines]
 rpi = "{SSH_PUBKEY_NO_COMMENT}"
-"#),
+"#
+            ),
         )
         .unwrap();
         let err = machine_pubkey(dir.path(), "missing").await.unwrap_err();

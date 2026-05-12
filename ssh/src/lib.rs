@@ -23,7 +23,7 @@ mod terminal;
 
 pub use crate::command::{SshCommandError, SshCommandHandle};
 pub use crate::connect::{SshConnectError, SshConnectOptions};
-pub use crate::keypair::{SshKeypair, SshKeypairError};
+pub use crate::keypair::{SshKeypair, SshKeypairError, load_private_key};
 pub use crate::sync::{SshSyncError, SshVolume};
 pub use crate::terminal::SshTerminalError;
 

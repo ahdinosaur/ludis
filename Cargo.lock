@@ -2692,6 +2692,7 @@ dependencies = [
  "russh-sftp",
  "signal-hook",
  "signal-hook-tokio",
+ "tempfile",
  "termion",
  "thiserror 2.0.18",
  "tokio",

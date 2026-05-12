@@ -112,11 +112,12 @@ ssh_key = "/home/mikey/.ssh/custom_key"
 
     #[test]
     fn remote_rejects_unknown_field() {
-        let err =
-            toml::from_str::<Remote>(r#"host = "web-a.lan"
+        let err = toml::from_str::<Remote>(
+            r#"host = "web-a.lan"
 hsot = "typo"
-"#)
-            .unwrap_err();
+"#,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("unknown field"));
     }
 

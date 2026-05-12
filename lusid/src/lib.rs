@@ -24,10 +24,15 @@
 mod config;
 mod tui;
 
-use std::{env, net::Ipv4Addr, path::{Path, PathBuf}, sync::Arc, time::Duration};
+use std::{
+    env,
+    net::Ipv4Addr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use clap::{Parser, Subcommand};
-use lusid_apply_stdio::AppViewError;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_machine::Remote;
@@ -36,7 +41,7 @@ use lusid_secrets::{
     MachinePubkeyError, RecipientsError, ReencryptForTargetError, machine_pubkey,
     reencrypt_for_target,
 };
-use lusid_ssh::{Ssh, SshConnectOptions, SshError, SshKeypair, SshKeypairError, SshVolume};
+use lusid_ssh::{Ssh, SshConnectOptions, SshError, SshKeypairError, SshVolume, load_private_key};
 use lusid_system::Arch;
 use lusid_vm::{Vm, VmError, VmOptions};
 use thiserror::Error;
@@ -168,26 +173,11 @@ pub enum AppError {
     #[error(transparent)]
     Ssh(#[from] SshError),
 
-    #[error(transparent)]
-    View(#[from] AppViewError),
-
     #[error("failed to convert params toml to json: {0}")]
     ParamsTomlToJson(#[from] serde_json::Error),
 
-    #[error("failed to read stdout from apply")]
-    ReadApplyStdout(#[source] tokio::io::Error),
-
-    #[error("failed to parse stdout from lusid-apply as json")]
-    ParseApplyStdoutJson(#[source] serde_json::Error),
-
-    #[error("failed to forward stderr from lusid-apply")]
-    ForwardApplyStderr(#[source] tokio::io::Error),
-
     #[error(transparent)]
     Which(#[from] which::Error),
-
-    #[error("unexpected view state")]
-    UnexpectedViewState,
 
     #[error(transparent)]
     Tui(#[from] TuiError),
@@ -213,7 +203,17 @@ pub enum AppError {
     #[error("HOME env var is unset and no `ssh_key` configured for remote machine")]
     HomeUnset,
 
-    #[error("invalid `remote.user`: {user:?} (must match useradd's NAME_REGEX, length 1..=32)")]
+    #[error(
+        "cannot expand leading `~` in {path}: only `~` and `~/...` are supported \
+         (no `~user` syntax)",
+        path = path.display()
+    )]
+    UnsupportedTildePath { path: PathBuf },
+
+    #[error(
+        "invalid `remote.user`: {user:?} (must be 1..=32 ASCII alphanumeric/underscore/dash; \
+         first character must be alphanumeric or underscore, not a dash)"
+    )]
     InvalidSshUser { user: String },
 
     #[error(
@@ -389,7 +389,7 @@ async fn cmd_remote_apply(
 
     // 2. Pre-cleanup: drop any leftover ciphertexts from a previous run.
     //    Best-effort — never fail the apply over this.
-    let _ = run_clear_secrets_dir(&mut ssh, &guest_secrets_dir, remote.is_root()).await;
+    let _ = clear_remote_secrets_dir(&mut ssh, &guest_secrets_dir, remote.is_root()).await;
 
     // 3. Re-encrypt secrets per-target if --identity supplied AND machine is
     //    listed in lusid-secrets.toml. Missing toml or absent [machines]
@@ -413,8 +413,15 @@ async fn cmd_remote_apply(
                 }
                 !reencrypted.is_empty()
             }
-            Err(MachinePubkeyError::Recipients(RecipientsError::Missing { .. }))
-            | Err(MachinePubkeyError::UnknownMachine { .. }) => false,
+            Err(MachinePubkeyError::Recipients(RecipientsError::Missing { .. })) => false,
+            Err(MachinePubkeyError::UnknownMachine { machine_id }) => {
+                tracing::warn!(
+                    machine_id,
+                    "machine not in [machines] in lusid-secrets.toml; \
+                     proceeding without secrets (check --machine for typos)"
+                );
+                false
+            }
             Err(other) => return Err(other.into()),
         }
     } else {
@@ -462,11 +469,11 @@ async fn cmd_remote_apply(
 
     // 6. Build the apply command.
     //
-    // Note(cc): `--root` is the operator's local lusid root path. The dev
-    // path does the same; `lusid-apply` uses it to anchor relative
-    // `host-path` resolution and the cache dir, but plans typically
-    // anchor host-paths on the source span (the uploaded plan file's
-    // location). Worth a future audit.
+    // TODO(cc): audit `--root` semantics for remote/dev apply. We pass the
+    // operator's local path, but `lusid-apply` uses it on the guest to
+    // anchor relative `host-path` resolution and the cache dir — and plans
+    // typically anchor host-paths on the source span (the uploaded plan
+    // file's location), making the operator-side path largely ineffective.
     let log = &config.log;
     let mut command = format!(
         "{} --root {} --plan {}/{} --log {}",
@@ -502,10 +509,15 @@ async fn cmd_remote_apply(
     let apply_result = tui(&mut handle.stdout, &mut handle.stderr, wait).await;
 
     // 8. Best-effort post-cleanup. Never shadows apply_result.
-    if forward_secrets {
-        let _ = run_clear_secrets_dir(&mut ssh, &guest_secrets_dir, remote.is_root()).await;
+    if forward_secrets
+        && let Err(err) =
+            clear_remote_secrets_dir(&mut ssh, &guest_secrets_dir, remote.is_root()).await
+    {
+        tracing::debug!(?err, "post-apply secrets dir cleanup failed");
     }
-    let _ = ssh.disconnect().await;
+    if let Err(err) = ssh.disconnect().await {
+        tracing::debug!(?err, "ssh disconnect failed");
+    }
 
     apply_result?;
     Ok(())
@@ -524,7 +536,9 @@ async fn cmd_remote_ssh(config: Config, machine_id: String) -> Result<(), AppErr
 
     let mut ssh = connect_remote(remote).await?;
     let _exit_code = ssh.terminal().await?;
-    let _ = ssh.disconnect().await;
+    if let Err(err) = ssh.disconnect().await {
+        tracing::debug!(?err, "ssh disconnect failed");
+    }
 
     Ok(())
 }
@@ -534,12 +548,13 @@ async fn cmd_remote_ssh(config: Config, machine_id: String) -> Result<(), AppErr
 /// Connect to the remote SSH endpoint using the operator's private key.
 async fn connect_remote(remote: &Remote) -> Result<Ssh, AppError> {
     let key_path = resolve_ssh_key_path(remote)?;
-    let private_key = SshKeypair::load_private_key(&key_path)
-        .await
-        .map_err(|source| AppError::LoadOperatorKey {
-            path: key_path.clone(),
-            source,
-        })?;
+    let private_key =
+        load_private_key(&key_path)
+            .await
+            .map_err(|source| AppError::LoadOperatorKey {
+                path: key_path.clone(),
+                source,
+            })?;
     let ssh = Ssh::connect(SshConnectOptions {
         private_key,
         addrs: (remote.host.clone(), remote.port()),
@@ -548,9 +563,11 @@ async fn connect_remote(remote: &Remote) -> Result<Ssh, AppError> {
         timeout: Duration::from_secs(10),
     })
     .await?;
-    // Note(cc): host key verification is disabled — see
-    // `lusid_ssh::session::NoCheckHandler`. Acceptable for v1; revisit when
-    // remote apply needs to defend against an active MITM.
+    // TODO(cc): host-key verification is disabled — see
+    // `lusid_ssh::session::NoCheckHandler`. Acceptable for v1, but before
+    // remote apply hardens against hostile networks we need a TOFU/known_hosts
+    // handler (russh exposes `russh::keys::known_hosts`) or, at minimum, an
+    // explicit `--insecure-no-host-key-check` opt-out.
     Ok(ssh)
 }
 
@@ -567,11 +584,18 @@ fn resolve_ssh_key_path(remote: &Remote) -> Result<PathBuf, AppError> {
         (None, Some(home)) => PathBuf::from(home).join(".ssh/id_ed25519"),
         (None, None) => return Err(AppError::HomeUnset),
     };
-    // Catch the "configured ~/foo but HOME unset" case: a literal tilde
-    // would otherwise flow through to `load_private_key` as a relative path
-    // and fail with a confusing not-found error.
+    // A literal `~` survived `expand_tilde` — either HOME was unset (only
+    // bare `~`/`~/...` can need HOME) or the form is `~user/...` which we
+    // don't expand. Distinguish the two so the error tells the operator
+    // what to fix; otherwise the tilde would flow through to
+    // `load_private_key` as a relative path and fail with a confusing
+    // not-found.
     if raw.to_string_lossy().starts_with('~') {
-        return Err(AppError::HomeUnset);
+        return Err(if home.is_some() {
+            AppError::UnsupportedTildePath { path: raw }
+        } else {
+            AppError::HomeUnset
+        });
     }
     Ok(raw)
 }
@@ -595,9 +619,15 @@ fn expand_tilde(path: &Path, home: Option<&std::ffi::OsStr>) -> PathBuf {
     }
 }
 
-/// Validate `<ssh-user>` against shell-injection. Mirrors `useradd`'s
-/// `NAME_REGEX`: must start with alnum/underscore (NOT dash — `chown -x` would
-/// treat the value as a flag), then alnum/underscore/dash, total length 1..=32.
+/// Validate `<ssh-user>` against shell-injection. First character must be
+/// ASCII alphanumeric or underscore (NOT dash — `chown -x` would treat the
+/// value as a flag); subsequent characters add dash; total length 1..=32.
+///
+/// More permissive than shadow-utils' `useradd` regex (we allow uppercase and
+/// leading digits) but strictly a subset of shell-safe characters: no
+/// metacharacters can survive validation, so the validated string is safe to
+/// interpolate raw into a shell command. Callers still apply
+/// `shell_words::quote` as belt-and-suspenders defense in depth.
 fn validate_ssh_user(user: &str) -> Result<(), AppError> {
     let mut chars = user.chars();
     let first_ok = matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric() || c == '_');
@@ -619,10 +649,7 @@ fn validate_ssh_user(user: &str) -> Result<(), AppError> {
 /// until both stdout and stderr hit EOF, which only happens when the remote
 /// process closes its file descriptors. For streaming apply use the same
 /// pattern as `cmd_remote_apply` (handle.stdout/stderr + a wait future).
-async fn ssh_run(
-    ssh: &mut Ssh,
-    command: &str,
-) -> Result<(Option<u32>, String, String), AppError> {
+async fn ssh_run(ssh: &mut Ssh, command: &str) -> Result<(Option<u32>, String, String), AppError> {
     let mut handle = ssh.command(command).await?;
     let mut stdout = String::new();
     let mut stderr = String::new();
@@ -637,18 +664,15 @@ async fn ssh_run(
 /// and chown them to the SSH user. Idempotent. Only called when `user` is
 /// non-root; root SFTP can mkdir directly via `sftp_mkdirs`.
 ///
-/// `user` must already be validated by `validate_ssh_user` to contain only
-/// shell-safe characters; safe to interpolate here.
-async fn bootstrap_remote_dirs(
-    ssh: &mut Ssh,
-    user: &str,
-    root: &str,
-) -> Result<(), AppError> {
+/// `user` is expected to be validated by `validate_ssh_user`; we still apply
+/// `shell_words::quote` as defense in depth so the shell command remains safe
+/// if the validator is ever relaxed.
+async fn bootstrap_remote_dirs(ssh: &mut Ssh, user: &str, root: &str) -> Result<(), AppError> {
     let cmd = format!(
         "sudo -n mkdir -p {root} {root}/plan {root}/secrets \
          && sudo -n chown {user} {root} {root}/plan {root}/secrets",
         root = shell_words::quote(root),
-        user = user,
+        user = shell_words::quote(user),
     );
     let (exit, _stdout, stderr) = ssh_run(ssh, &cmd).await?;
     if exit != Some(0) {
@@ -659,11 +683,7 @@ async fn bootstrap_remote_dirs(
 
 /// Best-effort: clear the secrets dir on the target and recreate it empty.
 /// Idempotent. Errors are not propagated (caller uses `let _ = ...`).
-async fn run_clear_secrets_dir(
-    ssh: &mut Ssh,
-    dir: &str,
-    is_root: bool,
-) -> Result<(), AppError> {
+async fn clear_remote_secrets_dir(ssh: &mut Ssh, dir: &str, is_root: bool) -> Result<(), AppError> {
     let dir_q = shell_words::quote(dir).into_owned();
     let cmd = if is_root {
         format!("rm -rf {dir_q} && mkdir -p {dir_q}")
@@ -951,10 +971,7 @@ mod tests {
     #[test]
     fn validate_ssh_user_rejects_metachars() {
         for bad in &["mikey;rm", "mikey$x", "mikey ls", "mikey/x", "mikey`"] {
-            assert!(
-                validate_ssh_user(bad).is_err(),
-                "should reject {bad:?}"
-            );
+            assert!(validate_ssh_user(bad).is_err(), "should reject {bad:?}");
         }
     }
 
@@ -968,10 +985,14 @@ mod tests {
     }
 
     #[test]
-    fn expand_tilde_with_no_home_returns_input() {
-        // Confirms the call site can detect the unexpanded `~` to surface a
-        // HOME-unset error rather than passing it through silently.
-        let result = expand_tilde(Path::new("~/foo"), None);
-        assert!(result.to_string_lossy().starts_with('~'));
+    fn expand_tilde_user_form_passthrough() {
+        // `~user/...` is not expanded; the call site detects the leading
+        // tilde and surfaces `UnsupportedTildePath` so the operator sees a
+        // specific error instead of a confusing not-found.
+        let home = OsStr::new("/home/alice");
+        assert_eq!(
+            expand_tilde(Path::new("~bob/.ssh/k"), Some(home)),
+            PathBuf::from("~bob/.ssh/k")
+        );
     }
 }
