@@ -5,27 +5,29 @@
 //!
 //! ```toml
 //! [operators]
-//! mikey = "age1..."
+//! mikey = "age1..."          # implicit recipient on every [files] entry
 //!
 //! [machines]
 //! rpi4b-1 = "ssh-ed25519 AAAA..."
 //!
 //! [groups]
-//! operators = ["mikey"]
+//! prod = ["rpi4b-1"]         # machine groups only
 //!
 //! [files]
-//! "api_token" = { recipients = ["@operators", "rpi4b-1"] }
+//! "api_token"  = { recipients = ["@prod"] }     # ops + rpi4b-1
+//! "local_only" = { recipients = [] }            # ops only
 //! ```
 //!
-//! `@name` references in a file's `recipients` list expand via `[groups]`;
-//! bare names look up in `[operators]` then `[machines]`. Expansion is shallow
-//! (groups cannot reference groups) — keeps the model predictable without
-//! meaningfully limiting usage.
+//! Operators are implicit recipients on every `[files]` entry. `@name`
+//! references expand via `[groups]`; bare names look up in `[machines]`.
+//! `[groups]` and `[files].recipients` may NOT reference operator aliases —
+//! that's the whole point of the implicit rule. Expansion is shallow
+//! (groups cannot reference groups).
 //!
 //! The operator / machine split is load-bearing for per-target re-encryption
 //! done by `lusid remote apply`: the target machine's SSH host key (looked up
 //! in `[machines]` by `machine_id`) is the sole recipient before ciphertext
-//! is shipped to the guest. See [`Recipients::get_machine`].
+//! is shipped to the guest.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -73,7 +75,26 @@ struct RecipientsToml {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct FileEntry {
+    #[serde(default)]
     pub recipients: Vec<String>,
+}
+
+/// Which table an alias was declared in. Used in
+/// [`RecipientsError::DuplicateKey`] to disambiguate the diagnostic
+/// (op-vs-op vs op-vs-machine vs machine-vs-machine).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AliasKind {
+    Operator,
+    Machine,
+}
+
+impl std::fmt::Display for AliasKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AliasKind::Operator => f.write_str("operator"),
+            AliasKind::Machine => f.write_str("machine"),
+        }
+    }
 }
 
 impl Recipients {
@@ -82,8 +103,12 @@ impl Recipients {
     /// Performs all structural validation at load time:
     ///
     /// - alias collision between `[operators]` and `[machines]`;
-    /// - empty recipients list for any `[files]` entry;
-    /// - group members that reference unknown aliases;
+    /// - duplicate `Key` values across `[operators]` ∪ `[machines]`;
+    /// - operator alias appearing in `[groups]`;
+    /// - operator alias appearing in `[files].recipients`;
+    /// - empty `[groups]` member list;
+    /// - file whose effective recipient set (operators + listed) is empty;
+    /// - group members that reference unknown machine aliases;
     /// - group members that reference other groups (shallow expansion only);
     /// - `[files]` recipients that reference unknown aliases or unknown groups.
     ///
@@ -112,6 +137,7 @@ impl Recipients {
             files,
         } = raw;
 
+        // Alias-name collision across operators/machines.
         for alias in operators.keys() {
             if machines.contains_key(alias) {
                 return Err(RecipientsError::AliasCollision {
@@ -120,10 +146,40 @@ impl Recipients {
             }
         }
 
-        let alias_known = |name: &str| operators.contains_key(name) || machines.contains_key(name);
+        // Duplicate key *value* across operators + machines. Compare by the
+        // canonical Display form: a stable string identity that's uniform
+        // across X25519 and SSH variants without exposing inner pubkey
+        // bytes. O(N²) — fine for the expected handful of recipients.
+        let labelled: Vec<(&String, AliasKind, String)> = operators
+            .iter()
+            .map(|(a, k)| (a, AliasKind::Operator, k.to_string()))
+            .chain(
+                machines
+                    .iter()
+                    .map(|(a, k)| (a, AliasKind::Machine, k.to_string())),
+            )
+            .collect();
+        for i in 0..labelled.len() {
+            for j in (i + 1)..labelled.len() {
+                if labelled[i].2 == labelled[j].2 {
+                    return Err(RecipientsError::DuplicateKey {
+                        first: labelled[i].0.clone(),
+                        first_kind: labelled[i].1,
+                        second: labelled[j].0.clone(),
+                        second_kind: labelled[j].1,
+                    });
+                }
+            }
+        }
 
-        // Groups: members must be bare aliases (no nested `@group` references).
+        // Groups: non-empty; members must be machine aliases (no operators,
+        // no nested @groups).
         for (group, members) in &groups {
+            if members.is_empty() {
+                return Err(RecipientsError::EmptyGroup {
+                    group: group.clone(),
+                });
+            }
             for member in members {
                 if let Some(nested) = member.strip_prefix('@') {
                     return Err(RecipientsError::NestedGroup {
@@ -131,7 +187,13 @@ impl Recipients {
                         nested: nested.to_owned(),
                     });
                 }
-                if !alias_known(member) {
+                if operators.contains_key(member) {
+                    return Err(RecipientsError::OperatorInGroup {
+                        group: group.clone(),
+                        operator: member.clone(),
+                    });
+                }
+                if !machines.contains_key(member) {
                     return Err(RecipientsError::UnknownAliasInGroup {
                         group: group.clone(),
                         alias: member.clone(),
@@ -140,10 +202,12 @@ impl Recipients {
             }
         }
 
-        // Files: non-empty recipients; every ref resolves to a known alias or group.
+        // Files: every ref resolves to a known machine or group; operators
+        // are implicit and forbidden in the explicit list. Empty recipients
+        // is allowed iff there are operators to fill the slot.
         for (stem, entry) in &files {
-            if entry.recipients.is_empty() {
-                return Err(RecipientsError::EmptyRecipients { file: stem.clone() });
+            if entry.recipients.is_empty() && operators.is_empty() {
+                return Err(RecipientsError::EmptyEffectiveRecipients { file: stem.clone() });
             }
             for name in &entry.recipients {
                 if let Some(group) = name.strip_prefix('@') {
@@ -153,7 +217,12 @@ impl Recipients {
                             group: group.to_owned(),
                         });
                     }
-                } else if !alias_known(name) {
+                } else if operators.contains_key(name) {
+                    return Err(RecipientsError::OperatorInFileRecipients {
+                        file: stem.clone(),
+                        operator: name.clone(),
+                    });
+                } else if !machines.contains_key(name) {
                     return Err(RecipientsError::UnknownAlias {
                         file: stem.clone(),
                         alias: name.clone(),
@@ -172,9 +241,12 @@ impl Recipients {
 
     /// Resolve a file stem's recipient list into concrete age recipients.
     ///
-    /// Group references (`@name`) are expanded; duplicate aliases are
-    /// deduplicated. Returns an error only when `stem` is not in `[files]` —
-    /// all other references are validated at load time.
+    /// Order: operators in `[operators]` declaration order, then unique
+    /// machines in first-mention order through the file's recipients
+    /// (with `@group` refs expanded). Stable order keeps ciphertext
+    /// header layout deterministic for `compare_stanzas` drift detection.
+    ///
+    /// Returns an error only when `stem` is not in `[files]`.
     pub(crate) fn resolve(&self, stem: &str) -> Result<Vec<ResolvedRecipient>, ResolveError> {
         let entry = self
             .files
@@ -185,6 +257,15 @@ impl Recipients {
 
         let mut seen: BTreeSet<String> = BTreeSet::new();
         let mut out = Vec::new();
+
+        // Operators first, always.
+        for alias in self.operators.keys() {
+            if seen.insert(alias.clone()) {
+                out.push(self.lookup(alias));
+            }
+        }
+
+        // Then explicitly-listed machines (via direct ref or @group).
         for name in &entry.recipients {
             if let Some(group) = name.strip_prefix('@') {
                 let members = self.groups.get(group).expect("validated at load time");
@@ -212,13 +293,18 @@ impl Recipients {
         }
     }
 
-    /// File stems this alias can decrypt, in declaration order.
+    /// File stems this alias can decrypt, in `[files]` declaration order.
     ///
-    /// Includes every file whose `[files].recipients` list mentions `alias`
-    /// directly, or names a group that contains `alias`. Used at apply time
-    /// to pick the subset of `*.age` files the machine's identity should
-    /// attempt to decrypt.
+    /// - For an operator alias: every file in `[files]`, since operators are
+    ///   implicit recipients on every entry (including `recipients = []`).
+    /// - For a machine alias: files whose `[files].recipients` mentions the
+    ///   machine directly, or names a group containing it.
+    /// - For an unknown alias: empty.
     pub fn files_for_alias(&self, alias: &str) -> Vec<&str> {
+        if self.operators.contains_key(alias) {
+            return self.files.keys().map(String::as_str).collect();
+        }
+
         let containing_groups: BTreeSet<&str> = self
             .groups
             .iter()
@@ -304,17 +390,34 @@ pub enum RecipientsError {
     /// Alias {alias:?} declared in both [operators] and [machines]
     AliasCollision { alias: String },
 
-    /// Group {group:?} references unknown alias {alias:?}
+    /// Same pubkey declared as {first_kind} {first:?} and {second_kind} {second:?}; pubkeys must be unique across [operators] and [machines]
+    DuplicateKey {
+        first: String,
+        first_kind: AliasKind,
+        second: String,
+        second_kind: AliasKind,
+    },
+
+    /// Group {group:?} references unknown machine alias {alias:?}
     UnknownAliasInGroup { group: String, alias: String },
+
+    /// Group {group:?} references operator {operator:?}; operators are implicit recipients and cannot appear in [groups]
+    OperatorInGroup { group: String, operator: String },
 
     /// Group {group:?} references nested group @{nested}; groups cannot reference other groups
     NestedGroup { group: String, nested: String },
 
-    /// File {file:?} has an empty recipients list
-    EmptyRecipients { file: String },
+    /// Group {group:?} has an empty member list
+    EmptyGroup { group: String },
+
+    /// File {file:?} resolves to an empty recipient set: empty [files].recipients and no operators declared
+    EmptyEffectiveRecipients { file: String },
 
     /// File {file:?} references unknown alias {alias:?}
     UnknownAlias { file: String, alias: String },
+
+    /// File {file:?} references operator {operator:?}; operators are implicit recipients and cannot appear in [files] recipients
+    OperatorInFileRecipients { file: String, operator: String },
 
     /// File {file:?} references unknown group @{group}
     UnknownGroup { file: String, group: String },
@@ -330,6 +433,11 @@ pub enum ResolveError {
 mod tests {
     use super::*;
 
+    /// Stable x25519 + SSH pubkey strings for fixture toml. Real keys
+    /// (bech32 / base64 valid) so `Key::from_str` accepts them.
+    const X25519_MIKEY: &str = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa";
+    const SSH_RPI: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN alice@rust";
+
     const SAMPLE: &str = r#"
 [operators]
 mikey = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa"
@@ -338,11 +446,12 @@ mikey = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa"
 rpi = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN alice@rust"
 
 [groups]
-operators = ["mikey"]
+prod = ["rpi"]
 
 [files]
-"api_token" = { recipients = ["@operators", "rpi"] }
-"db_pw" = { recipients = ["@operators"] }
+"api_token" = { recipients = ["@prod"] }
+"db_pw" = { recipients = ["rpi"] }
+"local_only" = { recipients = [] }
 "#;
 
     fn parse_toml(s: &str) -> Result<Recipients, RecipientsError> {
@@ -354,195 +463,397 @@ operators = ["mikey"]
         parse_toml(SAMPLE).unwrap()
     }
 
-    #[test]
-    fn parses_operators_machines_groups_files() {
-        let r = parse();
-        assert_eq!(r.operators.len(), 1);
-        assert_eq!(r.machines.len(), 1);
-        assert!(matches!(r.operators["mikey"], Key::X25519(_)));
-        assert!(matches!(r.machines["rpi"], Key::Ssh(_)));
-        assert_eq!(r.groups["operators"], vec!["mikey"]);
-        assert_eq!(r.files.len(), 2);
-    }
-
-    #[test]
-    fn resolves_file_with_group_and_alias() {
-        let r = parse();
-        let recipients = r.resolve("api_token").unwrap();
-        let aliases: Vec<&str> = recipients.iter().map(|x| x.alias.as_str()).collect();
-        assert_eq!(aliases, vec!["mikey", "rpi"]);
-    }
-
-    #[test]
-    fn deduplicates_across_expansion() {
-        let r = parse_toml(
-            r#"
-[operators]
-a = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa"
-
-[groups]
-g = ["a"]
-
-[files]
-"f" = { recipients = ["a", "@g", "a"] }
-"#,
-        )
-        .unwrap();
-        let recipients = r.resolve("f").unwrap();
-        assert_eq!(recipients.len(), 1);
-    }
-
-    #[test]
-    fn unknown_file_at_resolve() {
-        let r = parse();
-        assert!(matches!(
-            r.resolve("nope").unwrap_err(),
-            ResolveError::UnknownFile { .. }
-        ));
-    }
-
-    #[test]
-    fn unknown_alias_is_load_error() {
-        let err = parse_toml(
-            r#"
-[operators]
-a = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa"
-[files]
-"f" = { recipients = ["b"] }
-"#,
-        )
-        .unwrap_err();
-        assert!(matches!(err, RecipientsError::UnknownAlias { .. }));
-    }
-
-    #[test]
-    fn unknown_group_is_load_error() {
-        let err = parse_toml(
-            r#"
-[operators]
-a = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa"
-[files]
-"f" = { recipients = ["@bogus"] }
-"#,
-        )
-        .unwrap_err();
-        assert!(matches!(err, RecipientsError::UnknownGroup { .. }));
-    }
-
-    #[test]
-    fn alias_collision_errors() {
-        let err = parse_toml(
-            r#"
-[operators]
-dup = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa"
-
-[machines]
-dup = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN alice@rust"
-"#,
-        )
-        .unwrap_err();
-        assert!(matches!(err, RecipientsError::AliasCollision { .. }));
-    }
-
-    #[test]
-    fn nested_group_is_load_error() {
-        let err = parse_toml(
-            r#"
-[operators]
-a = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa"
-
-[groups]
-g1 = ["a"]
-g2 = ["@g1"]
-"#,
-        )
-        .unwrap_err();
-        assert!(matches!(err, RecipientsError::NestedGroup { .. }));
-    }
-
-    #[test]
-    fn empty_recipients_is_load_error() {
-        let err = parse_toml(
-            r#"
-[operators]
-a = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa"
-[files]
-"f" = { recipients = [] }
-"#,
-        )
-        .unwrap_err();
-        assert!(matches!(err, RecipientsError::EmptyRecipients { .. }));
-    }
-
-    /// Two real x25519 public keys derived at runtime — some of the
-    /// hand-rolled `age1...` strings in early drafts failed bech32 checksum.
+    /// Two real, distinct x25519 public keys. Generated per-call so they
+    /// vary between tests; keys equal across two calls would defeat the
+    /// duplicate-key tests.
     fn two_pubkeys() -> (String, String) {
         let a = age::x25519::Identity::generate().to_public().to_string();
         let b = age::x25519::Identity::generate().to_public().to_string();
         (a, b)
     }
 
-    #[test]
-    fn files_for_alias_direct() {
-        let (a, b) = two_pubkeys();
-        let toml = format!(
-            r#"
-[operators]
-a = "{a}"
-b = "{b}"
-[files]
-"a_only" = {{ recipients = ["a"] }}
-"b_only" = {{ recipients = ["b"] }}
-"#
-        );
-        let r = parse_toml(&toml).unwrap();
-        assert_eq!(r.files_for_alias("a"), vec!["a_only"]);
-        assert_eq!(r.files_for_alias("b"), vec!["b_only"]);
-    }
+    // -- shape & happy-path resolve ------------------------------------
 
     #[test]
-    fn files_for_alias_via_group() {
+    fn parses_sample() {
         let r = parse();
-        assert_eq!(r.files_for_alias("mikey"), vec!["api_token", "db_pw"]);
+        assert_eq!(r.operators.len(), 1);
+        assert_eq!(r.machines.len(), 1);
+        assert_eq!(r.groups["prod"], vec!["rpi"]);
+        assert_eq!(r.files.len(), 3);
+    }
+
+    fn resolved_aliases(r: &Recipients, stem: &str) -> Vec<String> {
+        r.resolve(stem)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.alias)
+            .collect()
     }
 
     #[test]
-    fn files_for_alias_multiple_groups() {
-        let (a, b) = two_pubkeys();
-        let toml = format!(
+    fn resolve_prepends_operators() {
+        let r = parse();
+        assert_eq!(resolved_aliases(&r, "api_token"), vec!["mikey", "rpi"]);
+    }
+
+    #[test]
+    fn resolve_operator_only_file() {
+        // `local_only` has empty recipients — only operators should remain.
+        let r = parse();
+        assert_eq!(resolved_aliases(&r, "local_only"), vec!["mikey"]);
+    }
+
+    #[test]
+    fn resolve_dedups_machine_via_direct_and_group() {
+        // `rpi` is mentioned both directly and via `@prod` — should appear
+        // once, in first-mention position (direct).
+        let r = parse_toml(&format!(
             r#"
 [operators]
-a = "{a}"
-b = "{b}"
+mikey = "{X25519_MIKEY}"
+
+[machines]
+rpi = "{SSH_RPI}"
 
 [groups]
-g1 = ["a"]
-g2 = ["a", "b"]
+prod = ["rpi"]
 
 [files]
-"only_g1" = {{ recipients = ["@g1"] }}
-"only_g2" = {{ recipients = ["@g2"] }}
-"both" = {{ recipients = ["@g1", "@g2"] }}
-"#
-        );
-        let r = parse_toml(&toml).unwrap();
-        assert_eq!(r.files_for_alias("a"), vec!["only_g1", "only_g2", "both"]);
-        assert_eq!(r.files_for_alias("b"), vec!["only_g2", "both"]);
+"f" = {{ recipients = ["rpi", "@prod", "rpi"] }}
+"#,
+        ))
+        .unwrap();
+        assert_eq!(resolved_aliases(&r, "f"), vec!["mikey", "rpi"]);
     }
 
     #[test]
-    fn files_for_alias_excluded() {
-        let (a, b) = two_pubkeys();
-        let toml = format!(
+    fn resolve_unknown_file_errors() {
+        assert!(matches!(
+            parse().resolve("nope").unwrap_err(),
+            ResolveError::UnknownFile { .. }
+        ));
+    }
+
+    // -- files_for_alias -----------------------------------------------
+
+    #[test]
+    fn files_for_alias_operator_returns_every_file() {
+        // Operators are implicit on every file, including ones with empty
+        // recipients lists.
+        let r = parse();
+        assert_eq!(
+            r.files_for_alias("mikey"),
+            vec!["api_token", "db_pw", "local_only"]
+        );
+    }
+
+    #[test]
+    fn files_for_alias_machine_filters() {
+        // Both machines parameterised as x25519 — `Key` allows either
+        // variant in `[machines]`, and using two fresh x25519 keys
+        // sidesteps needing a second SSH keypair just for this fixture.
+        let (op, m1) = two_pubkeys();
+        let m2 = age::x25519::Identity::generate().to_public().to_string();
+        let r = parse_toml(&format!(
             r#"
 [operators]
-a = "{a}"
-b = "{b}"
+op = "{op}"
+
+[machines]
+m1 = "{m1}"
+m2 = "{m2}"
+
 [files]
-"only_a" = {{ recipients = ["a"] }}
-"#
-        );
-        let r = parse_toml(&toml).unwrap();
-        assert!(r.files_for_alias("b").is_empty());
+"only_m1" = {{ recipients = ["m1"] }}
+"only_m2" = {{ recipients = ["m2"] }}
+"#,
+        ))
+        .unwrap();
+        assert_eq!(r.files_for_alias("m1"), vec!["only_m1"]);
+        assert_eq!(r.files_for_alias("m2"), vec!["only_m2"]);
+    }
+
+    #[test]
+    fn files_for_alias_unknown_returns_empty() {
+        let r = parse();
+        assert!(r.files_for_alias("nobody").is_empty());
+    }
+
+    /// Regression: `files_for_alias` for a machine alias must follow
+    /// `@group` references in `[files].recipients`. With the implicit-
+    /// operators schema there's no longer an "operator-group" path, but
+    /// machine groups still need to expand.
+    #[test]
+    fn files_for_alias_machine_via_group() {
+        let (op, m1) = two_pubkeys();
+        let m2 = age::x25519::Identity::generate().to_public().to_string();
+        let r = parse_toml(&format!(
+            r#"
+[operators]
+op = "{op}"
+
+[machines]
+m1 = "{m1}"
+m2 = "{m2}"
+
+[groups]
+prod = ["m1", "m2"]
+
+[files]
+"via_group"  = {{ recipients = ["@prod"] }}
+"via_direct" = {{ recipients = ["m1"] }}
+"#,
+        ))
+        .unwrap();
+        // m1 is a recipient on both files; m2 only on `via_group`.
+        assert_eq!(r.files_for_alias("m1"), vec!["via_group", "via_direct"]);
+        assert_eq!(r.files_for_alias("m2"), vec!["via_group"]);
+    }
+
+    // -- validation: structural ----------------------------------------
+
+    #[test]
+    fn alias_collision_errors() {
+        let err = parse_toml(&format!(
+            r#"
+[operators]
+dup = "{X25519_MIKEY}"
+
+[machines]
+dup = "{SSH_RPI}"
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(err, RecipientsError::AliasCollision { .. }));
+    }
+
+    #[test]
+    fn duplicate_key_op_op_errors() {
+        let (a, _) = two_pubkeys();
+        let err = parse_toml(&format!(
+            r#"
+[operators]
+alpha = "{a}"
+beta  = "{a}"
+"#,
+        ))
+        .unwrap_err();
+        match err {
+            RecipientsError::DuplicateKey {
+                first_kind,
+                second_kind,
+                ..
+            } => {
+                assert_eq!(first_kind, AliasKind::Operator);
+                assert_eq!(second_kind, AliasKind::Operator);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_key_op_machine_errors() {
+        // Same SSH pubkey under both an operator and a machine alias.
+        let err = parse_toml(&format!(
+            r#"
+[operators]
+op = "{SSH_RPI}"
+
+[machines]
+m  = "{SSH_RPI}"
+"#,
+        ))
+        .unwrap_err();
+        match err {
+            RecipientsError::DuplicateKey {
+                first_kind,
+                second_kind,
+                ..
+            } => {
+                assert_eq!(first_kind, AliasKind::Operator);
+                assert_eq!(second_kind, AliasKind::Machine);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    // -- validation: groups --------------------------------------------
+
+    #[test]
+    fn nested_group_errors() {
+        let err = parse_toml(&format!(
+            r#"
+[operators]
+op = "{X25519_MIKEY}"
+
+[machines]
+m = "{SSH_RPI}"
+
+[groups]
+g1 = ["m"]
+g2 = ["@g1"]
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(err, RecipientsError::NestedGroup { .. }));
+    }
+
+    #[test]
+    fn empty_group_errors() {
+        let err = parse_toml(&format!(
+            r#"
+[operators]
+op = "{X25519_MIKEY}"
+
+[groups]
+g = []
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(err, RecipientsError::EmptyGroup { .. }));
+    }
+
+    #[test]
+    fn operator_in_group_errors() {
+        let err = parse_toml(&format!(
+            r#"
+[operators]
+op = "{X25519_MIKEY}"
+
+[machines]
+m = "{SSH_RPI}"
+
+[groups]
+g = ["op", "m"]
+"#,
+        ))
+        .unwrap_err();
+        match err {
+            RecipientsError::OperatorInGroup { group, operator } => {
+                assert_eq!(group, "g");
+                assert_eq!(operator, "op");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_alias_in_group_errors() {
+        let err = parse_toml(&format!(
+            r#"
+[operators]
+op = "{X25519_MIKEY}"
+
+[groups]
+g = ["mystery"]
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(err, RecipientsError::UnknownAliasInGroup { .. }));
+    }
+
+    // -- validation: files ---------------------------------------------
+
+    #[test]
+    fn unknown_alias_in_files_errors() {
+        let err = parse_toml(&format!(
+            r#"
+[operators]
+op = "{X25519_MIKEY}"
+
+[files]
+"f" = {{ recipients = ["bogus"] }}
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(err, RecipientsError::UnknownAlias { .. }));
+    }
+
+    #[test]
+    fn unknown_group_in_files_errors() {
+        let err = parse_toml(&format!(
+            r#"
+[operators]
+op = "{X25519_MIKEY}"
+
+[files]
+"f" = {{ recipients = ["@bogus"] }}
+"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(err, RecipientsError::UnknownGroup { .. }));
+    }
+
+    #[test]
+    fn operator_in_file_recipients_errors() {
+        let err = parse_toml(&format!(
+            r#"
+[operators]
+op = "{X25519_MIKEY}"
+
+[machines]
+m = "{SSH_RPI}"
+
+[files]
+"f" = {{ recipients = ["op", "m"] }}
+"#,
+        ))
+        .unwrap_err();
+        match err {
+            RecipientsError::OperatorInFileRecipients { file, operator } => {
+                assert_eq!(file, "f");
+                assert_eq!(operator, "op");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_recipients_with_operators_is_valid() {
+        // The whole point of the implicit-operators rule.
+        let r = parse_toml(&format!(
+            r#"
+[operators]
+op = "{X25519_MIKEY}"
+
+[files]
+"only_op" = {{ recipients = [] }}
+"#,
+        ))
+        .unwrap();
+        assert_eq!(resolved_aliases(&r, "only_op"), vec!["op"]);
+    }
+
+    #[test]
+    fn empty_recipients_without_operators_errors() {
+        let err = parse_toml(
+            r#"
+[files]
+"orphan" = { recipients = [] }
+"#,
+        )
+        .unwrap_err();
+        match err {
+            RecipientsError::EmptyEffectiveRecipients { file } => assert_eq!(file, "orphan"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_operators_with_machine_recipients_is_valid() {
+        // `[operators]` may be empty as long as every file names at least
+        // one machine.
+        let r = parse_toml(&format!(
+            r#"
+[machines]
+m = "{SSH_RPI}"
+
+[files]
+"f" = {{ recipients = ["m"] }}
+"#,
+        ))
+        .unwrap();
+        assert_eq!(r.resolve("f").unwrap().len(), 1);
     }
 }

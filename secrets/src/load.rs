@@ -144,8 +144,12 @@ mod tests {
         assert_eq!(secrets.len(), 2);
     }
 
+    /// Operators are implicit recipients on every `[files]` entry, so a
+    /// host-mode load with the operator identity decrypts every file —
+    /// including ones whose `recipients` list doesn't name an operator
+    /// (which it can't, under the current schema).
     #[tokio::test]
-    async fn host_mode_filters_by_alias() {
+    async fn host_mode_decrypts_every_file_for_operator() {
         let id = age::x25519::Identity::generate();
         let pub_key = id.to_public().to_string();
         let dir = TempDir::new().unwrap();
@@ -157,21 +161,24 @@ mod tests {
                 r#"
 [operators]
 me = "{pub_key}"
+
 [files]
-"mine" = {{ recipients = ["me"] }}
+"mine"      = {{ recipients = [] }}
+"shared"    = {{ recipients = [] }}
 "#
             ),
         )
         .unwrap();
 
-        let ct =
-            encrypt_bytes(&[Box::new(id.to_public())], Path::new("mine"), b"hunter22").unwrap();
-        std::fs::write(dir.path().join("mine.age"), &ct).unwrap();
+        for (stem, value) in &[("mine", b"hunter22" as &[u8]), ("shared", b"shareme!")] {
+            let ct = encrypt_bytes(&[Box::new(id.to_public())], Path::new(stem), value).unwrap();
+            std::fs::write(dir.path().join(format!("{stem}.age")), &ct).unwrap();
+        }
 
         let secrets = Secrets::load(dir.path(), Some(&identity_path), false)
             .await
             .unwrap();
-        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets.len(), 2);
         assert_eq!(
             secrets.get("mine").unwrap().expose_secret().as_str(),
             "hunter22"
@@ -192,8 +199,9 @@ me = "{pub_key}"
                 r#"
 [operators]
 listed = "{listed_pub}"
+
 [files]
-"x" = {{ recipients = ["listed"] }}
+"x" = {{ recipients = [] }}
 "#
             ),
         )

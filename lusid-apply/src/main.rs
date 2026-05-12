@@ -22,6 +22,13 @@ struct Cli {
     plan_path: PathBuf,
 
     /// Parameters as a JSON string (top-level object).
+    ///
+    /// SECURITY: this string lands in the process's `argv[]` and is
+    /// visible to any UID on the host via `/proc/<pid>/cmdline` (and
+    /// `ps`). Do NOT pass secret values here. For sensitive material,
+    /// use the `@core/secret` resource — it resolves plaintext from
+    /// the decrypted bundle on `Context`, which never crosses an
+    /// argv boundary.
     #[arg(long = "params")]
     params_json: Option<String>,
 

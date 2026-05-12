@@ -12,14 +12,12 @@
 //!
 //! Under the hood this delegates to `@core/file`'s state/change/operation
 //! machinery — the atoms produced are ordinary [`FileResource::Secret`]
-//! variants, so downstream scheduling and application are identical. Only
-//! the default permissions and the intent expressed by the plan author differ.
+//! variants, so downstream scheduling and application are identical.
 //!
-//! Note(cc): not as strict as agenix's model (which decrypts onto a tmpfs
-//! mount, forces `0400`, root-owned). Those are bigger moves — tmpfs needs
-//! an operation that can mount/unmount, and root-owned doesn't work for the
-//! current `lusid local apply` running under the logged-in user. Revisit
-//! when remote/dev apply lands.
+//! `path` is required and must be an absolute path on the target. Prefer
+//! a `/run/...` (tmpfs) location when the consumer doesn't need the
+//! plaintext to survive reboots — that keeps plaintext out of backups
+//! and off persistent disk.
 
 use std::fmt::{self, Display};
 

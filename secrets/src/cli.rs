@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use clap::Subcommand;
 use displaydoc::Display;
 use secrecy::ExposeSecret;
+use secrecy::zeroize::Zeroizing;
 use thiserror::Error;
 use tokio::fs;
 use tokio::process::Command;
@@ -95,16 +96,15 @@ async fn cmd_ls(env: &CliEnv) -> Result<(), CliError> {
     if recipients.files.is_empty() {
         return Ok(());
     }
-    let width = recipients
-        .files
-        .keys()
-        .map(String::len)
-        .max()
-        .unwrap_or(0)
-        .max(4);
-    for (stem, entry) in &recipients.files {
-        let list = entry.recipients.join(", ");
-        println!("{stem:<width$}  {list}");
+    for stem in recipients.files.keys() {
+        // resolve() can't fail — we just iterated the keys, so the stem
+        // is in [files] by construction. Validation at load time pinned
+        // every reference.
+        let resolved = recipients
+            .resolve(stem)
+            .expect("stem from files.keys() is always resolvable");
+        let aliases: Vec<&str> = resolved.iter().map(|r| r.alias.as_str()).collect();
+        println!("{stem}  {}", aliases.join(", "));
     }
     Ok(())
 }
@@ -274,7 +274,11 @@ async fn cmd_keygen(output: Option<&Path>) -> Result<(), CliError> {
     let pubkey = identity.to_public();
     let privkey = identity.to_string();
 
-    let mut contents = String::new();
+    // Wrap the file body in `Zeroizing<String>` so the bytes are scrubbed
+    // when the function returns. Without this, the plain `String`
+    // holding the private-key block would just be deallocated on drop —
+    // contents potentially lingering in freed heap until reused.
+    let mut contents: Zeroizing<String> = Zeroizing::new(String::new());
     contents.push_str(&format!("# created at unix:{}\n", now_unix_secs()));
     contents.push_str(&format!("# public key: {pubkey}\n"));
     contents.push_str(privkey.expose_secret());
