@@ -87,6 +87,13 @@ impl Handler for HostKeyHandler {
             // Known host with matching key.
             Ok(true) => Ok(true),
             // Host not in `known_hosts` — trust on first use and record it.
+            //
+            // Note(cc): `learn_known_hosts_path` opens with `append + create`
+            // and does *not* take a file lock, so two `lusid remote apply`
+            // invocations to two previously-unseen hosts could interleave
+            // their appended lines. Lusid's expected usage is sequential
+            // (one operator, one apply at a time), so we accept the gap; if
+            // we ever support parallel applies, wrap this in a file lock.
             Ok(false) => {
                 russh::keys::known_hosts::learn_known_hosts_path(
                     host,

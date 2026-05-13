@@ -49,6 +49,14 @@ pub struct MachineVmOptions {
 /// The non-root case requires the target to have passwordless sudo for the
 /// SSH user, since the guest needs root to read
 /// `/etc/ssh/ssh_host_ed25519_key` (the per-target age identity).
+///
+/// TODO(cc): the target age identity is hardcoded to
+/// `/etc/ssh/ssh_host_ed25519_key` both at the CLI invocation (in
+/// `cmd_remote_apply`) and implicitly in the operator's `[machines]`
+/// recipient setup. Targets with only `ssh-rsa` host keys silently won't
+/// decrypt. If we ever care about that, add a `host_key: Option<PathBuf>`
+/// field here — making it optional from day one avoids a breaking config
+/// change later.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Remote {

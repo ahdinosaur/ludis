@@ -38,8 +38,7 @@ use lusid_ctx::Context;
 use lusid_machine::Remote;
 use lusid_secrets::cli::{CliEnv as SecretsCliEnv, CliError as SecretsCliError, SecretsCommand};
 use lusid_secrets::{
-    MachinePubkeyError, RecipientsError, ReencryptForTargetError, machine_pubkey,
-    reencrypt_for_target,
+    RecipientsError, ReencryptForTargetError, reencrypt_for_declared_machine, reencrypt_for_target,
 };
 use lusid_ssh::{
     HostKeyVerification, Ssh, SshConnectOptions, SshError, SshKeypairError, SshVolume,
@@ -206,6 +205,13 @@ pub enum AppError {
     #[error("HOME env var is unset and no `ssh_key` configured for remote machine")]
     HomeUnset,
 
+    #[error("failed to ensure SSH config directory exists at {}: {source}", path.display())]
+    EnsureSshDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error(
         "cannot expand leading `~` in {path}: only `~` and `~/...` are supported \
          (no `~user` syntax)",
@@ -220,9 +226,7 @@ pub enum AppError {
     InvalidSshUser { user: String },
 
     #[error(
-        "failed to load operator SSH private key from {}: {source}\n\
-         hint: passphrase-protected keys are not supported (v1); decrypt with \
-         `ssh-keygen -p -f <path>` or use an unencrypted key",
+        "failed to load operator SSH private key from {}: {source}",
         path.display()
     )]
     LoadOperatorKey {
@@ -231,14 +235,19 @@ pub enum AppError {
         source: SshKeypairError,
     },
 
+    #[error(
+        "operator SSH private key at {} is passphrase-protected, which is \
+         unsupported in v1; decrypt with `ssh-keygen -p -f <path>` or use an \
+         unencrypted key",
+        path.display()
+    )]
+    LoadOperatorKeyEncrypted { path: PathBuf },
+
     #[error("failed to bootstrap /var/lib/lusid on target (sudo -n exit {exit:?}): {stderr}")]
     BootstrapRemoteDir { exit: Option<u32>, stderr: String },
 
     #[error("failed to install lusid-apply on target (sudo -n exit {exit:?}): {stderr}")]
     InstallApplyBinary { exit: Option<u32>, stderr: String },
-
-    #[error(transparent)]
-    MachinePubkey(#[from] MachinePubkeyError),
 }
 
 /// Resolve the config path (CLI flag → `LUSID_CONFIG` env → CWD → `.`) and
@@ -391,8 +400,23 @@ async fn cmd_remote_apply(
     }
 
     // 2. Pre-cleanup: drop any leftover ciphertexts from a previous run.
-    //    Best-effort — never fail the apply over this.
-    let _ = clear_remote_secrets_dir(&mut ssh, &guest_secrets_dir, remote.is_root()).await;
+    //    Best-effort — never fail the apply over this. We log either way so a
+    //    silent failure doesn't strand stale `.age` files alongside whatever
+    //    we're about to upload; if we know we're about to forward secrets,
+    //    escalate to `warn!` because we'd be writing into a dir whose state
+    //    we couldn't confirm.
+    if let Err(err) = clear_remote_secrets_dir(&mut ssh, &guest_secrets_dir, remote.is_root()).await
+    {
+        if identity_path.is_some() {
+            tracing::warn!(
+                ?err,
+                "pre-apply secrets dir cleanup failed; new ciphertexts may \
+                 land alongside leftovers from a previous run"
+            );
+        } else {
+            tracing::debug!(?err, "pre-apply secrets dir cleanup failed");
+        }
+    }
 
     // 3. Re-encrypt secrets per-target if --identity supplied AND machine is
     //    listed in lusid-secrets.toml. Missing toml or absent [machines]
@@ -401,11 +425,8 @@ async fn cmd_remote_apply(
     //    secrets. Plans that reference @core/secret will fail at apply time
     //    with a clear missing-secret error.
     let forward_secrets = if let Some(host_identity_path) = identity_path.as_deref() {
-        match machine_pubkey(&secrets_dir, &machine_id).await {
-            Ok(pubkey) => {
-                let reencrypted =
-                    reencrypt_for_target(host_identity_path, &secrets_dir, &machine_id, &pubkey)
-                        .await?;
+        match reencrypt_for_declared_machine(host_identity_path, &secrets_dir, &machine_id).await {
+            Ok(reencrypted) => {
                 for secret in &reencrypted {
                     ssh.sync(SshVolume::FileBytes {
                         local: secret.ciphertext.clone(),
@@ -416,8 +437,8 @@ async fn cmd_remote_apply(
                 }
                 !reencrypted.is_empty()
             }
-            Err(MachinePubkeyError::Recipients(RecipientsError::Missing { .. })) => false,
-            Err(MachinePubkeyError::UnknownMachine { machine_id }) => {
+            Err(ReencryptForTargetError::Recipients(RecipientsError::Missing { .. })) => false,
+            Err(ReencryptForTargetError::UnknownMachine { machine_id }) => {
                 tracing::warn!(
                     machine_id,
                     "machine not in [machines] in lusid-secrets.toml; \
@@ -551,14 +572,24 @@ async fn cmd_remote_ssh(config: Config, machine_id: String) -> Result<(), AppErr
 /// Connect to the remote SSH endpoint using the operator's private key.
 async fn connect_remote(remote: &Remote) -> Result<Ssh, AppError> {
     let key_path = resolve_ssh_key_path(remote)?;
-    let private_key =
-        load_private_key(&key_path)
-            .await
-            .map_err(|source| AppError::LoadOperatorKey {
-                path: key_path.clone(),
+    // Classify a passphrase-protected key separately from generic load
+    // failures. The hint about `ssh-keygen -p` is actionable only in that
+    // specific case; surfacing it on file-not-found or garbage-bytes would
+    // mislead the operator.
+    let private_key = match load_private_key(&key_path).await {
+        Ok(k) => k,
+        Err(source) if source.is_encrypted() => {
+            return Err(AppError::LoadOperatorKeyEncrypted { path: key_path });
+        }
+        Err(source) => {
+            return Err(AppError::LoadOperatorKey {
+                path: key_path,
                 source,
-            })?;
+            });
+        }
+    };
     let known_hosts_path = resolve_known_hosts_path()?;
+    ensure_known_hosts_parent(&known_hosts_path)?;
     let host = remote.host.clone();
     let port = remote.port();
     let ssh = Ssh::connect(SshConnectOptions {
@@ -585,6 +616,30 @@ fn resolve_known_hosts_path() -> Result<PathBuf, AppError> {
         .filter(|h| !h.is_empty())
         .ok_or(AppError::HomeUnset)?;
     Ok(PathBuf::from(home).join(".ssh/known_hosts"))
+}
+
+/// Ensure `~/.ssh/` exists at mode `0700` so russh's `learn_known_hosts_path`
+/// (which would otherwise `create_dir_all` at umask-default `0755`) doesn't
+/// leave the operator with a too-permissive directory on first run. Idempotent:
+/// `DirBuilder::create` with `recursive(true)` no-ops on an existing path
+/// without mutating its mode, so an operator who has intentionally set a
+/// different mode (e.g. `0750` for a shared system) keeps it.
+fn ensure_known_hosts_parent(known_hosts_path: &Path) -> Result<(), AppError> {
+    use std::os::unix::fs::DirBuilderExt;
+    let Some(parent) = known_hosts_path.parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)
+        .map_err(|source| AppError::EnsureSshDir {
+            path: parent.to_path_buf(),
+            source,
+        })
 }
 
 /// Resolve the operator's SSH private key path: `remote.ssh_key` (with `~`
@@ -876,7 +931,9 @@ async fn cmd_dev_apply(
 
     tui(&mut handle.stdout, &mut handle.stderr, wait).await?;
 
-    ssh.disconnect().await?;
+    if let Err(err) = ssh.disconnect().await {
+        tracing::debug!(?err, "ssh disconnect failed");
+    }
 
     Ok(())
 }
@@ -916,7 +973,9 @@ async fn cmd_dev_ssh(config: Config, machine_id: String) -> Result<(), AppError>
 
     let _exit_code = ssh.terminal().await?;
 
-    ssh.disconnect().await?;
+    if let Err(err) = ssh.disconnect().await {
+        tracing::debug!(?err, "ssh disconnect failed");
+    }
 
     Ok(())
 }

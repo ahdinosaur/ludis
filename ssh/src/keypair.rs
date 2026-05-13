@@ -16,6 +16,19 @@ pub enum SshKeypairError {
     RusshKey(#[from] russh::keys::ssh_key::Error),
 }
 
+impl SshKeypairError {
+    /// True iff the underlying ssh-key error indicates a
+    /// passphrase-protected private key. Callers (e.g. `lusid`) branch on
+    /// this to surface a "decrypt the key first" hint without taking a
+    /// direct dependency on russh's error types.
+    pub fn is_encrypted(&self) -> bool {
+        matches!(
+            self,
+            SshKeypairError::RusshKey(russh::keys::ssh_key::Error::Encrypted)
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SshKeypair {
     pub public_key: PublicKey,
@@ -181,5 +194,15 @@ mod tests {
             .unwrap();
         let err = load_private_key(&path).await.unwrap_err();
         assert!(matches!(err, SshKeypairError::RusshKey(_)));
+        // Garbage bytes are NOT a passphrase-protected key; the classifier
+        // must say no so callers don't surface a misleading "decrypt with
+        // ssh-keygen -p" hint.
+        assert!(!err.is_encrypted());
+    }
+
+    #[test]
+    fn is_encrypted_true_for_encrypted_variant() {
+        let err: SshKeypairError = russh::keys::ssh_key::Error::Encrypted.into();
+        assert!(err.is_encrypted());
     }
 }

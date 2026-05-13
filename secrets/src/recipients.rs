@@ -333,28 +333,6 @@ impl Recipients {
     }
 }
 
-/// Public-key string for a machine alias, suitable as the `target_pubkey`
-/// argument to [`reencrypt_for_target`](crate::reencrypt_for_target).
-///
-/// Loads `<secrets_dir>/lusid-secrets.toml`, looks up `machine_id` in
-/// `[machines]`, and serializes the parsed key back to its canonical
-/// `age1...` / `ssh-ed25519 ...` form. Used by `lusid remote apply` to
-/// resolve the target machine's recipient before per-target re-encryption.
-#[tracing::instrument(skip(secrets_dir))]
-pub async fn machine_pubkey(
-    secrets_dir: &Path,
-    machine_id: &str,
-) -> Result<String, MachinePubkeyError> {
-    let recipients = Recipients::load(secrets_dir).await?;
-    recipients
-        .machines
-        .get(machine_id)
-        .map(|key| key.to_string())
-        .ok_or_else(|| MachinePubkeyError::UnknownMachine {
-            machine_id: machine_id.to_owned(),
-        })
-}
-
 /// One recipient for a specific file, carrying its alias for display.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedRecipient {
@@ -449,15 +427,6 @@ pub enum RecipientsError {
 pub enum ResolveError {
     /// No [files] entry for {stem:?}
     UnknownFile { stem: String },
-}
-
-#[derive(Debug, Error, Display)]
-pub enum MachinePubkeyError {
-    /// {0}
-    Recipients(#[from] RecipientsError),
-
-    /// No [machines] entry for {machine_id:?} in lusid-secrets.toml
-    UnknownMachine { machine_id: String },
 }
 
 #[cfg(test)]
@@ -886,77 +855,5 @@ m = "{SSH_RPI}"
         ))
         .unwrap();
         assert_eq!(r.resolve("f").unwrap().len(), 1);
-    }
-
-    /// Two SSH public keys, one with a trailing comment. Used to confirm the
-    /// `Display`/`from_str` round-trip is canonical (comment dropped).
-    const SSH_PUBKEY_NO_COMMENT: &str =
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN";
-    const SSH_PUBKEY_WITH_COMMENT: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN alice@rust";
-
-    #[tokio::test]
-    async fn machine_pubkey_returns_ssh_key() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("lusid-secrets.toml"),
-            format!(
-                r#"[machines]
-rpi = "{SSH_PUBKEY_WITH_COMMENT}"
-"#
-            ),
-        )
-        .unwrap();
-        let key = machine_pubkey(dir.path(), "rpi").await.unwrap();
-        // SSH key Display drops the comment but preserves type+body.
-        assert!(key.starts_with("ssh-ed25519 "));
-        // Round-trip: result must parse back into the same Key variant.
-        let _: Key = key.parse().unwrap();
-    }
-
-    #[tokio::test]
-    async fn machine_pubkey_returns_age_key() {
-        let id = age::x25519::Identity::generate();
-        let pubkey = id.to_public().to_string();
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("lusid-secrets.toml"),
-            format!(
-                r#"[machines]
-host-a = "{pubkey}"
-"#
-            ),
-        )
-        .unwrap();
-        let key = machine_pubkey(dir.path(), "host-a").await.unwrap();
-        assert_eq!(key, pubkey);
-    }
-
-    #[tokio::test]
-    async fn machine_pubkey_unknown_machine_errors() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("lusid-secrets.toml"),
-            format!(
-                r#"[machines]
-rpi = "{SSH_PUBKEY_NO_COMMENT}"
-"#
-            ),
-        )
-        .unwrap();
-        let err = machine_pubkey(dir.path(), "missing").await.unwrap_err();
-        assert!(matches!(
-            err,
-            MachinePubkeyError::UnknownMachine { ref machine_id } if machine_id == "missing"
-        ));
-    }
-
-    #[tokio::test]
-    async fn machine_pubkey_missing_toml_errors() {
-        let dir = tempfile::TempDir::new().unwrap();
-        let err = machine_pubkey(dir.path(), "anything").await.unwrap_err();
-        assert!(matches!(
-            err,
-            MachinePubkeyError::Recipients(RecipientsError::Missing { .. })
-        ));
     }
 }
