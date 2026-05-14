@@ -262,3 +262,199 @@ where
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PlanId;
+    use lusid_operation::operations::command::{CommandExecutor, CommandOperation};
+    use std::path::PathBuf;
+
+    fn handler_op() -> Operation {
+        Operation::Command(CommandOperation {
+            command: "true".to_string(),
+            executor: CommandExecutor::Shell,
+        })
+    }
+
+    fn some_leaf() -> PlanTree<Option<Operation>> {
+        Tree::Leaf {
+            meta: PlanMeta::default(),
+            node: Some(handler_op()),
+        }
+    }
+
+    fn none_leaf() -> PlanTree<Option<Operation>> {
+        Tree::Leaf {
+            meta: PlanMeta::default(),
+            node: None,
+        }
+    }
+
+    fn plan_item_id(item: &str) -> PlanNodeId {
+        PlanNodeId::PlanItem {
+            plan_id: PlanId::Path(PathBuf::from("test.lusid")),
+            item_id: item.to_string(),
+        }
+    }
+
+    #[test]
+    fn no_handlers_passes_through() {
+        let tree = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(plan_item_id("a")),
+                ..PlanMeta::default()
+            },
+            children: vec![some_leaf()],
+        };
+        let result = inject_handlers(tree);
+        // Same structure: one branch with one leaf child.
+        let Tree::Branch { children, .. } = result else {
+            panic!("expected branch");
+        };
+        assert_eq!(children.len(), 1);
+        assert!(matches!(children[0], Tree::Leaf { .. }));
+    }
+
+    #[test]
+    fn handlers_with_descendant_change_wrap() {
+        let tree = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(plan_item_id("nginx-conf")),
+                handlers: vec![handler_op()],
+                ..PlanMeta::default()
+            },
+            children: vec![some_leaf(), none_leaf()],
+        };
+        let Tree::Branch {
+            meta: outer_meta,
+            children: outer_children,
+        } = inject_handlers(tree)
+        else {
+            panic!("expected outer branch");
+        };
+
+        // Outer branch keeps the original plan-item id but drops handlers.
+        assert!(outer_meta.handlers.is_empty(), "outer handlers cleared");
+        assert!(
+            matches!(&outer_meta.id, Some(PlanNodeId::PlanItem { item_id, .. }) if item_id == "nginx-conf"),
+            "outer branch retains plan-item id"
+        );
+        assert_eq!(outer_children.len(), 2, "anchor branch + 1 handler leaf");
+
+        // First child: anchor branch with the SubItem(_, @@handler-anchor) id.
+        let Tree::Branch {
+            meta: anchor_meta,
+            children: anchor_children,
+        } = &outer_children[0]
+        else {
+            panic!("expected anchor branch as first child");
+        };
+        assert!(
+            matches!(&anchor_meta.id, Some(PlanNodeId::SubItem { item_id, .. }) if item_id == HANDLER_ANCHOR),
+            "anchor branch carries the handler-anchor sub-id",
+        );
+        assert_eq!(anchor_children.len(), 2, "anchor wraps original children");
+
+        // Second child: handler leaf with requires=[anchor_id], node=Some(_).
+        let Tree::Leaf {
+            meta: handler_meta,
+            node: handler_node,
+        } = &outer_children[1]
+        else {
+            panic!("expected handler leaf as second child");
+        };
+        assert!(handler_node.is_some());
+        assert_eq!(handler_meta.requires.len(), 1);
+        assert!(
+            matches!(&handler_meta.requires[0], PlanNodeId::SubItem { item_id, .. } if item_id == HANDLER_ANCHOR),
+            "handler requires the anchor",
+        );
+    }
+
+    #[test]
+    fn handlers_without_change_skip_wrap() {
+        // Resource is converged (all leaves None). Even with handlers, no wrap.
+        let tree = PlanTree::Branch {
+            meta: PlanMeta {
+                handlers: vec![handler_op()],
+                ..PlanMeta::default()
+            },
+            children: vec![none_leaf(), none_leaf()],
+        };
+        let Tree::Branch { children, .. } = inject_handlers(tree) else {
+            panic!("expected branch");
+        };
+        assert_eq!(children.len(), 2, "still the original 2 leaves, no anchor");
+        for child in &children {
+            assert!(matches!(child, Tree::Leaf { node: None, .. }));
+        }
+    }
+
+    #[test]
+    fn nested_branches_each_wrap_independently() {
+        // Outer plan item has no handlers; inner plan item has handlers and a
+        // change. Only the inner branch should wrap.
+        let inner = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(plan_item_id("inner")),
+                handlers: vec![handler_op()],
+                ..PlanMeta::default()
+            },
+            children: vec![some_leaf()],
+        };
+        let outer = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![inner],
+        };
+        let Tree::Branch {
+            children: outer_children,
+            ..
+        } = inject_handlers(outer)
+        else {
+            panic!("expected outer branch");
+        };
+        assert_eq!(outer_children.len(), 1);
+        let Tree::Branch {
+            meta: inner_meta,
+            children: inner_children,
+        } = &outer_children[0]
+        else {
+            panic!("expected inner branch after inject");
+        };
+        // Inner branch was wrapped: handlers cleared, 1 anchor + 1 handler leaf.
+        assert!(inner_meta.handlers.is_empty());
+        assert_eq!(inner_children.len(), 2);
+    }
+
+    #[test]
+    fn reapplying_inject_handlers_is_a_noop() {
+        // Defensive property: after one pass handlers are cleared on the
+        // wrapped branch, so a second pass leaves the tree unchanged.
+        let tree = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(plan_item_id("x")),
+                handlers: vec![handler_op()],
+                ..PlanMeta::default()
+            },
+            children: vec![some_leaf()],
+        };
+        let once = inject_handlers(tree);
+        let twice = inject_handlers(once.clone());
+
+        // Compare structurally by counting children at each level.
+        fn shape<T>(t: &PlanTree<Option<T>>) -> Vec<usize> {
+            match t {
+                Tree::Leaf { .. } => vec![],
+                Tree::Branch { children, .. } => {
+                    let mut out = vec![children.len()];
+                    for c in children {
+                        out.extend(shape(c));
+                    }
+                    out
+                }
+            }
+        }
+        assert_eq!(shape(&once), shape(&twice));
+    }
+}

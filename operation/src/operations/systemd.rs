@@ -140,3 +140,66 @@ impl OperationType for Systemd {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_dedups_identical_restarts() {
+        let op = SystemdOperation::Restart {
+            name: "nginx".to_string(),
+            user: false,
+        };
+        let out = Systemd::merge(vec![op.clone(), op.clone(), op]);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn merge_preserves_distinct_units() {
+        let nginx = SystemdOperation::Restart {
+            name: "nginx".to_string(),
+            user: false,
+        };
+        let php = SystemdOperation::Restart {
+            name: "php-fpm".to_string(),
+            user: false,
+        };
+        let out = Systemd::merge(vec![nginx.clone(), php.clone(), nginx]);
+        assert_eq!(out.len(), 2);
+        // First-seen order preserved.
+        assert!(matches!(&out[0], SystemdOperation::Restart { name, .. } if name == "nginx"));
+        assert!(matches!(&out[1], SystemdOperation::Restart { name, .. } if name == "php-fpm"));
+    }
+
+    #[test]
+    fn merge_distinguishes_user_scope() {
+        // Same name+verb but different `user` flag must NOT be deduped — they
+        // target different systemd buses.
+        let system = SystemdOperation::Start {
+            name: "foo".to_string(),
+            user: false,
+        };
+        let user = SystemdOperation::Start {
+            name: "foo".to_string(),
+            user: true,
+        };
+        assert_eq!(Systemd::merge(vec![system, user]).len(), 2);
+    }
+
+    #[test]
+    fn merge_distinguishes_verbs() {
+        // A `restart` and `reload` of the same unit are different ops; both
+        // must survive (semantically distinct actions).
+        let restart = SystemdOperation::Restart {
+            name: "nginx".to_string(),
+            user: false,
+        };
+        let reload = SystemdOperation::Reload {
+            name: "nginx".to_string(),
+            user: false,
+        };
+        assert_eq!(Systemd::merge(vec![restart, reload]).len(), 2);
+    }
+}
+

@@ -129,3 +129,33 @@ impl OperationType for Command {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_dedups_identical_commands() {
+        let op = CommandOperation {
+            command: "echo hi".to_string(),
+            executor: CommandExecutor::Shell,
+        };
+        let out = Command::merge(vec![op.clone(), op.clone(), op]);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn merge_distinguishes_executor() {
+        // Same command string under different executors are different ops.
+        let shell = CommandOperation {
+            command: "ls".to_string(),
+            executor: CommandExecutor::Shell,
+        };
+        let direct = CommandOperation {
+            command: "ls".to_string(),
+            executor: CommandExecutor::Direct,
+        };
+        assert_eq!(Command::merge(vec![shell, direct]).len(), 2);
+    }
+}
+
