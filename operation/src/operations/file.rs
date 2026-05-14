@@ -127,7 +127,7 @@ pub enum FileOperation {
         source: FileSource,
     },
     /// Atomically create (or replace) a symlink at `path` targeting `source`.
-    /// Emitted by `@core/file state: "linked"`.
+    /// Emitted by `@resource/file state: "linked"`.
     CreateSymlink {
         source: FilePath,
         path: FilePath,

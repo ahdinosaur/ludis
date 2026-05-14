@@ -82,14 +82,14 @@ name: "server"
 version: "0.1.0"
 
 setup: (params, system) =>
-  - module: "@core/apt"
+  - module: "@resource/apt"
     params:
       packages: ["curl", "git", "htop"]
 ```
 
 See the [examples](./examples/) for configs that use `params`, dependency ordering, and the `system` object (hostname, OS, current user).
 
-> ⚠️ Don't put secret values in `lusid.toml`'s `params`. The CLI forwards them to `lusid-apply --params <json>`, where they land in `argv[]` and are visible via `ps` / `/proc/<pid>/cmdline` to any UID on the target. Use [`@core/secret`](./secrets/README.md) for sensitive material.
+> ⚠️ Don't put secret values in `lusid.toml`'s `params`. The CLI forwards them to `lusid-apply --params <json>`, where they land in `argv[]` and are visible via `ps` / `/proc/<pid>/cmdline` to any UID on the target. Use [`@resource/secret`](./secrets/README.md) for sensitive material.
 
 ### Apply a plan
 
@@ -138,18 +138,18 @@ params:
     type: "boolean"
 
 setup: (params, system) =>
-  - module: "@core/file"
+  - module: "@resource/file"
     params:
       state: "sourced"
       source: "./gitconfig"
       path: system.user.home + "/.gitconfig"
 
-  - module: "@core/apt"
+  - module: "@resource/apt"
     id: "install-curl"
     params:
       package: "curl"
 
-  - module: "@core/command"
+  - module: "@resource/command"
     params:
       status: "install"
       install: "curl -LO 'https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep_15.1.0-1_amd64.deb' && sudo dpkg -i ripgrep_15.1.0-1_amd64.deb && rm ripgrep_15.1.0-1_amd64.deb"
@@ -234,7 +234,7 @@ Each operation type defines:
 - **Rimu**: embedded language used for `.lusid` plans.
 - **Spanned**: value annotated with source span for diagnostics.
 - **Plan**: parsed/evaluated Rimu object containing `setup`.
-- **PlanItem**: an entry returned by setup, either core module or nested plan.
+- **PlanItem**: an entry returned by setup, either resource module or nested plan.
 - **ResourceParams**: typed configuration definition (user-facing).
 - **Resource**: atomized resource node(s) derived from params.
 - **State**: observed current system state for a resource.
@@ -249,7 +249,7 @@ Each operation type defines:
 - [ ] Add secrets management: https://github.com/ahdinosaur/lusid/issues/7
 - [ ] Add Nix-like immutable package builder: https://github.com/ahdinosaur/lusid/issues/1
 - [ ] Add unit testing framework for plans: https://github.com/ahdinosaur/lusid/issues/11
-- [ ] Add install hooks: https://github.com/ahdinosaur/lusid/issues/31
+- [x] Add install hooks: https://github.com/ahdinosaur/lusid/issues/31
 
 ## Related projects
 

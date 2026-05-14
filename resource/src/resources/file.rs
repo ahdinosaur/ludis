@@ -148,7 +148,7 @@ pub enum FileResource {
     },
     /// Contents sourced from a decrypted secret by name; resolved against
     /// [`Context::secrets`] at state/apply time so plaintext never travels
-    /// through the resource/change tree. See `@core/secret`.
+    /// through the resource/change tree. See `@resource/secret`.
     Secret {
         name: String,
         path: FilePath,

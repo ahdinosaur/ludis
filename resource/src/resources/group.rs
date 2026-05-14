@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::ResourceType;
 
-/// Plan-level parameters for the `@core/group` resource.
+/// Plan-level parameters for the `@resource/group` resource.
 ///
 /// Tagged by `state: "present" | "absent"`. Mirrors the shape used by Salt
 /// (`group.present`) and Ansible (`ansible.builtin.group`), with an additional

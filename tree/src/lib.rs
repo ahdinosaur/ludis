@@ -189,6 +189,33 @@ where
         append_tree_nodes(&mut self.nodes, tree)
     }
 
+    /// Transform metadata on every arena node, preserving structure, leaf
+    /// values, and indices (including tombstones). Mirrors [`Tree::map_meta`]
+    /// so flat-tree consumers don't have to round-trip through nested form
+    /// just to swap meta types.
+    pub fn map_meta<NextMeta, MapFn>(self, map: MapFn) -> FlatTree<Node, NextMeta>
+    where
+        MapFn: Fn(Meta) -> NextMeta + Copy,
+    {
+        let nodes = self
+            .nodes
+            .into_iter()
+            .map(|slot| {
+                slot.map(|node| match node {
+                    FlatTreeNode::Branch { meta, children } => FlatTreeNode::Branch {
+                        meta: map(meta),
+                        children,
+                    },
+                    FlatTreeNode::Leaf { meta, node } => FlatTreeNode::Leaf {
+                        meta: map(meta),
+                        node,
+                    },
+                })
+            })
+            .collect();
+        FlatTree { nodes }
+    }
+
     /// Replace the subtree rooted at `root_index`. Existing descendants are cleared
     /// (their slots set to `None`), and the new subtree is installed in place, with
     /// any new children appended to the end of the arena.

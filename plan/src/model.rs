@@ -48,7 +48,7 @@ impl FromRimu for Version {
 
 /// An item from setup's returned list.
 /// Example:
-///   { module: "@core/pkg", id: "install-nvim", params: { package: "nvim" } }
+///   { module: "@resource/pkg", id: "install-nvim", params: { package: "nvim" } }
 #[derive(Debug, Clone)]
 pub struct PlanItem {
     pub id: Option<Spanned<String>>,
@@ -56,6 +56,22 @@ pub struct PlanItem {
     pub params: Option<Spanned<Value>>,
     pub requires: Vec<Spanned<String>>,
     pub required_by: Vec<Spanned<String>>,
+    /// Inline `@operation/<id>` items to run when this plan item's resource has
+    /// any change to apply. Must be empty unless `module` is `@resource/<id>`;
+    /// rejected at lowering time on nested plans and `@operation/*` items.
+    pub on_change: Vec<Spanned<InlineOperation>>,
+}
+
+/// One entry inside a plan item's `on_change` list.
+///
+/// Shape mirrors [`PlanItem`] but is restricted: only `module` and `params`
+/// are accepted (and `module` must be `@operation/<id>`). Declaring `id`,
+/// `requires`, or `required_by` on an inline operation is rejected with a
+/// v1-specific error pointing to the offending field's span.
+#[derive(Debug, Clone)]
+pub struct InlineOperation {
+    pub module: Spanned<String>,
+    pub params: Option<Spanned<Value>>,
 }
 
 #[derive(Debug, Clone, Error, Display)]
@@ -76,6 +92,21 @@ pub enum IntoPlanItemError {
     RequiredByNotAList { span: Span },
     /// "required_by" list item must be a string
     RequiredByItemNotAString { item_span: Span },
+
+    /// Property "on_change" must be a list
+    OnChangeNotAList { span: Span },
+    /// "on_change" list item must be an object
+    OnChangeItemNotAnObject { item_span: Span },
+    /// "on_change" item is missing required property "module"
+    OnChangeItemModuleMissing { item_span: Span },
+    /// "on_change" item property "module" must be a string
+    OnChangeItemModuleNotAString { item_span: Span },
+    /// "on_change" items cannot declare "id" — hooks are anonymous in v1 and cannot be referenced from elsewhere. If you need a named, reusable action, declare a separate `@resource/command` with an `is_installed` probe.
+    InlineOperationHasId { span: Span },
+    /// "on_change" items cannot declare "requires" — handlers run after the resource they're attached to. To order one hook before another, combine them into a single shell operation, or attach the second hook to a downstream resource.
+    InlineOperationHasRequires { span: Span },
+    /// "on_change" items cannot declare "required_by" — see `InlineOperationHasRequires`.
+    InlineOperationHasRequiredBy { span: Span },
 }
 
 impl FromRimu for PlanItem {
@@ -162,14 +193,84 @@ impl FromRimu for PlanItem {
             }
         };
 
+        let on_change = match object.swap_remove("on_change") {
+            None => Vec::new(),
+            Some(value) => {
+                let (value, span) = value.clone().take();
+                match value {
+                    Value::List(items) => {
+                        let mut out = Vec::with_capacity(items.len());
+                        for item in items {
+                            let (item_value, item_span) = item.clone().take();
+                            let op = parse_inline_operation(item_value, item_span.clone())?;
+                            out.push(Spanned::new(op, item_span));
+                        }
+                        out
+                    }
+                    _ => return Err(IntoPlanItemError::OnChangeNotAList { span }),
+                }
+            }
+        };
+
         Ok(PlanItem {
             id,
             module,
             params,
             requires,
             required_by,
+            on_change,
         })
     }
+}
+
+/// Parse one `on_change` entry into an [`InlineOperation`].
+///
+/// Not a [`FromRimu`] impl because we need the enclosing list-item span at
+/// hand for error variants like `OnChangeItemNotAnObject` and
+/// `OnChangeItemModuleMissing` where the offending location is the item itself,
+/// not a sub-field.
+fn parse_inline_operation(
+    value: Value,
+    item_span: Span,
+) -> Result<InlineOperation, IntoPlanItemError> {
+    let Value::Object(mut object) = value else {
+        return Err(IntoPlanItemError::OnChangeItemNotAnObject { item_span });
+    };
+
+    // Reject v1 disallowed fields with span pointing at the offending key's value.
+    if let Some(sp) = object.swap_remove("id") {
+        let (_, span) = sp.take();
+        return Err(IntoPlanItemError::InlineOperationHasId { span });
+    }
+    if let Some(sp) = object.swap_remove("requires") {
+        let (_, span) = sp.take();
+        return Err(IntoPlanItemError::InlineOperationHasRequires { span });
+    }
+    if let Some(sp) = object.swap_remove("required_by") {
+        let (_, span) = sp.take();
+        return Err(IntoPlanItemError::InlineOperationHasRequiredBy { span });
+    }
+
+    let module = match object.swap_remove("module") {
+        Some(sp) => {
+            let (value, span) = sp.clone().take();
+            match value {
+                Value::String(s) => Spanned::new(s, span),
+                _ => {
+                    return Err(IntoPlanItemError::OnChangeItemModuleNotAString {
+                        item_span: span,
+                    });
+                }
+            }
+        }
+        None => {
+            return Err(IntoPlanItemError::OnChangeItemModuleMissing { item_span });
+        }
+    };
+
+    let params = object.swap_remove("params");
+
+    Ok(InlineOperation { module, params })
 }
 
 #[derive(Debug, Clone)]

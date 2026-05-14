@@ -3,7 +3,7 @@
 //! A lusid project stores secrets as individual `*.age` files under a
 //! `secrets/` directory. At apply time the host's age/SSH identity decrypts
 //! the subset of files it's a recipient for and hands the plaintexts to
-//! `@core/secret` resources by name. Plaintexts never enter the Rimu
+//! `@resource/secret` resources by name. Plaintexts never enter the Rimu
 //! evaluator — plans reference secrets by name, contents materialise at
 //! apply.
 //!

@@ -17,7 +17,7 @@ boundary.
   first-match wins (cases tried in declaration order).
 - **Parser (`ParseParams`, `StructFields`, the `parse_*` helpers)** —
   resource-boundary one-pass conversion from `Spanned<Value>` to a typed
-  `Params` struct. Each `@core/<id>` resource implements `ParseParams` for
+  `Params` struct. Each `@resource/<id>` resource implements `ParseParams` for
   its `Params` type.
 
 ## Path-type conventions

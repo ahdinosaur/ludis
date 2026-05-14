@@ -8,7 +8,7 @@
 //! 3. Validates user params against the plan's `params` schema.
 //! 4. Invokes the plan's `setup(params, system)` function to get a list of `PlanItem`s.
 //! 5. For each item, either:
-//!    - If `module` starts with `@core/<id>` → convert to [`ResourceParams`] (a leaf).
+//!    - If `module` starts with `@resource/<id>` → convert to [`ResourceParams`] (a leaf).
 //!    - Otherwise → resolve the module as a sibling `.lusid` file, recurse, and attach
 //!      as a subtree (a branch).
 //!
@@ -20,24 +20,26 @@ use lusid_params::{ParamsContext, ParamsValidationError, ParseError, validate};
 use lusid_resource::ResourceParams;
 use lusid_store::{Store, StoreError, StoreItemId};
 use lusid_system::System;
-use rimu::{Spanned, Value};
+use rimu::{Span, Spanned, Value};
 use std::{path::PathBuf, string::FromUtf8Error};
 use thiserror::Error;
 
-mod core;
 mod eval;
 mod id;
 mod load;
 mod model;
+mod operation;
+mod resource;
 mod tree;
 
 pub use crate::id::{PlanId, PlanNodeId};
 pub use crate::tree::*;
 use crate::{
-    core::{core_module, is_core_module},
     eval::{EvalError, evaluate},
     load::{LoadError, load},
     model::Plan,
+    operation::is_operation_module,
+    resource::{is_resource_module, resource_module},
 };
 
 #[derive(Debug, Error, Display)]
@@ -151,14 +153,30 @@ pub enum PlanItemToResourceError {
     /// Failed to parse parameters for resource: {0}
     Parse(Spanned<ParseError>),
 
-    /// Unsupported core module id \"{id}\"
-    UnsupportedCoreModuleId { id: String },
+    /// unknown @resource/ module: \"{id}\"
+    UnsupportedResourceModuleId { id: String },
+
+    /// operations cannot appear at the top level — `@operation/{id}` is only valid inside `on_change`. To run an action when a resource changes, attach it via `on_change` on the relevant `@resource/*`. For idempotent imperative actions at the top level, see `@resource/command`.
+    OperationModuleAsTopLevel { id: String, span: Span },
+
+    /// `on_change` is only valid on `@resource/*` plan items, got `{module}`
+    OnChangeOnNonResource { module: String, span: Span },
+
+    /// `on_change` items must be `@operation/<id>`, got `{module}`. Resources describe desired state; operations describe imperative actions.
+    OnChangeItemModuleNotAnOperation { module: String, span: Span },
+
+    /// unknown @operation/ module: `{id}`. Available: {available}
+    UnsupportedOperationModuleId {
+        id: String,
+        available: String,
+        span: Span,
+    },
 
     /// Failed to compute subtree for nested plan: {0}
     PlanSubtree(#[from] Box<PlanError>),
 }
 
-/// Lower a single `PlanItem` to a subtree. Core modules produce a leaf with
+/// Lower a single `PlanItem` to a subtree. Resource modules produce a leaf with
 /// [`ResourceParams`]; every other module name is treated as a path relative to the
 /// parent plan and recursed into as a branch.
 async fn plan_item_to_resource(
@@ -171,11 +189,33 @@ async fn plan_item_to_resource(
     let (plan_item, _span) = plan_item.take();
     let crate::model::PlanItem {
         id: item_id,
-        ref module,
+        module,
         params: params_value,
         requires,
         required_by,
+        on_change,
     } = plan_item;
+
+    // `@operation/*` only lives inside `on_change`; reject as a top-level item.
+    if let Some(op_id) = is_operation_module(&module) {
+        return Err(PlanItemToResourceError::OperationModuleAsTopLevel {
+            id: op_id.to_string(),
+            span: module.span(),
+        });
+    }
+
+    // Parse on_change. Rejected for non-`@resource/*` plan items.
+    let handlers = if on_change.is_empty() {
+        Vec::new()
+    } else {
+        if is_resource_module(&module).is_none() {
+            return Err(PlanItemToResourceError::OnChangeOnNonResource {
+                module: module.inner().to_string(),
+                span: module.span(),
+            });
+        }
+        parse_on_change(on_change)?
+    };
 
     let id = item_id.map(|id| PlanNodeId::PlanItem {
         plan_id: current_plan_id.clone(),
@@ -198,17 +238,19 @@ async fn plan_item_to_resource(
         })
         .collect();
 
-    if let Some(core_module_id) = is_core_module(module) {
-        let params = core_module(core_module_id, params_value)?;
+    if let Some(resource_module_id) = is_resource_module(&module) {
+        let params = resource_module(resource_module_id, params_value)?;
         Ok(PlanTree::Leaf {
             meta: PlanMeta {
                 id,
                 requires,
                 required_by,
+                handlers,
             },
             node: params,
         })
     } else {
+        // Nested plan path. on_change already rejected above.
         let path = PathBuf::from(module.inner());
         let plan_id = current_plan_id.join(path);
         let children = plan_recursive(plan_id, params_value, ctx, store, system)
@@ -219,8 +261,32 @@ async fn plan_item_to_resource(
                 id,
                 requires,
                 required_by,
+                handlers: Vec::new(),
             },
             children,
         })
     }
+}
+
+/// Lower a parsed `on_change` list to a flat vector of typed [`Operation`]s.
+///
+/// Each entry must use a `@operation/<id>` module string; any other prefix
+/// (nested plan path, `@resource/...`) surfaces as
+/// `OnChangeItemModuleNotAnOperation`.
+fn parse_on_change(
+    items: Vec<Spanned<crate::model::InlineOperation>>,
+) -> Result<Vec<lusid_operation::Operation>, PlanItemToResourceError> {
+    let mut out = Vec::with_capacity(items.len());
+    for spanned in items {
+        let (item, _item_span) = spanned.take();
+        let op_id = operation::is_operation_module(&item.module).ok_or_else(|| {
+            PlanItemToResourceError::OnChangeItemModuleNotAnOperation {
+                module: item.module.inner().to_string(),
+                span: item.module.span(),
+            }
+        })?;
+        let op = operation::operation_module(op_id, item.params, item.module.span())?;
+        out.push(op);
+    }
+    Ok(out)
 }

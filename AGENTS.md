@@ -8,7 +8,7 @@
 
 1. Loads + evaluates the plan’s `setup(params, system)` function → returns a list of **PlanItem**s.
 2. Converts PlanItems into either:
-   - **Core modules** (`@core/*`) → become typed `ResourceParams` (apt/file/pacman today)
+   - **Resource modules** (`@resource/*`) → become typed `ResourceParams` (apt/file/pacman today)
    - Or nested plans (module path) → recursively planned
 3. Validates parameter schemas and values (with good span/source error reporting).
 4. Builds a **causality tree** (nodes can have `id`, `requires`, `required_by` dependencies).
@@ -44,7 +44,7 @@ Complexity is fine when warranted - this is a genuinely complex project. The poi
 
 To understand the runtime behavior, read in this order:
 1. `lusid-apply/src/lib.rs` (full pipeline)
-2. `plan/src/lib.rs` (planning recursion + core modules)
+2. `plan/src/lib.rs` (planning recursion + resource modules)
 3. `params/src/lib.rs` (schema/value validation)
 4. `causality/src/epoch.rs` (dependency scheduling)
 5. `lusid/src/tui.rs` (how updates are rendered)
@@ -65,12 +65,12 @@ If you add new path-like types, follow this pattern and be explicit about absolu
 
 ### `state: "sourced"` vs `state: "linked"`
 
-`@core/file` and `@core/directory` both expose two ways to materialise a host-path source on the target:
+`@resource/file` and `@resource/directory` both expose two ways to materialise a host-path source on the target:
 
 - **`state: "sourced"`** — byte-copy of the file, or recursive `cp -r` of the directory tree, into `path`. Accepts optional `mode`/`user`/`group`. Edits to `source` only propagate on the next apply. Use this when the bytes need to live on the target independently of the operator's filesystem (system configs, deployed artifacts, dev/remote apply).
 - **`state: "linked"`** — atomic symlink at `path` pointing to `source`. Refuses `mode`/`user`/`group` at the parser level (Linux symlinks have no meaningful mode of their own, and chmod/chown via the link silently mutates the target file in the operator's repo — declined). Edits to `source` show up at `path` immediately. Use this for dotfiles-style ergonomics.
 
-Both states validate at plan-load time (post-`plan()`, pre-resources expansion) that `source` exists and has the expected type — regular file for `@core/file`, directory for `@core/directory`. See `ResourceParams::validate_host_paths` in `resource/src/lib.rs`.
+Both states validate at plan-load time (post-`plan()`, pre-resources expansion) that `source` exists and has the expected type — regular file for `@resource/file`, directory for `@resource/directory`. See `ResourceParams::validate_host_paths` in `resource/src/lib.rs`.
 
 Implementation notes:
 - The Linked state probe is *lexical*: `readlink(2)` against the source string. We deliberately don't canonicalise; otherwise drift between a plan declaring `./foo` and an existing link declaring something else is invisible.
@@ -82,6 +82,42 @@ Implementation notes:
 ### Streaming output protocol
 `lusid-apply` emits **newline-delimited JSON** `AppUpdate` messages to stdout.
 The `lusid` TUI expects this exact protocol. Avoid printing human text to stdout from `lusid-apply`; use tracing/logging to stderr.
+
+### Resources, operations, and `on_change` hooks
+
+Plans declare two kinds of items, in two namespaces:
+
+- A **resource** (`@resource/<id>`) describes *desired state* — "nginx should be enabled and active". Lusid probes current state, computes a diff, and converges. Idempotent across re-applies.
+- An **operation** (`@operation/<id>`) describes an *imperative action* — "reload nginx", "run this command". Operations are not state-checked; they run when triggered.
+
+Resources live at the top level of `setup`. Operations live only inside an `on_change` block.
+
+#### `on_change` hooks
+
+A resource may declare a list of operations to run when it changes. Hooks fire when the resource has any change to apply (new file contents, different mode, owner change, etc.). They run in a strictly-later epoch than every one of the resource's own operations — `inject_handlers` wraps the resource's children in an anchor sub-branch and gives each handler `requires: [anchor_id]`, so per causality's branch-as-group semantics the handler waits for every resource-side leaf. Identical hooks coalesce within that handler epoch — if ten resources in the same epoch each `on_change: reload nginx`, their hooks all land in the next epoch and merge dedup collapses them to one reload.
+
+```rimu
+- module: "@resource/file"
+  params: { path: "/etc/nginx/nginx.conf", source: "./nginx.conf", state: "sourced" }
+  on_change:
+    - module: "@operation/systemd"
+      params: { name: "nginx", action: "reload" }
+```
+
+A plan item's `id` registers all of its hooks too: if another plan item declares `requires: [<id>]`, it waits for both the resource and its hooks before running. Dependents see the hook's effect, not just the resource's state.
+
+#### v1 limitations
+
+- Hooks are inline only — no by-reference (`on_change: ["handler-id"]`).
+- Inline operations cannot declare `id`, `requires`, or `required_by`.
+- Triggered on any change — no add/modify/remove distinction.
+- **Cross-epoch coalescing not handled.** If resource A reloads nginx, resource B also reloads nginx, and B `requires: ["A"]` (so they're in different epochs), nginx reloads twice. Workaround: factor the reload into a single dedicated `@resource/command` downstream, or accept the duplicate (nginx reload is idempotent).
+- **Hook failure leaves you stuck.** If a hook fails, apply aborts. The resource is now in its target state, so re-applying will NOT re-trigger the hook. Recovery: either run the operation manually (e.g. `sudo systemctl reload nginx`), or briefly toggle a field on the resource (e.g. change `mode` on a `@resource/file`, or `enabled` on a `@resource/systemd`) and re-apply, then revert.
+- **`@operation/command` covers a lot.** Although only `command` and `systemd` are exposed as operations in v1, `@operation/command` shells out — logrotate signals, cron reloads, cache invalidation, etc. all fit under it.
+
+#### Implementation: the `inject_handlers` post-pass
+
+Handlers are parsed alongside the rest of a plan item and stashed in `PlanMeta::handlers`. They flow through the resource → state → change → operations pipeline as inert passengers. After operations expansion, `inject_handlers` (in `lusid-plan`) walks the tree branch-by-branch and, wherever a branch's `meta.handlers` is non-empty AND its subtree contains a `Some(_)` leaf (i.e. the resource actually had a change), wraps the existing children in a synthetic anchor branch (`id = SubItem(fresh_scope, "@@handler-anchor")`) and appends one handler leaf per operation, each `requires`-ing the anchor. Per causality's branch-as-group semantics, the handlers wait for every resource-side op, and the outer branch's plan-item id transitively registers the handlers for dependents. The anchor's `scope_id` is freshly minted per `inject_handlers` call, so it can't collide with the resource's own atom ids (which live under a different scope from `map_plan_subitems`).
 
 
 ## Build / run / test (agent checklist)

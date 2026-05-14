@@ -8,9 +8,9 @@ The point of this example is to show:
 
 - How to apply a plan to a **graphical VM** (XFCE is visible in the QEMU
   window opened by `dev apply`).
-- How to install a **group of packages** in one go with `@core/pacman`.
-- How to create a **login account with a password**, combining `@core/user`
-  with a shell-out to `chpasswd` via `@core/command`.
+- How to install a **group of packages** in one go with `@resource/pacman`.
+- How to create a **login account with a password**, combining `@resource/user`
+  with a shell-out to `chpasswd` via `@resource/command`.
 - How to sequence a **package install** with a **service enable** so the
   display manager is ready to start as soon as its packages are on disk.
 
@@ -33,19 +33,19 @@ user create <username> ──► command chpasswd <username>:<password> ──�
                                                     systemd enable + start lightdm
 ```
 
-1. `@core/pacman` installs the five packages in a single transaction:
+1. `@resource/pacman` installs the five packages in a single transaction:
    - `xorg-server`, `xorg-xinit` — the X11 display server.
    - `xfce4` — the XFCE meta-package (window manager, panel, session,
      Thunar file manager, terminal).
    - `lightdm`, `lightdm-gtk-greeter` — the login display manager and its
      greeter UI.
-2. `@core/user` creates the login account named by `params.username`. The
+2. `@resource/user` creates the login account named by `params.username`. The
    cloud image's default `arch` user has a locked password and can't sign
    in at the greeter, so the plan adds a real account.
-3. `@core/command` sets that account's password to `params.password` using
+3. `@resource/command` sets that account's password to `params.password` using
    `chpasswd`. An `is_installed` check against `passwd -S` keeps it
    idempotent — once the account has a password, re-applies skip this step.
-4. `@core/systemd` enables `lightdm.service` (so it starts on every boot)
+4. `@resource/systemd` enables `lightdm.service` (so it starts on every boot)
    and activates it immediately, after the user + password are in place. A
    QEMU window will show the LightDM greeter a few seconds after the apply
    finishes.
@@ -90,7 +90,7 @@ the user the plan created.
   `sddm` (LXQt's typical greeter is SDDM, not LightDM). Re-apply and you
   get a different desktop with the same plan shape.
 - Give the login user `sudo`: add `append_groups: ["wheel"]` to the
-  `@core/user` item, then uncomment the `%wheel ALL=(ALL:ALL) ALL` line
-  in `/etc/sudoers` (e.g. via a second `@core/command` item).
-- Add your dotfiles (vimrc, gitconfig, etc.) via `@core/file` items, each
+  `@resource/user` item, then uncomment the `%wheel ALL=(ALL:ALL) ALL` line
+  in `/etc/sudoers` (e.g. via a second `@resource/command` item).
+- Add your dotfiles (vimrc, gitconfig, etc.) via `@resource/file` items, each
   sourced relative to the plan directory.

@@ -246,7 +246,7 @@ pub async fn create_dir<P: AsRef<Path>>(path: P) -> Result<(), FsError> {
 /// Note(cc): callers must ensure `to` does not exist. GNU `cp -r src dst` when
 /// `dst` already exists creates `dst/<basename of src>` (a nested copy) instead
 /// of replacing `dst`'s contents. The current sole caller —
-/// `DirectoryOperation::CopyTree` from `@core/directory state: "sourced"` in
+/// `DirectoryOperation::CopyTree` from `@resource/directory state: "sourced"` in
 /// guest mode — short-circuits via the directory-resource state probe (which
 /// reports `Sourced` weakly when `path` exists), so this footgun is masked in
 /// the happy path. A future caller that bypasses that probe will need to

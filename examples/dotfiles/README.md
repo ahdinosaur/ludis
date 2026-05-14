@@ -1,7 +1,7 @@
 # lusid dotfiles example
 
 A minimal dotfiles-style setup demonstrating `state: "linked"` for
-`@core/file` and `@core/directory`.
+`@resource/file` and `@resource/directory`.
 
 ## What it does
 
@@ -15,7 +15,7 @@ targets — no re-apply needed.
 
 ## `sourced` vs `linked`
 
-`@core/file` and `@core/directory` both offer two ways to materialise a
+`@resource/file` and `@resource/directory` both offer two ways to materialise a
 host-path source on the target:
 
 | State | What it does | Use when |
@@ -24,7 +24,7 @@ host-path source on the target:
 | `state: "linked"` | Materialises `path` as a symlink to `source`. No `mode`/`user`/`group`. | You're editing config files in place and want changes to take effect without re-running apply — the dotfiles ergonomic this example uses. |
 
 Both forms validate at plan-load time that `source` exists and has the
-expected type (regular file for `@core/file`, directory for `@core/directory`).
+expected type (regular file for `@resource/file`, directory for `@resource/directory`).
 
 ## Running
 

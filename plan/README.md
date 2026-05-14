@@ -15,7 +15,7 @@ recursively produce a tree of typed resource params.
 4. **Evaluate** the setup function with `(params, system)` to get a list of
    [`PlanItem`](src/model.rs)s.
 5. **Convert** each item:
-   - `module: "@core/<id>"` → leaf with typed [`ResourceParams`](../resource).
+   - `module: "@resource/<id>"` → leaf with typed [`ResourceParams`](../resource).
    - Otherwise → sibling `.lusid` path, recurse into a branch.
 
 The returned [`PlanTree<ResourceParams>`] preserves
@@ -34,9 +34,9 @@ Three kinds of [`PlanNodeId`]:
   after the initial write). Each `map_plan_subitems` call mints a fresh `cuid2`
   `scope_id`, so inner ids can never collide across resources.
 
-## Core modules
+## Resource modules
 
-Built-in resources live under `@core/<id>`: `apt`, `file`, `pacman`, `command`,
-`git`. See [`src/core.rs`](src/core.rs) for the dispatch table — adding a new
-resource means adding an arm here plus the pieces in
+Built-in resources live under `@resource/<id>`: `apt`, `file`, `pacman`,
+`command`, `git`. See [`src/resource.rs`](src/resource.rs) for the dispatch
+table — adding a new resource means adding an arm here plus the pieces in
 [`lusid-resource`](../resource).

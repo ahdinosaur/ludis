@@ -3,7 +3,7 @@
 Age-encrypted project secrets for lusid plans. Agenix-style flow: secrets
 live as ciphertext in-repo, the operator's identity decrypts them at apply
 time, and plaintext only ever reaches the target filesystem through
-`@core/secret`'s atomic write.
+`@resource/secret`'s atomic write.
 
 ## Flow
 
@@ -21,7 +21,7 @@ time, and plaintext only ever reaches the target filesystem through
                           Context::set_secrets(...)
                                     |
                                     v
-            plan refers to secret by name  -->  @core/secret { name, path, ... }
+            plan refers to secret by name  -->  @resource/secret { name, path, ... }
                                     |
                                     v
                     FileSource::Secret(name), atomic-write
@@ -98,10 +98,10 @@ Identities come in two shapes:
 
 ## Plan integration
 
-Plans refer to secrets by name via `@core/secret`:
+Plans refer to secrets by name via `@resource/secret`:
 
 ```rimu
-- module: "@core/secret"
+- module: "@resource/secret"
   params:
     name: "api_token"           # -> secrets/api_token.age on the host
     path: "/etc/myapp/token"    # where the plaintext lands on the target
@@ -113,9 +113,9 @@ Plans refer to secrets by name via `@core/secret`:
 Prefer a `/run/...` path (tmpfs on every distro lusid targets) when the
 consumer doesn't need the plaintext to survive reboots — that keeps the
 bytes out of backups and off persistent disk. The parent directory must
-exist; declare it with `@core/directory` if needed.
+exist; declare it with `@resource/directory` if needed.
 
-`@core/secret` delegates to `@core/file`'s state/change/operation
+`@resource/secret` delegates to `@resource/file`'s state/change/operation
 machinery, adding a `FileSource::Secret(name)` variant that resolves
 against `ctx.secrets()` inside the apply-time operation. The plaintext
 copy lives only for the duration of one atomic write. Plans never see
@@ -138,7 +138,7 @@ already filtered the bundle to exactly what this guest should see via
 per-target re-encryption, so no Recipients config is needed on the guest.
 
 **No identity** (`identity_path = None`, `guest_mode = false`) — returns an
-empty bundle. Plans referencing `@core/secret` will fail later with a
+empty bundle. Plans referencing `@resource/secret` will fail later with a
 missing-secret error.
 
 Callers then wrap the result with `secrets.redactor()` (for per-operation
@@ -213,7 +213,7 @@ Limitations, read before trusting:
 
 ## Threat model
 
-What `@core/secret` defends against — and what it doesn't.
+What `@resource/secret` defends against — and what it doesn't.
 
 **Defends against:**
 
@@ -252,7 +252,7 @@ What `@core/secret` defends against — and what it doesn't.
 
 ## Invariants
 
-- **Plans never see plaintext.** `@core/secret` is the only path from
+- **Plans never see plaintext.** `@resource/secret` is the only path from
   ciphertext to filesystem.
 - **Plaintext lives in memory only during apply.** Wrapped in
   `SecretBox<String>` (redacted `Debug`, zeroised on drop); the target

@@ -832,7 +832,7 @@ async fn cmd_dev_apply(
     // Gracefully fall through to "no secrets" when:
     //   - no --identity supplied,
     //   - lusid-secrets.toml absent (no project secrets at all).
-    // Plans referencing `@core/secret` will fail at apply time with a
+    // Plans referencing `@resource/secret` will fail at apply time with a
     // clear missing-secret error.
     //
     // Unknown-machine is warn-logged and treated as no-secrets — a

@@ -11,7 +11,7 @@
 //!   `setup` (see [`ParamsContext`] for how resolution origins are picked).
 //! - **Parser** — the [`parse`] module ([`ParseParams`], [`StructFields`], the
 //!   `parse_*` helpers) takes a Rimu value and produces a typed Rust value
-//!   in one pass. Each `@core/<id>` resource implements [`ParseParams`] for its
+//!   in one pass. Each `@resource/<id>` resource implements [`ParseParams`] for its
 //!   `Params` type.
 //!
 //! Resources used to declare a [`ParamTypes`] schema *and* a serde
@@ -49,8 +49,8 @@
 pub mod parse;
 
 pub use crate::parse::{
-    parse_bool, parse_host_path, parse_list, parse_number, parse_string, parse_target_path,
-    parse_u32, ParseError, ParseParams, StructFields,
+    ParseError, ParseParams, StructFields, parse_bool, parse_host_path, parse_list, parse_number,
+    parse_string, parse_target_path, parse_u32,
 };
 
 use std::path::{Path, PathBuf};

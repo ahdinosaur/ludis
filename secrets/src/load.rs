@@ -23,7 +23,7 @@ impl Secrets {
     /// Behaviour matrix on `(identity_path, guest_mode)`:
     ///
     /// - `(None, false)` — no identity, not in guest mode: returns an empty
-    ///   bundle. Plans that reference `@core/secret` will fail later at apply
+    ///   bundle. Plans that reference `@resource/secret` will fail later at apply
     ///   with a missing-secret error.
     /// - `(None, true)` — guest mode without an identity: [`LoadError::GuestModeWithoutIdentity`].
     /// - `(Some(_), false)` — host mode: reads `lusid-secrets.toml` from

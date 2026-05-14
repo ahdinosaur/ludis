@@ -1,16 +1,16 @@
-//! `@core/secret`: materialise an age-decrypted plaintext onto the target
+//! `@resource/secret`: materialise an age-decrypted plaintext onto the target
 //! filesystem, referenced by name (agenix-style — the plan names the secret,
 //! the plaintext is resolved at apply time against the decrypted secrets
 //! bundle on [`Context`]).
 //!
-//! Differences from `@core/file`:
+//! Differences from `@resource/file`:
 //!
 //! - `name` names a `*.age` secret by its file stem (e.g. `api_key` →
 //!   `secrets/api_key.age`). Plaintext never flows through the plan.
 //! - `mode` defaults to `0o600` (owner read/write, nothing for group/world)
-//!   when omitted. `@core/file` leaves mode to the umask.
+//!   when omitted. `@resource/file` leaves mode to the umask.
 //!
-//! Under the hood this delegates to `@core/file`'s state/change/operation
+//! Under the hood this delegates to `@resource/file`'s state/change/operation
 //! machinery — the atoms produced are ordinary [`FileResource::Secret`]
 //! variants, so downstream scheduling and application are identical.
 //!

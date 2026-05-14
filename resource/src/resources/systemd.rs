@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use lusid_causality::{CausalityMeta, CausalityTree};
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
-use lusid_operation::{operations::systemd::SystemdOperation, Operation};
+use lusid_operation::{Operation, operations::systemd::SystemdOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
@@ -223,7 +223,7 @@ impl ResourceType for Systemd {
             // An absent unit file is a valid "nothing here yet" state, not an error —
             // the same shape as apt/pacman's `NotInstalled`. State probing runs once
             // up front before any operations, so a systemd resource whose unit file
-            // will be provided by an earlier epoch (e.g. `@core/pacman` installing
+            // will be provided by an earlier epoch (e.g. `@resource/pacman` installing
             // `lightdm`) legitimately reports not-found at probe time. Represent it
             // as disabled+inactive; the later `systemctl enable|start` op then runs
             // after the unit is on disk. If the unit is still missing at operation
