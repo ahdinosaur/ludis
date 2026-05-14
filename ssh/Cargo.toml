@@ -5,12 +5,12 @@ edition = "2024"
 
 [dependencies]
 lusid-fs = { path = "../fs", version = "0.1" }
-async-promise = "0.1.0"
-base64ct = "1.6.0"
+async-promise = "0.1.1"
+base64ct = "1.8.3"
 bytes = "1"
-futures-util = "0.3.31"
+futures-util = "0.3.32"
 russh.workspace = true
-russh-sftp = "2.1.1"
+russh-sftp = "2.1.2"
 thiserror.workspace = true
 termion = "4.0.6"
 tokio.workspace = true

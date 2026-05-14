@@ -8,5 +8,5 @@ lusid-fs = { path = "../fs", version = "0.1" }
 reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls", "brotli", "gzip", "stream", "http2", "charset"] }
 thiserror.workspace = true
 tokio.workspace = true
-tokio-stream = "0.1.17"
+tokio-stream = "0.1.18"
 tracing.workspace = true

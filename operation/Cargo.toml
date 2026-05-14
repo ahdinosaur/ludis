@@ -13,7 +13,7 @@ lusid-view = { path = "../view", version = "0.1" }
 rimu.workspace = true
 async-trait.workspace = true
 displaydoc.workspace = true
-pin-project = "1.1.10"
+pin-project = "1.1.13"
 secrecy.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
