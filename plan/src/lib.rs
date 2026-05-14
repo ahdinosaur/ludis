@@ -20,7 +20,7 @@ use lusid_params::{ParamsContext, ParamsValidationError, ParseError, validate};
 use lusid_resource::ResourceParams;
 use lusid_store::{Store, StoreError, StoreItemId};
 use lusid_system::System;
-use rimu::{Spanned, Value};
+use rimu::{Span, Spanned, Value};
 use std::{path::PathBuf, string::FromUtf8Error};
 use thiserror::Error;
 
@@ -28,6 +28,7 @@ mod eval;
 mod id;
 mod load;
 mod model;
+mod operation;
 mod resource;
 mod tree;
 
@@ -37,6 +38,7 @@ use crate::{
     eval::{EvalError, evaluate},
     load::{LoadError, load},
     model::Plan,
+    operation::is_operation_module,
     resource::{is_resource_module, resource_module},
 };
 
@@ -153,6 +155,25 @@ pub enum PlanItemToResourceError {
 
     /// unknown @resource/ module: \"{id}\"
     UnsupportedResourceModuleId { id: String },
+
+    /// `@core/` was renamed to `@resource/` — try `@resource/{id}`
+    LegacyCorePrefix { id: String, span: Span },
+
+    /// operations cannot appear at the top level — `@operation/{id}` is only valid inside `on_change`. To run an action when a resource changes, attach it via `on_change` on the relevant `@resource/*`. For idempotent imperative actions at the top level, see `@resource/command`.
+    OperationModuleAsTopLevel { id: String, span: Span },
+
+    /// `on_change` is only valid on `@resource/*` plan items, got `{module}`
+    OnChangeOnNonResource { module: String, span: Span },
+
+    /// `on_change` items must be `@operation/<id>`, got `{module}`. Resources describe desired state; operations describe imperative actions.
+    OnChangeItemModuleNotAnOperation { module: String, span: Span },
+
+    /// unknown @operation/ module: `{id}`. Available: {available}
+    UnsupportedOperationModuleId {
+        id: String,
+        available: String,
+        span: Span,
+    },
 
     /// Failed to compute subtree for nested plan: {0}
     PlanSubtree(#[from] Box<PlanError>),
