@@ -16,6 +16,19 @@ pub enum SshKeypairError {
     RusshKey(#[from] russh::keys::ssh_key::Error),
 }
 
+impl SshKeypairError {
+    /// True iff the underlying ssh-key error indicates a
+    /// passphrase-protected private key. Callers (e.g. `lusid`) branch on
+    /// this to surface a "decrypt the key first" hint without taking a
+    /// direct dependency on russh's error types.
+    pub fn is_encrypted(&self) -> bool {
+        matches!(
+            self,
+            SshKeypairError::RusshKey(russh::keys::ssh_key::Error::Encrypted)
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SshKeypair {
     pub public_key: PublicKey,
@@ -128,5 +141,68 @@ impl SshKeypair {
             public_key,
             private_key,
         })
+    }
+}
+
+/// Load just the OpenSSH private key from a file path. Use when only the
+/// private key is needed (e.g. SSH-client auth where the matching `.pub`
+/// isn't on disk in the conventional location). Distinct from
+/// [`SshKeypair::load`] which expects both `id_ed25519` and `id_ed25519.pub`
+/// in the same directory.
+#[tracing::instrument(skip_all, fields(path = %path.display()))]
+pub async fn load_private_key(path: &Path) -> Result<PrivateKey, SshKeypairError> {
+    let private_key_string = fs::read_file_to_string(path).await?;
+    let private_key = PrivateKey::from_openssh(&private_key_string)?;
+    Ok(private_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn load_private_key_round_trips_saved_keypair() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let saved = SshKeypair::create().unwrap();
+        saved.save(dir.path()).await.unwrap();
+
+        let loaded = load_private_key(&dir.path().join(PRIVATE_KEY_FILE))
+            .await
+            .unwrap();
+
+        // Compare via canonical OpenSSH serialization — `PrivateKey` itself
+        // isn't `PartialEq`, and round-tripping the encoded form is the
+        // contract callers depend on anyway.
+        let saved_pem = saved
+            .private_key
+            .to_openssh(LineEnding::default())
+            .unwrap()
+            .to_string();
+        let loaded_pem = loaded
+            .to_openssh(LineEnding::default())
+            .unwrap()
+            .to_string();
+        assert_eq!(saved_pem, loaded_pem);
+    }
+
+    #[tokio::test]
+    async fn load_private_key_errors_on_garbage() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("garbage");
+        tokio::fs::write(&path, b"not an openssh key")
+            .await
+            .unwrap();
+        let err = load_private_key(&path).await.unwrap_err();
+        assert!(matches!(err, SshKeypairError::RusshKey(_)));
+        // Garbage bytes are NOT a passphrase-protected key; the classifier
+        // must say no so callers don't surface a misleading "decrypt with
+        // ssh-keygen -p" hint.
+        assert!(!err.is_encrypted());
+    }
+
+    #[test]
+    fn is_encrypted_true_for_encrypted_variant() {
+        let err: SshKeypairError = russh::keys::ssh_key::Error::Encrypted.into();
+        assert!(err.is_encrypted());
     }
 }

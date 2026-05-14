@@ -17,3 +17,7 @@ tokio.workspace = true
 tracing.workspace = true
 signal-hook = "0.3.18"
 signal-hook-tokio = { version = "0.3.1", features = ["futures-v0_3"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt"] }

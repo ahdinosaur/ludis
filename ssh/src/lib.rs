@@ -9,9 +9,12 @@
 //! - [`Ssh::terminal`] — forward the current TTY to an interactive remote shell.
 //! - [`SshKeypair`] — create / load an ed25519 keypair on disk.
 //!
-//! Note(cc): host key verification is disabled (`NoCheckHandler`) because lusid
-//! currently SSHs only into VMs it has just booted. If/when lusid grows into
-//! arbitrary remote machines, this must be revisited.
+//! Host-key verification is configured per-connection via
+//! [`HostKeyVerification`] on [`SshConnectOptions`]: real remote machines use
+//! [`HostKeyVerification::Tofu`] against a `known_hosts` file (standard
+//! OpenSSH trust-on-first-use), while ephemeral targets (dev VMs the caller
+//! has just booted with a fresh keypair) opt into
+//! [`HostKeyVerification::Disabled`].
 
 mod command;
 mod connect;
@@ -23,7 +26,8 @@ mod terminal;
 
 pub use crate::command::{SshCommandError, SshCommandHandle};
 pub use crate::connect::{SshConnectError, SshConnectOptions};
-pub use crate::keypair::{SshKeypair, SshKeypairError};
+pub use crate::keypair::{SshKeypair, SshKeypairError, load_private_key};
+pub use crate::session::HostKeyVerification;
 pub use crate::sync::{SshSyncError, SshVolume};
 pub use crate::terminal::SshTerminalError;
 
@@ -31,9 +35,9 @@ use thiserror::Error;
 use tokio::net::ToSocketAddrs;
 
 use crate::connect::connect_with_retry;
-use crate::session::{AsyncSession, NoCheckHandler};
+use crate::session::{AsyncSession, HostKeyHandler};
 
-type Session = AsyncSession<NoCheckHandler>;
+type Session = AsyncSession<HostKeyHandler>;
 
 #[derive(Error, Debug)]
 pub enum SshError {
