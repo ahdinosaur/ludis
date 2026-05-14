@@ -165,18 +165,6 @@ pub enum AppError {
     #[error("failed to convert params toml to json: {0}")]
     ParamsTomlToJson(#[from] serde_json::Error),
 
-    #[error("failed to read stdout from apply")]
-    ReadApplyStdout(#[source] tokio::io::Error),
-
-    #[error("failed to parse stdout from lusid-apply as json")]
-    ParseApplyStdoutJson(#[source] serde_json::Error),
-
-    #[error("failed to forward stderr from lusid-apply")]
-    ForwardApplyStderr(#[source] tokio::io::Error),
-
-    #[error("unexpected view state")]
-    UnexpectedViewState,
-
     #[error(transparent)]
     Tui(#[from] TuiError),
 

@@ -39,10 +39,10 @@ recipes (e.g. `just nginx-cluster-apply-a`) chain both steps for you.
 
 This produces one runnable binary at `./target/release/lusid` — the CLI
 you run: `lusid machines list`, `lusid local apply`, `lusid dev apply`,
-…. The worker is invisible to operators: it's extracted to
-`~/.cache/lusid/lusid-apply/<version>/<arch>/lusid-apply` on first
-`local apply`, and streamed directly over SFTP for `dev apply`. (Remote
-apply is on the roadmap and will use the same SFTP path.)
+`lusid remote apply`, …. The worker is invisible to operators: it's
+extracted to `~/.cache/lusid/lusid-apply/<version>/<arch>/lusid-apply`
+on first `local apply`, and streamed directly over SFTP for `dev apply`
+and `remote apply`.
 
 For running the `dev apply` / `dev ssh` flow you also need QEMU and a couple of image-building tools — see the [examples prerequisites](./examples/README.md#prerequisites) for the exact packages.
 

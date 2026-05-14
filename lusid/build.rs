@@ -52,6 +52,14 @@ fn main() {
                 .join("embed")
         });
 
+    // Watch the staging dir itself so a previously-empty `embed/` getting
+    // populated by `just build-lusid-apply` triggers a rerun. Without this,
+    // the per-file `rerun-if-changed` below is only emitted when a binary is
+    // *already* present, so additions to an empty dir would otherwise need a
+    // `cargo clean` or `touch build.rs` to be picked up. Cargo accepts a
+    // nonexistent path here and reruns when it appears.
+    println!("cargo:rerun-if-changed={}", binaries_dir.display());
+
     for (arch_display, cfg_suffix) in ARCHES {
         let source = binaries_dir.join(format!("lusid-apply-{arch_display}"));
         if !source.is_file() {

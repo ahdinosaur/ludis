@@ -10,6 +10,13 @@ default:
 # `./embed/` ready for the next `cargo build -p lusid` to embed. Clears
 # any previously-staged binaries first so toggling which arches are
 # enabled below doesn't leave stale files in the embed dir.
+#
+# Only x86-64 is built by default — building aarch64 from a non-aarch64
+# host needs a cross-toolchain (linker/libc) that isn't part of a stock
+# `rustup target add`, so leaving it commented avoids breaking dev for
+# everyone who hasn't set that up. Release tarballs are built on native
+# runners in `.github/workflows/release.yml`, which covers both arches.
+# Uncomment locally if you have the cross-toolchain wired up.
 build-lusid-apply:
   rm -f {{ LUSID_APPLY_BINARIES_DIR }}/lusid-apply-*
   mkdir -p {{ LUSID_APPLY_BINARIES_DIR }}
