@@ -192,11 +192,43 @@ async fn plan_item_to_resource(
     let (plan_item, _span) = plan_item.take();
     let crate::model::PlanItem {
         id: item_id,
-        ref module,
+        module,
         params: params_value,
         requires,
         required_by,
+        on_change,
     } = plan_item;
+
+    // Legacy-prefix hint — must fire before any prefix dispatch, otherwise
+    // `@core/foo` falls through to the nested-plan path and produces a
+    // misleading "could not read plan" error.
+    if let Some(id) = module.inner().strip_prefix("@core/") {
+        return Err(PlanItemToResourceError::LegacyCorePrefix {
+            id: id.to_string(),
+            span: module.span(),
+        });
+    }
+
+    // `@operation/*` only lives inside `on_change`; reject as a top-level item.
+    if let Some(op_id) = is_operation_module(&module) {
+        return Err(PlanItemToResourceError::OperationModuleAsTopLevel {
+            id: op_id.to_string(),
+            span: module.span(),
+        });
+    }
+
+    // Parse on_change. Rejected for non-`@resource/*` plan items.
+    let handlers = if on_change.is_empty() {
+        Vec::new()
+    } else {
+        if is_resource_module(&module).is_none() {
+            return Err(PlanItemToResourceError::OnChangeOnNonResource {
+                module: module.inner().to_string(),
+                span: module.span(),
+            });
+        }
+        parse_on_change(on_change)?
+    };
 
     let id = item_id.map(|id| PlanNodeId::PlanItem {
         plan_id: current_plan_id.clone(),
@@ -219,18 +251,19 @@ async fn plan_item_to_resource(
         })
         .collect();
 
-    if let Some(resource_module_id) = is_resource_module(module) {
+    if let Some(resource_module_id) = is_resource_module(&module) {
         let params = resource_module(resource_module_id, params_value)?;
         Ok(PlanTree::Leaf {
             meta: PlanMeta {
                 id,
                 requires,
                 required_by,
-                handlers: Vec::new(),
+                handlers,
             },
             node: params,
         })
     } else {
+        // Nested plan path. on_change already rejected above.
         let path = PathBuf::from(module.inner());
         let plan_id = current_plan_id.join(path);
         let children = plan_recursive(plan_id, params_value, ctx, store, system)
@@ -246,4 +279,26 @@ async fn plan_item_to_resource(
             children,
         })
     }
+}
+
+/// Lower a parsed `on_change` list to a flat vector of typed [`Operation`]s.
+///
+/// Each entry must use a `@operation/<id>` module string; any other prefix
+/// (nested plan path, `@resource/...`, `@core/...`) is rejected.
+fn parse_on_change(
+    items: Vec<Spanned<crate::model::InlineOperation>>,
+) -> Result<Vec<lusid_operation::Operation>, PlanItemToResourceError> {
+    let mut out = Vec::with_capacity(items.len());
+    for spanned in items {
+        let (item, _item_span) = spanned.take();
+        let op_id = operation::is_operation_module(&item.module).ok_or_else(|| {
+            PlanItemToResourceError::OnChangeItemModuleNotAnOperation {
+                module: item.module.inner().to_string(),
+                span: item.module.span(),
+            }
+        })?;
+        let op = operation::operation_module(op_id, item.params, item.module.span())?;
+        out.push(op);
+    }
+    Ok(out)
 }

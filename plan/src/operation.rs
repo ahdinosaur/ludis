@@ -10,7 +10,7 @@ use lusid_operation::{
     Operation,
     operations::{command::CommandOperation, systemd::SystemdOperation},
 };
-use lusid_params::{ParseError, ParseParams};
+use lusid_params::ParseParams;
 use rimu::{Span, Spanned, Value};
 
 use crate::PlanItemToResourceError;
