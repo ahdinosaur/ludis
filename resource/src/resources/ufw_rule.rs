@@ -1,4 +1,4 @@
-//! `@core/ufw_rule` — one ufw firewall rule per resource atom, applied
+//! `@core/ufw-rule` — one ufw firewall rule per resource atom, applied
 //! additively.
 //!
 //! Each plan item produces a single rule (allow / deny / reject / limit, plus
@@ -10,7 +10,7 @@
 //!
 //! ## Why additive
 //!
-//! Multiple `@core/ufw_rule` resources can declare different rules without
+//! Multiple `@core/ufw-rule` resources can declare different rules without
 //! fighting: each only adds its own rule, and `ufw allow …` is idempotent
 //! ("Skipping adding existing rule"). A diff-and-remove design would require
 //! every rule resource to know every other rule in the plan, which doesn't
@@ -160,7 +160,7 @@ pub struct UfwRule;
 
 #[async_trait]
 impl ResourceType for UfwRule {
-    const ID: &'static str = "ufw_rule";
+    const ID: &'static str = "ufw-rule";
 
     type Params = UfwRuleParams;
     type Resource = UfwRuleResource;
@@ -180,7 +180,7 @@ impl ResourceType for UfwRule {
         _ctx: &mut Context,
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
-        // Each rule atom re-runs `ufw show added`. Multiple `@core/ufw_rule`
+        // Each rule atom re-runs `ufw show added`. Multiple `@core/ufw-rule`
         // resources therefore make N invocations of the same command. ufw
         // itself is cheap — a fork + a small file read — and lusid's state
         // probe phase is sequential per leaf, so coalescing was not worth
@@ -624,6 +624,31 @@ ufw allow from any port 5000 to any port 80 proto tcp
         let mut wrapped = String::from("Added user rules:\n\n");
         wrapped.push_str(&line);
         let parsed = &parse_show_added(&wrapped).expect("ok")[0];
+        assert_eq!(parsed, &rule);
+    }
+
+    /// Comment with whitespace must be shell-quoted by `Display` so the parser
+    /// (which uses `shell_words::split`) can recover the original value. ufw's
+    /// own `show added` output uses single quotes for multi-word comments;
+    /// `Display` matches that.
+    #[test]
+    fn render_roundtrip_comment_with_spaces() {
+        let rule = UfwRuleSpec {
+            action: UfwAction::Allow,
+            direction: UfwDirection::In,
+            from: None,
+            from_port: None,
+            to: None,
+            to_port: Some(22),
+            proto: Some(UfwProtocol::Tcp),
+            comment: Some("hello world".into()),
+        }
+        .canonical();
+        let line = format!("ufw {rule}");
+        let mut wrapped = String::from("Added user rules:\n\n");
+        wrapped.push_str(&line);
+        let parsed = &parse_show_added(&wrapped).expect("ok")[0];
+        assert_eq!(parsed.comment.as_deref(), Some("hello world"));
         assert_eq!(parsed, &rule);
     }
 

@@ -4,7 +4,7 @@
 //! - whether the firewall is enabled,
 //! - the default policy for each direction (incoming / outgoing / routed).
 //!
-//! It does **not** manage individual rules — those live in [`@core/ufw_rule`]
+//! It does **not** manage individual rules — those live in [`@core/ufw-rule`]
 //! ([`crate::resources::ufw_rule`]), one rule per resource atom, applied
 //! additively. The split exists because the firewall's rule list is a single
 //! global mutable structure: a single `@core/ufw` per machine declaring "these
@@ -15,7 +15,7 @@
 //! just the rules they need without fighting.
 //!
 //! Plans should declare **at most one** `@core/ufw` per machine. Multiple
-//! `@core/ufw_rule` resources can — and typically should — coexist.
+//! `@core/ufw-rule` resources can — and typically should — coexist.
 //!
 //! State probe reads `ufw status verbose` for the enabled flag and the
 //! default policies. Operations emitted: `SetDefault` per direction
@@ -23,9 +23,9 @@
 //! reaches the firewall with the right defaults in place rather than ufw's
 //! compiled-in ones.
 //!
-//! ## Ordering with `@core/ufw_rule`
+//! ## Ordering with `@core/ufw-rule`
 //!
-//! By default lusid does not order `@core/ufw_rule` operations against
+//! By default lusid does not order `@core/ufw-rule` operations against
 //! this resource's `Enable` operation. On a fresh install where `enabled`
 //! transitions from false → true with `incoming: deny`, an unlucky merge
 //! order can run `Enable` before the rule that allows SSH, dropping the
@@ -34,7 +34,7 @@
 //! e.g.
 //!
 //! ```yaml
-//! - module: "@core/ufw_rule"
+//! - module: "@core/ufw-rule"
 //!   id: ufw-allow-ssh
 //!   params:
 //!     action: allow
@@ -67,11 +67,18 @@ use crate::ResourceType;
 #[derive(Debug, Clone)]
 pub struct UfwParams {
     pub enabled: Option<bool>,
+    /// `None` falls back to ufw's safe default of `Deny`. Declaring `@core/ufw`
+    /// at all is taken as opting in to managing the incoming default — there
+    /// is no "leave alone" form for this direction. If you need that, omit
+    /// the resource entirely.
     pub incoming: Option<UfwPolicy>,
+    /// `None` falls back to ufw's safe default of `Allow`. Same opt-in
+    /// semantics as [`Self::incoming`].
     pub outgoing: Option<UfwPolicy>,
-    /// `None` means "leave the routed default alone" — not "set to disabled".
-    /// ufw has no clean way to clear a routed default short of `ufw reset`,
-    /// so we never try.
+    /// `None` means "leave the routed default alone" — *not* "set to
+    /// disabled". Asymmetric with `incoming`/`outgoing` because ufw has no
+    /// clean way to clear a routed default short of `ufw reset`, and routed
+    /// defaults are uncommon enough that an opt-in form is the safer choice.
     pub routed: Option<UfwPolicy>,
 }
 
@@ -399,11 +406,17 @@ fn parse_defaults_line(line: &str) -> Result<UfwDefaults, UfwStateError> {
     let mut routed: Option<UfwPolicy> = None;
 
     for part in line.split(',') {
-        let part = part.trim();
-        let Some((word, rest)) = part.split_once(' ') else {
+        // Tolerate runs of spaces or tabs between the policy word and the
+        // direction tag — ufw output has been single-space historically, but
+        // we don't want a future formatting tweak to silently skip a slot.
+        let mut tokens = part.split_whitespace();
+        let Some(word) = tokens.next() else { continue };
+        let Some(direction_token) = tokens.next() else {
             continue;
         };
-        let direction = rest.trim().trim_start_matches('(').trim_end_matches(')');
+        let direction = direction_token
+            .trim_start_matches('(')
+            .trim_end_matches(')');
         let policy_opt = parse_default_policy_word(word)?;
         match direction {
             "incoming" => {

@@ -257,10 +257,33 @@ impl Display for UfwRule {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.action)?;
         for arg in self.argv_after_action() {
-            write!(f, " {arg}")?;
+            write!(f, " {}", shell_quote(&arg))?;
         }
         Ok(())
     }
+}
+
+/// POSIX-style single-quote a value when it contains whitespace, an empty
+/// string, or an embedded single quote — matching the form `ufw show added`
+/// emits for multi-word comments. Single quotes inside the value are escaped
+/// as `'\''`. Without this, `format!("ufw {rule}")` round-trips through the
+/// `ufw show added` parser (`shell_words::split`) only for comments that
+/// happen to be a single shell-safe token.
+fn shell_quote(s: &str) -> String {
+    if !s.is_empty() && !s.contains(|c: char| c.is_whitespace() || c == '\'') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 #[derive(Debug, Clone)]
