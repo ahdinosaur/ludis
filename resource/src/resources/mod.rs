@@ -11,4 +11,5 @@ pub mod podman;
 pub mod secret;
 pub mod systemd;
 pub mod ufw;
+pub mod ufw_rule;
 pub mod user;
