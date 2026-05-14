@@ -238,13 +238,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Note(cc): `--generate-notes` replaces whatever notes the draft has
-      # with the GitHub auto-generated commit log. If we ever want curated
-      # release notes, drop the flag here and have `create-release` (or a
-      # human between create + publish) populate `--notes` instead — the
-      # current empty `--notes ""` at create time is what makes the
-      # auto-generated content show up cleanly.
       - name: Promote draft to published
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$TAG" --draft=false --generate-notes --repo "$GITHUB_REPOSITORY"
+        run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
