@@ -8,7 +8,9 @@ lusid-cmd = { path = "../cmd", version = "0.1" }
 lusid-ctx = { path = "../ctx", version = "0.1" }
 lusid-fs = { path = "../fs", version = "0.1" }
 lusid-http = { path = "../http", version = "0.1" }
+lusid-params = { path = "../params", version = "0.1" }
 lusid-view = { path = "../view", version = "0.1" }
+rimu.workspace = true
 async-trait.workspace = true
 displaydoc.workspace = true
 pin-project = "1.1.10"
