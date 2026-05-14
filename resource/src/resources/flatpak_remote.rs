@@ -131,9 +131,6 @@ impl_display_render!(FlatpakRemoteState);
 pub enum FlatpakRemoteStateError {
     #[error(transparent)]
     Command(#[from] CommandError),
-
-    #[error("failed to parse flatpak remotes line: {line:?}")]
-    ParseRemotesLine { line: String },
 }
 
 #[derive(Debug, Clone)]
@@ -231,16 +228,19 @@ impl ResourceType for FlatpakRemote {
             .await?;
         let stdout = String::from_utf8_lossy(&stdout);
 
+        // Defensive parsing: skip blank lines and lines without a tab. The
+        // current `flatpak remotes --columns=name,url` invocation in pipe
+        // mode emits no header, but older or future builds might — we'd
+        // rather treat an unexpected header line as "doesn't match my name"
+        // than crash the probe.
         for line in stdout.lines() {
             let trimmed = line.trim_end();
             if trimmed.is_empty() {
                 continue;
             }
-            let (row_name, row_url) = parse_remotes_line(trimmed).ok_or_else(|| {
-                FlatpakRemoteStateError::ParseRemotesLine {
-                    line: trimmed.to_string(),
-                }
-            })?;
+            let Some((row_name, row_url)) = parse_remotes_line(trimmed) else {
+                continue;
+            };
             if row_name == name {
                 return Ok(FlatpakRemoteState::Present {
                     url: row_url.to_string(),

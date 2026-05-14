@@ -224,14 +224,17 @@ impl ResourceType for Flatpak {
     type State = FlatpakState;
     type StateError = FlatpakStateError;
 
-    /// Probe via `flatpak info --app <scope> <name>`:
+    /// Probe via `flatpak info [--user|--system] <name>`:
     /// - exit 0: stdout has metadata — package is installed.
     /// - exit non-zero + stderr contains `"not installed"`: package is absent.
     /// - exit non-zero + other stderr: surface as `CommandError::Failure`.
     ///
-    /// `--app` keeps the probe symmetric with the install op so a runtime ref
-    /// declared by mistake reads as `NotInstalled` (and will then fail loudly
-    /// at install time, rather than silently succeeding).
+    /// Note(cc): `flatpak info` has no `--app` filter (unlike `flatpak
+    /// install`), so a runtime ref declared in `@core/flatpak` reads as
+    /// `Installed` if the runtime happens to be installed. We treat that as
+    /// a configuration error to surface at install time — the install op
+    /// passes `--app`, so flatpak refuses to install a runtime ref and
+    /// emits a clear error.
     async fn state(
         _ctx: &mut Context,
         resource: &Self::Resource,
@@ -244,7 +247,6 @@ impl ResourceType for Flatpak {
         let mut cmd = Command::new("flatpak");
         cmd.arg(if user { "--user" } else { "--system" })
             .arg("info")
-            .arg("--app")
             .arg("--")
             .arg(name);
         cmd.handle(
@@ -269,15 +271,8 @@ impl ResourceType for Flatpak {
 
     fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change> {
         match (resource, state) {
-            (FlatpakResource::Present { .. }, FlatpakState::Installed) => None,
-            (FlatpakResource::Present { name, remote, user }, FlatpakState::NotInstalled) => {
-                Some(FlatpakChange::Install {
-                    name: name.clone(),
-                    remote: remote.clone(),
-                    user: *user,
-                })
-            }
             (FlatpakResource::Absent { .. }, FlatpakState::NotInstalled) => None,
+
             (
                 FlatpakResource::Absent {
                     name,
@@ -290,6 +285,16 @@ impl ResourceType for Flatpak {
                 user: *user,
                 delete_data: *delete_data,
             }),
+
+            (FlatpakResource::Present { name, remote, user }, FlatpakState::NotInstalled) => {
+                Some(FlatpakChange::Install {
+                    name: name.clone(),
+                    remote: remote.clone(),
+                    user: *user,
+                })
+            }
+
+            (FlatpakResource::Present { .. }, FlatpakState::Installed) => None,
         }
     }
 
