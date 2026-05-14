@@ -40,8 +40,8 @@ use lusid_ctx::{Context, ContextError};
 use lusid_operation::{Operation, OperationApplyError};
 use lusid_params::ParamsContext;
 use lusid_plan::{
-    self, PlanError, PlanId, PlanMeta, PlanNodeId, PlanTree, map_plan_subitems, plan,
-    render_plan_tree,
+    self, PlanError, PlanId, PlanMeta, PlanNodeId, PlanTree, inject_handlers, map_plan_subitems,
+    plan, render_plan_tree,
 };
 use lusid_resource::{HostPathValidationError, Resource, ResourceState, ResourceStateError};
 use lusid_secrets::{LoadError, Redactor, Secrets};
@@ -299,8 +299,14 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     );
     emit(AppUpdate::OperationsComplete).await?;
 
+    // Branch-level post-pass: wherever a plan-item branch carries on_change
+    // handlers AND has any descendant change, wrap its children in an anchor
+    // sub-branch and append the handler leaves alongside.
+    let injected = inject_handlers(PlanTree::from(operations));
+    debug!("Operations with handlers injected: {injected:?}");
+
     let operation_epochs =
-        compute_epochs(CausalityTree::from(operations.map_meta(PlanMeta::to_causality)))?;
+        compute_epochs(injected.map_meta(PlanMeta::to_causality))?;
     debug!("Operation epochs: {operation_epochs:?}");
     emit(AppUpdate::OperationsApplyStart {
         operations: operation_epochs
