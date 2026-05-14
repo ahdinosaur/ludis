@@ -96,7 +96,16 @@ lusid --config ./lusid.toml dev apply --machine my-server
 lusid --config ./lusid.toml dev ssh   --machine my-server   # shell inside the VM
 ```
 
-**Remote** — apply to a machine you reach over SSH. Not implemented yet; tracked on the roadmap.
+**Remote** — apply to a real machine you reach over SSH. Add a `remote = { host = "..." }` block to the machine entry, then:
+
+```sh
+lusid --config ./lusid.toml remote apply --machine my-server
+lusid --config ./lusid.toml remote ssh   --machine my-server   # shell on the target
+```
+
+`remote` accepts `host` (required), `port` (default `22`), `user` (default `"root"`), and `ssh_key` (default `~/.ssh/id_ed25519`). When `user` is not `root`, lusid wraps the remote `lusid-apply` invocation in `sudo -n …`, so the SSH user must have passwordless sudo configured.
+
+Host-key verification is trust-on-first-use against `~/.ssh/known_hosts`: the first connection pins whatever key the server presents (matching OpenSSH's `StrictHostKeyChecking=accept-new`), and subsequent connections refuse mismatches. **The first apply assumes the network path between you and the target is clean** — if there's any doubt (apply across the public internet, captive Wi-Fi, fresh cloud VM), verify the target's `/etc/ssh/ssh_host_ed25519_key.pub` out-of-band and seed `~/.ssh/known_hosts` yourself before the first run.
 
 Applying the same plan twice is always safe: lusid reads the current state of every resource and only runs the operations needed to close the gap. A no-op apply after a successful apply prints "no changes" and exits.
 

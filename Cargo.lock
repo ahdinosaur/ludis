@@ -2476,6 +2476,7 @@ dependencies = [
  "rimu-interop",
  "serde",
  "serde_json",
+ "shell-words",
  "thiserror 2.0.18",
  "tokio",
  "toml 0.9.8",
@@ -2577,6 +2578,7 @@ version = "0.1.0"
 dependencies = [
  "lusid-system",
  "serde",
+ "toml 0.9.8",
  "tracing",
 ]
 
@@ -2690,6 +2692,7 @@ dependencies = [
  "russh-sftp",
  "signal-hook",
  "signal-hook-tokio",
+ "tempfile",
  "termion",
  "thiserror 2.0.18",
  "tokio",
