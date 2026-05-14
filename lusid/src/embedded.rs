@@ -26,14 +26,14 @@ use tracing::{debug, instrument};
 use lusid_system::Arch;
 
 #[cfg(embedded_apply_x86_64)]
-const LUSID_APPLY_X86_64: &[u8] = include_bytes!(env!("LUSID_APPLY_OUT_X86_64"));
+static LUSID_APPLY_X86_64: &[u8] = include_bytes!(env!("LUSID_APPLY_OUT_X86_64"));
 
 #[cfg(embedded_apply_aarch64)]
-const LUSID_APPLY_AARCH64: &[u8] = include_bytes!(env!("LUSID_APPLY_OUT_AARCH64"));
+static LUSID_APPLY_AARCH64: &[u8] = include_bytes!(env!("LUSID_APPLY_OUT_AARCH64"));
 
 #[derive(Error, Debug, Display)]
 pub enum EmbeddedError {
-    /// no lusid-apply was embedded for {arch}; pass --lusid-apply-linux-{arch} <PATH> or rebuild with LUSID_APPLY_BINARIES_DIR set
+    /// no lusid-apply was embedded for {arch}; run `just build-lusid-apply` then rebuild lusid (see lusid/build.rs)
     NotEmbedded { arch: Arch },
 
     /// failed to determine cache directory

@@ -1,14 +1,22 @@
-export LUSID_APPLY_LINUX_X86_64 := "./target/x86_64-unknown-linux-gnu/release/lusid-apply"
-export LUSID_APPLY_LINUX_AARCH64 := "./target/aarch64-unknown-linux-gnu/release/lusid-apply"
+# Directory the `lusid` build script reads to embed `lusid-apply` blobs at
+# compile time. See `lusid/build.rs` and `lusid/src/embedded.rs`.
+export LUSID_APPLY_BINARIES_DIR := justfile_directory() / "embed"
 
 # Show available recipes.
 default:
   @just --list
 
-# Build the `lusid-apply` binary that the `lusid` CLI uploads into dev VMs.
+# Build `lusid-apply` for each supported worker arch and stage it under
+# `./embed/` ready for the next `cargo build -p lusid` to embed. Clears
+# any previously-staged binaries first so toggling which arches are
+# enabled below doesn't leave stale files in the embed dir.
 build-lusid-apply:
+  rm -f {{ LUSID_APPLY_BINARIES_DIR }}/lusid-apply-*
+  mkdir -p {{ LUSID_APPLY_BINARIES_DIR }}
   cargo build -p lusid-apply --target x86_64-unknown-linux-gnu --release
+  cp ./target/x86_64-unknown-linux-gnu/release/lusid-apply {{ LUSID_APPLY_BINARIES_DIR }}/lusid-apply-x86-64
   # cargo build -p lusid-apply --target aarch64-unknown-linux-gnu --release
+  # cp ./target/aarch64-unknown-linux-gnu/release/lusid-apply {{ LUSID_APPLY_BINARIES_DIR }}/lusid-apply-aarch64
 
 # -----------------------------------------------------------------------------
 # Example: examples/nginx-cluster

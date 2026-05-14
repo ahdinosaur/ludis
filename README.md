@@ -23,24 +23,26 @@ Check out the [examples](./examples/):
 
 ### Install
 
-Until lusid has binary releases, build it from source:
+Until lusid has binary releases, build it from source. The `lusid-apply`
+worker is **embedded** into the `lusid` binary at build time, so build the
+worker first and the CLI second:
 
 ```sh
 git clone https://github.com/ahdinosaur/lusid
 cd lusid
-cargo build --release
+just build-lusid-apply           # builds lusid-apply, stages it under ./embed/
+cargo build -p lusid --release   # picks up ./embed/ by default
 ```
 
-This produces two binaries under `./target/release/`:
+If you have [just](https://github.com/casey/just) installed, the example
+recipes (e.g. `just nginx-cluster-apply-a`) chain both steps for you.
 
-- `lusid` — the CLI you run: `lusid machines list`, `lusid local apply`, `lusid dev apply`, ….
-- `lusid-apply` — the worker that actually evaluates + applies a plan. `lusid` spawns this either locally or inside a dev VM over SSH.
-
-The `just` recipes in the repo root handle the cross-compile dance. If you have [just](https://github.com/casey/just) installed:
-
-```sh
-just build-lusid-apply
-```
+This produces one runnable binary at `./target/release/lusid` — the CLI
+you run: `lusid machines list`, `lusid local apply`, `lusid dev apply`,
+…. The worker is invisible to operators: it's extracted to
+`~/.cache/lusid/lusid-apply/<version>/<arch>/lusid-apply` on first
+`local apply`, and streamed directly over SFTP for `dev apply`. (Remote
+apply is on the roadmap and will use the same SFTP path.)
 
 For running the `dev apply` / `dev ssh` flow you also need QEMU and a couple of image-building tools — see the [examples prerequisites](./examples/README.md#prerequisites) for the exact packages.
 

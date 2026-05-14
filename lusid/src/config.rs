@@ -56,24 +56,16 @@ struct ConfigToml {
     #[serde(default)]
     pub machines: BTreeMap<String, MachineConfigToml>,
     pub log: Option<String>,
-    pub lusid_apply_linux_x86_64_path: Option<String>,
-    pub lusid_apply_linux_aarch64_path: Option<String>,
 }
 
 /// Resolved configuration. `path` is the original config file location
 /// (used to derive `root()`, the plan-resolution base). `machines` map is
 /// keyed by the TOML section name.
-///
-/// `lusid_apply_linux_*_path` are dev/operator overrides for the embedded
-/// `lusid-apply` worker — when `None`, the runtime extracts the binary baked
-/// into `lusid` at build time (see [`crate::embedded`]).
 #[derive(Debug, Clone)]
 pub struct Config {
     pub path: PathBuf,
     pub machines: BTreeMap<String, MachineConfig>,
     pub log: String,
-    pub lusid_apply_linux_x86_64_path: Option<String>,
-    pub lusid_apply_linux_aarch64_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -97,32 +89,16 @@ pub struct MachineConfig {
 impl Config {
     pub async fn load(path: &Path, cli: &Cli) -> Result<Self, ConfigError> {
         let config = Self::load_config(path).await?;
-        let ConfigToml {
-            machines,
-            log,
-            lusid_apply_linux_x86_64_path,
-            lusid_apply_linux_aarch64_path,
-        } = config;
+        let ConfigToml { machines, log } = config;
 
         let machines = Self::resolve_machines(machines, path)?;
 
         let log = cli.log.clone().or(log).unwrap_or("error".into());
 
-        let lusid_apply_linux_x86_64_path = cli
-            .lusid_apply_linux_x86_64_path
-            .clone()
-            .or(lusid_apply_linux_x86_64_path);
-        let lusid_apply_linux_aarch64_path = cli
-            .lusid_apply_linux_aarch64_path
-            .clone()
-            .or(lusid_apply_linux_aarch64_path);
-
         Ok(Config {
             path: path.to_owned(),
             machines,
             log,
-            lusid_apply_linux_x86_64_path,
-            lusid_apply_linux_aarch64_path,
         })
     }
 
