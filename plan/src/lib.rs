@@ -205,6 +205,7 @@ async fn plan_item_to_resource(
                 id,
                 requires,
                 required_by,
+                handlers: Vec::new(),
             },
             node: params,
         })
@@ -219,6 +220,7 @@ async fn plan_item_to_resource(
                 id,
                 requires,
                 required_by,
+                handlers: Vec::new(),
             },
             children,
         })

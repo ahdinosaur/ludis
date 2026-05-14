@@ -40,7 +40,8 @@ use lusid_ctx::{Context, ContextError};
 use lusid_operation::{Operation, OperationApplyError};
 use lusid_params::ParamsContext;
 use lusid_plan::{
-    self, PlanError, PlanId, PlanNodeId, PlanTree, map_plan_subitems, plan, render_plan_tree,
+    self, PlanError, PlanId, PlanMeta, PlanNodeId, PlanTree, map_plan_subitems, plan,
+    render_plan_tree,
 };
 use lusid_resource::{HostPathValidationError, Resource, ResourceState, ResourceStateError};
 use lusid_secrets::{LoadError, Redactor, Secrets};
@@ -212,7 +213,10 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
             },
         )
         .await?;
-    debug!("Resources: {:?}", CausalityTree::from(resources.clone()));
+    debug!(
+        "Resources: {:?}",
+        CausalityTree::from(resources.clone().map_meta(PlanMeta::to_causality))
+    );
     emit(AppUpdate::ResourcesComplete).await?;
 
     // Get tree of (resource, resource state)
@@ -237,7 +241,8 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         .await?;
     debug!(
         "Resource states: {:?}",
-        CausalityTree::from(resource_states.clone()).map(|(_resource, state)| state)
+        CausalityTree::from(resource_states.clone().map_meta(PlanMeta::to_causality))
+            .map(|(_resource, state)| state)
     );
     emit(AppUpdate::ResourceStatesComplete).await?;
 
@@ -256,7 +261,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         .await?;
     debug!(
         "Resource changes: {:?}",
-        CausalityTree::from(resource_changes.clone())
+        CausalityTree::from(resource_changes.clone().map_meta(PlanMeta::to_causality))
     );
 
     let has_changes = resource_changes.leaves().any(|node| node.is_some());
@@ -290,11 +295,12 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         .await?;
     debug!(
         "Operations tree: {:?}",
-        CausalityTree::from(operations.clone())
+        CausalityTree::from(operations.clone().map_meta(PlanMeta::to_causality))
     );
     emit(AppUpdate::OperationsComplete).await?;
 
-    let operation_epochs = compute_epochs(CausalityTree::from(operations))?;
+    let operation_epochs =
+        compute_epochs(CausalityTree::from(operations.map_meta(PlanMeta::to_causality)))?;
     debug!("Operation epochs: {operation_epochs:?}");
     emit(AppUpdate::OperationsApplyStart {
         operations: operation_epochs
