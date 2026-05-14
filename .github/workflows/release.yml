@@ -23,6 +23,7 @@ permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
   # `github.ref_name` on workflow_dispatch is the branch (typically main),
   # not the input tag. Centralize the resolved tag here for every job.
   TAG: ${{ inputs.tag || github.ref_name }}
@@ -92,10 +93,21 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Cache Rust toolchain
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          targets: ${{ matrix.target }}
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.rustup/settings.toml
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        # rust-toolchain.toml pins channel/components/profile and one cross-target
+        # for local dev. The matrix.target here always matches the runner's host
+        # arch (x86_64 → ubuntu-24.04, aarch64 → ubuntu-24.04-arm), so the host
+        # std rustup installs by default is the one we need to build with.
+        run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
@@ -149,10 +161,21 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Cache Rust toolchain
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
-          targets: ${{ matrix.target }}
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.rustup/settings.toml
+          key: rustup-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install Rust toolchain (from rust-toolchain.toml)
+        # rust-toolchain.toml pins channel/components/profile and one cross-target
+        # for local dev. The matrix.target here always matches the runner's host
+        # arch (x86_64 → ubuntu-24.04, aarch64 → ubuntu-24.04-arm), so the host
+        # std rustup installs by default is the one we need to build with.
+        run: rustup show active-toolchain || rustup toolchain install
 
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
