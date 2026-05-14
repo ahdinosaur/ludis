@@ -428,6 +428,59 @@ mod tests {
     }
 
     #[test]
+    fn handler_leaf_lands_in_strictly_later_epoch_than_resource_leaves() {
+        // End-to-end contract: inject_handlers + compute_epochs must place the
+        // handler operation in an epoch strictly after every resource-side
+        // operation. This is the load-bearing semantic the doc promises.
+        use lusid_causality::compute_epochs;
+
+        let resource_op = Operation::Command(CommandOperation {
+            command: "RESOURCE".to_string(),
+            executor: CommandExecutor::Shell,
+        });
+        let handler = Operation::Command(CommandOperation {
+            command: "HANDLER".to_string(),
+            executor: CommandExecutor::Shell,
+        });
+        let tree = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(plan_item_id("res")),
+                handlers: vec![handler],
+                ..PlanMeta::default()
+            },
+            children: vec![
+                Tree::Leaf {
+                    meta: PlanMeta::default(),
+                    node: Some(resource_op),
+                },
+            ],
+        };
+        let injected = inject_handlers(tree);
+        let causality = injected.map_meta(PlanMeta::to_causality);
+        let epochs = compute_epochs(causality).expect("compute_epochs");
+
+        // Find which epoch each op landed in by inspecting its command string.
+        let find = |needle: &str| -> usize {
+            for (i, epoch) in epochs.iter().enumerate() {
+                for op in epoch {
+                    if let Operation::Command(c) = op
+                        && c.command == needle
+                    {
+                        return i;
+                    }
+                }
+            }
+            panic!("did not find op {needle:?} in any epoch");
+        };
+        let resource_epoch = find("RESOURCE");
+        let handler_epoch = find("HANDLER");
+        assert!(
+            handler_epoch > resource_epoch,
+            "handler epoch ({handler_epoch}) must be strictly later than resource epoch ({resource_epoch})",
+        );
+    }
+
+    #[test]
     fn reapplying_inject_handlers_is_a_noop() {
         // Defensive property: after one pass handlers are cleared on the
         // wrapped branch, so a second pass leaves the tree unchanged.
