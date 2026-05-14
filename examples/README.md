@@ -28,7 +28,7 @@ None of these are needed if you're only applying plans to machines you already h
 | --- | --- | --- |
 | [`nginx-cluster/`](./nginx-cluster/) | Two Debian servers, each running nginx with a per-machine greeting page. Shows multi-machine configs, per-machine `params`, and dependency ordering between resources. | Debian 13 |
 | [`arch-desktop/`](./arch-desktop/) | One Arch Linux machine running a minimal XFCE desktop with LightDM. Shows installing a group of packages and enabling a display-manager service. | Arch Linux |
-| [`dotfiles/`](./dotfiles/) | A dotfiles-style plan that symlinks a config file and a config directory into `$HOME` via `state: "linked"`. Demonstrates the `sourced` (copy) vs `linked` (symlink) distinction for `@core/file` and `@core/directory`. | any Linux |
+| [`dotfiles/`](./dotfiles/) | A dotfiles-style plan that symlinks a config file and a config directory into `$HOME` via `state: "linked"`. Demonstrates the `sourced` (copy) vs `linked` (symlink) distinction for `@resource/file` and `@resource/directory`. | any Linux |
 
 Every example follows the same structure:
 

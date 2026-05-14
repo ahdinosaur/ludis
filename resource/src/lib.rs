@@ -68,7 +68,7 @@ use crate::resources::user::{User, UserChange, UserParams, UserResource, UserSta
 /// `Params -> resources() -> State (via state()) -> change() -> operations()`
 #[async_trait]
 pub trait ResourceType {
-    /// Stable identifier used as the `@core/<ID>` module name in plans.
+    /// Stable identifier used as the `@resource/<ID>` module name in plans.
     const ID: &'static str;
 
     /// User-facing params struct, parsed directly from the plan's Rimu value
@@ -108,14 +108,14 @@ pub trait ResourceType {
 }
 
 /// Dispatcher over every resource's `Params` variant. Produced by the planner from the
-/// `@core/<id>` module a plan item refers to.
+/// `@resource/<id>` module a plan item refers to.
 ///
 /// Note(cc): `Secret` is a thin specialisation of `File` (stricter default
 /// permissions, single-case schema) that reuses File's `Resource`/`State`/
 /// `Change`/`Operation` machinery. It therefore does not get its own
 /// variant in `Resource`/`ResourceState`/`ResourceChange` — the atoms it
 /// produces are ordinary `Resource::File` atoms. The provenance ("this
-/// file was written for a @core/secret plan item") is preserved only at
+/// file was written for a @resource/secret plan item") is preserved only at
 /// this `ResourceParams` layer.
 #[derive(Debug, Clone)]
 pub enum ResourceParams {
@@ -589,16 +589,16 @@ impl Resource {
 /// low-level filesystem failure with no plan attribution, so it has no span.
 #[derive(Debug, Error)]
 pub enum HostPathValidationError {
-    #[error("source host-path {path:?} for @core/file resource was not found")]
+    #[error("source host-path {path:?} for @resource/file resource was not found")]
     FileSourceMissing { path: PathBuf, span: Span },
 
-    #[error("source host-path {path:?} for @core/file resource is not a regular file")]
+    #[error("source host-path {path:?} for @resource/file resource is not a regular file")]
     FileSourceNotFile { path: PathBuf, span: Span },
 
-    #[error("source host-path {path:?} for @core/directory resource was not found")]
+    #[error("source host-path {path:?} for @resource/directory resource was not found")]
     DirectorySourceMissing { path: PathBuf, span: Span },
 
-    #[error("source host-path {path:?} for @core/directory resource is not a directory")]
+    #[error("source host-path {path:?} for @resource/directory resource is not a directory")]
     DirectorySourceNotDirectory { path: PathBuf, span: Span },
 
     #[error(transparent)]
@@ -609,9 +609,9 @@ impl ResourceParams {
     /// Validate that any `host-path` source referenced by this params variant
     /// exists on the operator's filesystem with the expected type.
     ///
-    /// `@core/file` `state: "sourced"` and `state: "linked"` both require
+    /// `@resource/file` `state: "sourced"` and `state: "linked"` both require
     /// `source` to be a regular file (or a symlink that resolves to one).
-    /// `@core/directory` `state: "sourced"` and `state: "linked"` both
+    /// `@resource/directory` `state: "sourced"` and `state: "linked"` both
     /// require `source` to be a directory. All other variants are no-ops.
     ///
     /// Source paths arrive here already resolved to absolute `PathBuf`s (see
@@ -984,7 +984,7 @@ mod tests {
         absent.validate_host_paths().await.expect("no-op");
     }
 
-    /// `@core/file state: "sourced"` with a source that's a symlink to a
+    /// `@resource/file state: "sourced"` with a source that's a symlink to a
     /// *directory* must error out — the validator declares files-only.
     #[tokio::test]
     async fn file_sourced_errors_when_source_is_a_symlink_to_a_directory() {

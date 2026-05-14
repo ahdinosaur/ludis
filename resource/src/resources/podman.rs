@@ -19,7 +19,7 @@ use thiserror::Error;
 
 use crate::ResourceType;
 
-/// Plan-level parameters for the `@core/podman` resource.
+/// Plan-level parameters for the `@resource/podman` resource.
 ///
 /// Tagged by `state: "present" | "absent"`. Mirrors the shape of Ansible's
 /// `containers.podman.podman_container` at a conservative subset — enough to

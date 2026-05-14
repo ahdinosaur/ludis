@@ -8,7 +8,7 @@
 //! 3. Validates user params against the plan's `params` schema.
 //! 4. Invokes the plan's `setup(params, system)` function to get a list of `PlanItem`s.
 //! 5. For each item, either:
-//!    - If `module` starts with `@core/<id>` → convert to [`ResourceParams`] (a leaf).
+//!    - If `module` starts with `@resource/<id>` → convert to [`ResourceParams`] (a leaf).
 //!    - Otherwise → resolve the module as a sibling `.lusid` file, recurse, and attach
 //!      as a subtree (a branch).
 //!
@@ -24,20 +24,20 @@ use rimu::{Spanned, Value};
 use std::{path::PathBuf, string::FromUtf8Error};
 use thiserror::Error;
 
-mod core;
 mod eval;
 mod id;
 mod load;
 mod model;
+mod resource;
 mod tree;
 
 pub use crate::id::{PlanId, PlanNodeId};
 pub use crate::tree::*;
 use crate::{
-    core::{core_module, is_core_module},
     eval::{EvalError, evaluate},
     load::{LoadError, load},
     model::Plan,
+    resource::{is_resource_module, resource_module},
 };
 
 #[derive(Debug, Error, Display)]
@@ -151,14 +151,14 @@ pub enum PlanItemToResourceError {
     /// Failed to parse parameters for resource: {0}
     Parse(Spanned<ParseError>),
 
-    /// Unsupported core module id \"{id}\"
-    UnsupportedCoreModuleId { id: String },
+    /// unknown @resource/ module: \"{id}\"
+    UnsupportedResourceModuleId { id: String },
 
     /// Failed to compute subtree for nested plan: {0}
     PlanSubtree(#[from] Box<PlanError>),
 }
 
-/// Lower a single `PlanItem` to a subtree. Core modules produce a leaf with
+/// Lower a single `PlanItem` to a subtree. Resource modules produce a leaf with
 /// [`ResourceParams`]; every other module name is treated as a path relative to the
 /// parent plan and recursed into as a branch.
 async fn plan_item_to_resource(
@@ -198,8 +198,8 @@ async fn plan_item_to_resource(
         })
         .collect();
 
-    if let Some(core_module_id) = is_core_module(module) {
-        let params = core_module(core_module_id, params_value)?;
+    if let Some(resource_module_id) = is_resource_module(module) {
+        let params = resource_module(resource_module_id, params_value)?;
         Ok(PlanTree::Leaf {
             meta: PlanMeta {
                 id,

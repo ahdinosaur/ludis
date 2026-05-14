@@ -8,10 +8,10 @@ params:
 
 # `setup` receives the validated params and the current `system` descriptor
 # (hostname, arch, os, user). It returns a list of items; each item is either
-# a `@core/*` resource or a nested plan.
+# a `@resource/*` resource or a nested plan.
 setup: (params, system) =>
   # 1. Install the nginx package from Debian's apt repos.
-  - module: "@core/apt"
+  - module: "@resource/apt"
     id: "install-nginx"
     params:
       package: "nginx"
@@ -19,11 +19,11 @@ setup: (params, system) =>
   # 2. Replace the default welcome page with one that shows this machine's
   #    greeting and hostname.
   #
-  #    `/var/www/html/` is root-owned, and `@core/file` doesn't yet wrap
+  #    `/var/www/html/` is root-owned, and `@resource/file` doesn't yet wrap
   #    writes with sudo, so we shell out to `tee` via passwordless sudo.
   #    The `is_installed` check makes this idempotent: if the page already
   #    contains the greeting, the install command is skipped.
-  - module: "@core/command"
+  - module: "@resource/command"
     id: "publish-index"
     requires:
       - "install-nginx"
@@ -33,7 +33,7 @@ setup: (params, system) =>
       install: "printf '<!doctype html><html><body><h1>%s</h1><p>Served by %s via lusid.</p></body></html>' \"" + params.greeting + "\" \"" + system.hostname + "\" | sudo -n tee /var/www/html/index.html > /dev/null"
 
   # 3. Make sure nginx is enabled at boot and currently running.
-  - module: "@core/systemd"
+  - module: "@resource/systemd"
     requires:
       - "install-nginx"
       - "publish-index"

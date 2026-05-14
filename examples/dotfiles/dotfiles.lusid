@@ -21,7 +21,7 @@ setup: (params, system) =>
   # `lusid local apply`, so this plan works without any params overrides.
   # `<home>` itself is assumed to exist; only nested dirs like
   # `<home>/.config` need explicit `state: "present"` declarations below.
-  - module: "@core/file"
+  - module: "@resource/file"
     id: "zshrc"
     params:
       state: "linked"
@@ -30,13 +30,13 @@ setup: (params, system) =>
 
   # Symlink an entire config directory. The `<home>/.config` parent has to
   # exist before the symlink is created, so we declare it explicitly.
-  - module: "@core/directory"
+  - module: "@resource/directory"
     id: "config-dir"
     params:
       state: "present"
       path: system.user.home + "/.config"
 
-  - module: "@core/directory"
+  - module: "@resource/directory"
     id: "helix-dir"
     requires:
       - "config-dir"

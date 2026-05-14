@@ -93,7 +93,7 @@ pub enum ParseError {
 /// Parse a typed Rust value from a Rimu [`Spanned<Value>`].
 ///
 /// Implementors decide how to read their shape out of the dynamic Rimu value.
-/// This is the resource-boundary trait — every `@core/<id>` resource impls it
+/// This is the resource-boundary trait — every `@resource/<id>` resource impls it
 /// for its `Params` type.
 pub trait ParseParams: Sized {
     fn parse_params(value: Spanned<Value>) -> Result<Self, Spanned<ParseError>>;

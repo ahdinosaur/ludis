@@ -48,7 +48,7 @@ impl FromRimu for Version {
 
 /// An item from setup's returned list.
 /// Example:
-///   { module: "@core/pkg", id: "install-nvim", params: { package: "nvim" } }
+///   { module: "@resource/pkg", id: "install-nvim", params: { package: "nvim" } }
 #[derive(Debug, Clone)]
 pub struct PlanItem {
     pub id: Option<Spanned<String>>,

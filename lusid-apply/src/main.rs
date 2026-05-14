@@ -26,14 +26,14 @@ struct Cli {
     /// SECURITY: this string lands in the process's `argv[]` and is
     /// visible to any UID on the host via `/proc/<pid>/cmdline` (and
     /// `ps`). Do NOT pass secret values here. For sensitive material,
-    /// use the `@core/secret` resource — it resolves plaintext from
+    /// use the `@resource/secret` resource — it resolves plaintext from
     /// the decrypted bundle on `Context`, which never crosses an
     /// argv boundary.
     #[arg(long = "params")]
     params_json: Option<String>,
 
     /// Path to the age/SSH identity file used to decrypt project secrets.
-    /// Omit to run without secrets (plans referencing `@core/secret` will
+    /// Omit to run without secrets (plans referencing `@resource/secret` will
     /// fail at apply time).
     #[arg(long = "identity")]
     identity_path: Option<PathBuf>,

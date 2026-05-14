@@ -15,7 +15,7 @@ use thiserror::Error;
 
 use crate::ResourceType;
 
-/// Plan-level parameters for the `@core/user` resource.
+/// Plan-level parameters for the `@resource/user` resource.
 ///
 /// Tagged by `state: "present" | "absent"`. Mirrors the shape used by Salt (`user.present`)
 /// and Ansible (`ansible.builtin.user`), adapted to lusid's typed params schema.

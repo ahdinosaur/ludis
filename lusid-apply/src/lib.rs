@@ -63,7 +63,7 @@ use tracing::{debug, error, info};
 /// reads `lusid-secrets.toml` from `secrets_dir` (defaulting to
 /// `<root>/secrets`), matches the identity to an alias, and decrypts the
 /// subset of `*.age` files declared for that alias. `None` skips secrets
-/// entirely (plans that reference `@core/secret` will fail at apply with a
+/// entirely (plans that reference `@resource/secret` will fail at apply with a
 /// missing-secret error).
 ///
 /// `guest_mode` changes the secrets path for remote / dev-apply guests:
@@ -189,8 +189,8 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     let resource_params = FlatTree::from(resource_params);
 
     // Validate `host-path` sources up front so a typo doesn't surface as a
-    // confusing apply-time symlink/copy failure. Only `@core/file` and
-    // `@core/directory` "sourced" variants currently have a host-path source
+    // confusing apply-time symlink/copy failure. Only `@resource/file` and
+    // `@resource/directory` "sourced" variants currently have a host-path source
     // to validate; everything else is a no-op. The probes are independent
     // `lstat`/`stat` calls, so we fan them out — on a network filesystem a
     // serial walk would multiply round-trips by the leaf count.

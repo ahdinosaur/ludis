@@ -8,7 +8,7 @@
 
 1. Loads + evaluates the plan’s `setup(params, system)` function → returns a list of **PlanItem**s.
 2. Converts PlanItems into either:
-   - **Core modules** (`@core/*`) → become typed `ResourceParams` (apt/file/pacman today)
+   - **Resource modules** (`@resource/*`) → become typed `ResourceParams` (apt/file/pacman today)
    - Or nested plans (module path) → recursively planned
 3. Validates parameter schemas and values (with good span/source error reporting).
 4. Builds a **causality tree** (nodes can have `id`, `requires`, `required_by` dependencies).
@@ -44,7 +44,7 @@ Complexity is fine when warranted - this is a genuinely complex project. The poi
 
 To understand the runtime behavior, read in this order:
 1. `lusid-apply/src/lib.rs` (full pipeline)
-2. `plan/src/lib.rs` (planning recursion + core modules)
+2. `plan/src/lib.rs` (planning recursion + resource modules)
 3. `params/src/lib.rs` (schema/value validation)
 4. `causality/src/epoch.rs` (dependency scheduling)
 5. `lusid/src/tui.rs` (how updates are rendered)
@@ -65,12 +65,12 @@ If you add new path-like types, follow this pattern and be explicit about absolu
 
 ### `state: "sourced"` vs `state: "linked"`
 
-`@core/file` and `@core/directory` both expose two ways to materialise a host-path source on the target:
+`@resource/file` and `@resource/directory` both expose two ways to materialise a host-path source on the target:
 
 - **`state: "sourced"`** — byte-copy of the file, or recursive `cp -r` of the directory tree, into `path`. Accepts optional `mode`/`user`/`group`. Edits to `source` only propagate on the next apply. Use this when the bytes need to live on the target independently of the operator's filesystem (system configs, deployed artifacts, dev/remote apply).
 - **`state: "linked"`** — atomic symlink at `path` pointing to `source`. Refuses `mode`/`user`/`group` at the parser level (Linux symlinks have no meaningful mode of their own, and chmod/chown via the link silently mutates the target file in the operator's repo — declined). Edits to `source` show up at `path` immediately. Use this for dotfiles-style ergonomics.
 
-Both states validate at plan-load time (post-`plan()`, pre-resources expansion) that `source` exists and has the expected type — regular file for `@core/file`, directory for `@core/directory`. See `ResourceParams::validate_host_paths` in `resource/src/lib.rs`.
+Both states validate at plan-load time (post-`plan()`, pre-resources expansion) that `source` exists and has the expected type — regular file for `@resource/file`, directory for `@resource/directory`. See `ResourceParams::validate_host_paths` in `resource/src/lib.rs`.
 
 Implementation notes:
 - The Linked state probe is *lexical*: `readlink(2)` against the source string. We deliberately don't canonicalise; otherwise drift between a plan declaring `./foo` and an existing link declaring something else is invisible.

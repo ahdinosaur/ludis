@@ -27,7 +27,7 @@ each variant boxes the per-type data and delegates through the trait.
 3. Add a variant to each of: `ResourceParams`, `Resource`, `ResourceState`,
    `ResourceStateError`, `ResourceChange`.
 4. Thread it through the five `match` arms in `src/lib.rs`.
-5. Register the core module in `lusid-plan` so plans can reference `@core/<id>`.
+5. Register the resource module in `lusid-plan` so plans can reference `@resource/<id>`.
 
 ## Conventions
 

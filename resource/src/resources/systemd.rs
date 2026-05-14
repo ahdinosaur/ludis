@@ -223,7 +223,7 @@ impl ResourceType for Systemd {
             // An absent unit file is a valid "nothing here yet" state, not an error —
             // the same shape as apt/pacman's `NotInstalled`. State probing runs once
             // up front before any operations, so a systemd resource whose unit file
-            // will be provided by an earlier epoch (e.g. `@core/pacman` installing
+            // will be provided by an earlier epoch (e.g. `@resource/pacman` installing
             // `lightdm`) legitimately reports not-found at probe time. Represent it
             // as disabled+inactive; the later `systemctl enable|start` op then runs
             // after the unit is on disk. If the unit is still missing at operation

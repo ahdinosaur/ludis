@@ -16,7 +16,7 @@ pub enum DirectoryOperation {
     },
 
     /// Atomically create (or replace) a symlink at `path` targeting `source`.
-    /// Emitted by `@core/directory state: "linked"`. Implemented via the same
+    /// Emitted by `@resource/directory state: "linked"`. Implemented via the same
     /// `fs::create_symlink_atomic` primitive as the file equivalent — kept in
     /// this enum so the streaming TUI message reads `Directory::*` for a
     /// directory resource, rather than `File::Write`.
@@ -26,7 +26,7 @@ pub enum DirectoryOperation {
     },
 
     /// Recursively copy `source` into `path`. Emitted by
-    /// `@core/directory state: "sourced"`; `source` is a host-path that must
+    /// `@resource/directory state: "sourced"`; `source` is a host-path that must
     /// be reachable from the apply binary (already true on local apply, and
     /// pre-staged onto the same host for dev/remote apply).
     CopyTree {

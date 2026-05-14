@@ -7,7 +7,7 @@ The point of this example is to show:
 - How to define **multiple machines** in one `lusid.toml`.
 - How to feed **per-machine parameters** (`params`) into a shared plan so one
   plan definition can drive a fleet.
-- How to compose `@core/*` resources (`apt`, `command`, `systemd`) with
+- How to compose `@resource/*` resources (`apt`, `command`, `systemd`) with
   **dependency ordering** (`requires`) inside a plan.
 
 ## Files
@@ -24,13 +24,13 @@ The point of this example is to show:
 install-nginx ──► publish-index ──► systemd: enable + start nginx
 ```
 
-1. `@core/apt` installs the `nginx` package.
-2. `@core/command` runs a shell one-liner that `printf`s a small HTML page
+1. `@resource/apt` installs the `nginx` package.
+2. `@resource/command` runs a shell one-liner that `printf`s a small HTML page
    containing this machine's `params.greeting` and `system.hostname`, then
    pipes it through `sudo -n tee /var/www/html/index.html`. It's idempotent:
    the `is_installed` check uses `grep -qF` to see if the file already has
    the greeting, so reapplies are a no-op.
-3. `@core/systemd` ensures `nginx.service` is both `enabled` (on boot) and
+3. `@resource/systemd` ensures `nginx.service` is both `enabled` (on boot) and
    `active` (right now).
 
 ## Try it (local dev VMs)
@@ -78,6 +78,6 @@ re-running the plan after a success is fast and makes no changes.
 - Change a greeting in `lusid.toml` and re-apply: the `publish-index` command
   should re-run because the `grep` check now misses; nginx will reload its
   file on the next request.
-- Comment out the `@core/systemd` item (Rimu supports `#` line comments)
+- Comment out the `@resource/systemd` item (Rimu supports `#` line comments)
   and re-apply: nginx is installed but not running — a useful state for
   staging.

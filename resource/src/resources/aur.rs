@@ -177,14 +177,14 @@ impl ResourceType for Aur {
     }
 
     fn operations(change: Self::Change) -> Vec<CausalityTree<Operation>> {
-        // Note(cc): unlike `@core/pacman` we do not emit a system-upgrade
+        // Note(cc): unlike `@resource/pacman` we do not emit a system-upgrade
         // step before the install — paru's `-S` already runs `pacman -Sy`
         // internally to refresh the package db before any build, and a
-        // sibling `@core/pacman` resource (if present in the same plan)
+        // sibling `@resource/pacman` resource (if present in the same plan)
         // is responsible for the `-Syu` itself. Emitting one here would
         // just double that work.
         //
-        // Note(cc): in plans that mix `@core/aur` with `@core/pacman`,
+        // Note(cc): in plans that mix `@resource/aur` with `@resource/pacman`,
         // the AUR install's epoch is independent of pacman's `-Syu`.
         // Operations within an epoch run serially (see
         // `lusid-apply/src/lib.rs`), so there's no `db.lck` contention.
@@ -195,7 +195,7 @@ impl ResourceType for Aur {
         // linked against a library version that `-Syu` then replaces,
         // requiring a rebuild. Operators who care should flip the order
         // via plan-level `requires` / `required_by` (e.g. give the
-        // `@core/pacman` item an `id` and have the `@core/aur` item
+        // `@resource/pacman` item an `id` and have the `@resource/aur` item
         // require it).
         match change {
             AurChange::Install { package } => vec![CausalityTree::Leaf {

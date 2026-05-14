@@ -20,10 +20,10 @@ params:
     type: "string"
 
 setup: (params) =>
-  # `@core/pacman` with `packages` installs the whole set in one transaction,
+  # `@resource/pacman` with `packages` installs the whole set in one transaction,
   # which is both faster and friendlier to pacman's dependency solver than
   # installing each package separately.
-  - module: "@core/pacman"
+  - module: "@resource/pacman"
     id: "install-desktop"
     params:
       packages:
@@ -36,18 +36,18 @@ setup: (params) =>
   # Create the login account. Without this, the only user on the cloud
   # image is `arch` with a locked password, so the LightDM greeter has
   # no one to authenticate.
-  - module: "@core/user"
+  - module: "@resource/user"
     id: "create-login-user"
     params:
       state: "present"
       name: params.username
 
-  # `@core/user` doesn't set passwords yet (see the TODO in
+  # `@resource/user` doesn't set passwords yet (see the TODO in
   # `resource/src/resources/user.rs`), so we shell out to `chpasswd`.
   # `passwd -S` prints `<name> <status> ...` where status is `P` (password
   # set), `L` (locked), or `NP` (no password). Matching ` P ` keeps this
   # idempotent: once a password is set, re-applies skip the install step.
-  - module: "@core/command"
+  - module: "@resource/command"
     id: "set-login-password"
     requires:
       - "create-login-user"
@@ -59,7 +59,7 @@ setup: (params) =>
   # Turn on the display manager. `enabled: true` persists across reboots;
   # `active: true` starts it right now. LightDM then launches the greeter
   # on the console, which offers the XFCE session.
-  - module: "@core/systemd"
+  - module: "@resource/systemd"
     requires:
       - "install-desktop"
       - "set-login-password"
