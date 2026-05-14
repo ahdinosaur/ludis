@@ -2,10 +2,6 @@
 name = "lusid"
 version = "0.1.0"
 edition = "2024"
-build = "build.rs"
-
-[build-dependencies]
-# intentionally empty; build.rs uses only std
 
 [dependencies]
 lusid-apply-stdio = { path = "../apply-stdio", version = "0.1" }

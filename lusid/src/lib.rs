@@ -26,6 +26,7 @@ mod embedded;
 mod tui;
 
 use std::{
+    borrow::Cow,
     env,
     net::Ipv4Addr,
     path::{Path, PathBuf},
@@ -412,9 +413,9 @@ async fn cmd_remote_apply(
     let forward_secrets = if let Some(host_identity_path) = identity_path.as_deref() {
         match reencrypt_for_declared_machine(host_identity_path, &secrets_dir, &machine_id).await {
             Ok(reencrypted) => {
-                for secret in &reencrypted {
+                for secret in reencrypted.iter() {
                     ssh.sync(SshVolume::FileBytes {
-                        local: secret.ciphertext.clone(),
+                        local: Cow::Owned(secret.ciphertext.clone()),
                         permissions: Some(0o600),
                         remote: format!("{guest_secrets_dir}/{}.age", secret.stem),
                     })
@@ -447,8 +448,9 @@ async fn cmd_remote_apply(
     .await?;
 
     // 5. Upload binary. For non-root, install root-owned via sudo to defend
-    //    against between-SFTP-and-exec swaps.
-    let apply_bytes = embedded::embedded_lusid_apply(machine.arch)?.to_vec();
+    //    against between-SFTP-and-exec swaps. The embedded bytes are a
+    //    `&'static [u8]` so `Cow::Borrowed` ships them to SFTP without a copy.
+    let apply_bytes = Cow::Borrowed(embedded::embedded_lusid_apply(machine.arch)?);
     if remote.is_root() {
         ssh.sync(SshVolume::FileBytes {
             local: apply_bytes,
@@ -811,7 +813,7 @@ async fn cmd_dev_apply(
 
     let mut volumes = vec![
         SshVolume::FileBytes {
-            local: embedded::embedded_lusid_apply(machine.arch)?.to_vec(),
+            local: Cow::Borrowed(embedded::embedded_lusid_apply(machine.arch)?),
             permissions: Some(0o755),
             remote: format!("{dev_dir}/lusid-apply"),
         },
@@ -847,13 +849,13 @@ async fn cmd_dev_apply(
             Ok(reencrypted) if !reencrypted.is_empty() => {
                 let private_pem = vm_keypair.private_openssh()?;
                 volumes.push(SshVolume::FileBytes {
-                    local: private_pem.into_bytes(),
+                    local: Cow::Owned(private_pem.into_bytes()),
                     permissions: Some(0o600),
                     remote: guest_identity_path.clone(),
                 });
                 for secret in reencrypted {
                     volumes.push(SshVolume::FileBytes {
-                        local: secret.ciphertext,
+                        local: Cow::Owned(secret.ciphertext),
                         permissions: None,
                         remote: format!("{guest_secrets_dir}/{}.age", secret.stem),
                     });

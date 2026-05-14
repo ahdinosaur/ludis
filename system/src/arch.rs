@@ -9,6 +9,11 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
+/// Adding a new variant: also update `lusid/build.rs::ARCHES` (the build-time
+/// embed list — separate from this enum because `build.rs` can't depend on
+/// `lusid-system` without a slow build-dep), and the match in
+/// `lusid/src/embedded.rs::embedded_lusid_apply` (exhaustive over `Arch`, so
+/// the compiler flags missing arms).
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Arch {
     #[serde(rename = "x86-64")]
@@ -18,6 +23,22 @@ pub enum Arch {
 }
 
 impl Arch {
+    /// All supported architectures, in canonical order. Use for iteration in
+    /// docs, CLI help, and tests that need to round-trip every variant.
+    pub const fn all() -> &'static [Arch] {
+        &[Arch::X86_64, Arch::Aarch64]
+    }
+
+    /// Suffix used in cfg names and env vars: underscore form matching Rust's
+    /// own `target_arch` convention (e.g. `x86_64`, `aarch64`). Distinct from
+    /// [`Display`] (which uses the dashed form `x86-64` for filenames).
+    pub const fn cfg_suffix(&self) -> &'static str {
+        match self {
+            Arch::X86_64 => "x86_64",
+            Arch::Aarch64 => "aarch64",
+        }
+    }
+
     #[cfg(target_arch = "x86_64")]
     pub fn get() -> Self {
         Arch::X86_64

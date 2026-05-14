@@ -8,9 +8,10 @@
 //!
 //! Two entry points:
 //!
-//! - [`embedded_lusid_apply`] returns the static bytes for an arch, used by
-//!   `dev apply` (and eventually `remote apply`) where the bytes are streamed
-//!   over SFTP via [`SshVolume::FileBytes`](lusid_ssh::SshVolume::FileBytes).
+//! - [`embedded_lusid_apply`] returns the static bytes for an arch. Used by
+//!   `dev apply` and `remote apply`, which ship the bytes to SFTP via
+//!   [`SshVolume::FileBytes`](lusid_ssh::SshVolume::FileBytes) wrapped in
+//!   `Cow::Borrowed` — no copy of the ~10–30 MB blob per apply.
 //! - [`resolve_or_extract_for_arch`] writes the bytes to an XDG-style cache
 //!   path and returns the path. Used by `local apply`, which spawns
 //!   `lusid-apply` as a subprocess.
@@ -166,15 +167,21 @@ async fn write_executable(path: &std::path::Path, bytes: &[u8]) -> Result<(), Em
 /// Version-keyed so a `lusid` upgrade triggers re-extraction without
 /// fighting any leftover cache from an older version.
 fn cache_path(arch: Arch) -> Result<PathBuf, EmbeddedError> {
-    let cache_root = match std::env::var_os("XDG_CACHE_HOME") {
+    // `XDG_CACHE_HOME=""` is treated as unset (matches the XDG basedir spec:
+    // "If $XDG_CACHE_HOME is either not set or empty, a default … should be
+    // used."), so we fall through to `$HOME/.cache` rather than rooting the
+    // cache at `/lusid/...`.
+    let cache_root = match std::env::var_os("XDG_CACHE_HOME").filter(|v| !v.is_empty()) {
         Some(val) => PathBuf::from(val),
         None => {
-            let home = std::env::var_os("HOME").ok_or_else(|| {
-                EmbeddedError::CacheDir(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "neither XDG_CACHE_HOME nor HOME is set",
-                ))
-            })?;
+            let home = std::env::var_os("HOME")
+                .filter(|h| !h.is_empty())
+                .ok_or_else(|| {
+                    EmbeddedError::CacheDir(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "neither XDG_CACHE_HOME nor HOME is set",
+                    ))
+                })?;
             PathBuf::from(home).join(".cache")
         }
     };
@@ -182,13 +189,6 @@ fn cache_path(arch: Arch) -> Result<PathBuf, EmbeddedError> {
         .join("lusid")
         .join("lusid-apply")
         .join(env!("CARGO_PKG_VERSION"))
-        .join(arch_env_suffix(arch))
+        .join(arch.cfg_suffix())
         .join("lusid-apply"))
-}
-
-fn arch_env_suffix(arch: Arch) -> &'static str {
-    match arch {
-        Arch::X86_64 => "x86_64",
-        Arch::Aarch64 => "aarch64",
-    }
 }

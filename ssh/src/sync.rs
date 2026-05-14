@@ -4,6 +4,7 @@ use russh_sftp::{
     protocol::{FileAttributes, OpenFlags},
 };
 use std::{
+    borrow::Cow,
     fmt::Debug,
     path::{Path, PathBuf},
 };
@@ -28,8 +29,13 @@ pub enum SshVolume {
         local: PathBuf,
         remote: String,
     },
+    /// Upload an in-memory byte blob. `local` is a `Cow` so callers can hand
+    /// over either runtime-built bytes (e.g. re-encrypted secret ciphertexts)
+    /// via `Cow::Owned`, or compile-time-embedded blobs (e.g. the embedded
+    /// `lusid-apply` binary) via `Cow::Borrowed(&'static [u8])` without an
+    /// extra ~10–30 MB clone per apply.
     FileBytes {
-        local: Vec<u8>,
+        local: Cow<'static, [u8]>,
         permissions: Option<u32>,
         remote: String,
     },

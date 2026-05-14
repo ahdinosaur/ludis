@@ -3,20 +3,20 @@
 //!
 //! Looks for `lusid-apply-<arch_display>` files in this directory order:
 //!
-//! 1. `$LUSID_APPLY_BINARIES_DIR` if set (used by CI).
+//! 1. `$LUSID_APPLY_BINARIES_DIR` if set (used by CI). **Strict mode**:
+//!    missing arch fails the build, so a release never silently ships a
+//!    binary with an arch unembedded.
 //! 2. `<repo-root>/embed/` (the layout `just build-lusid-apply` stages).
+//!    **Lenient mode**: missing arch emits `cargo:warning=…` and proceeds, so
+//!    a fresh checkout compiles before the worker is built. Runtime then
+//!    errors with `EmbeddedError::NotEmbedded` for that arch.
 //!
 //! For each binary found, copies it into `OUT_DIR` and exports:
 //!
 //! - `cargo:rustc-env=LUSID_APPLY_OUT_<ARCH>=<absolute-path>` — pointed at by
 //!   `include_bytes!` in `src/embedded.rs`.
 //! - `cargo:rustc-cfg=embedded_apply_<arch>` — gates the `include_bytes!`
-//!   call so a dev build with no binaries staged compiles without needing a
-//!   placeholder file.
-//!
-//! When neither location has a binary for an arch, `cargo:warning=…` points
-//! the user at `just build-lusid-apply`. The resulting `lusid` errors with
-//! `EmbeddedError::NotEmbedded` at runtime if asked to apply for that arch.
+//!   call so a lenient-mode build with no binaries staged still compiles.
 
 use std::env;
 use std::fs;
@@ -24,8 +24,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process;
 
-/// (`Arch::Display` value used for the source filename, cfg-name suffix
-/// using underscores so `target_arch`-style cfgs stay consistent.)
+/// `(Arch::Display value used for the source filename, Arch::cfg_suffix()
+/// used for cfg names so `target_arch`-style cfgs stay consistent)`.
+///
+/// Source of truth for the variant set lives in `lusid_system::Arch` (see
+/// `Arch::all()` / `Arch::cfg_suffix()`); duplicated here because `build.rs`
+/// can't depend on `lusid-system` without a slow build-dep. Keep these two
+/// strings per variant aligned with the corresponding `Arch` value.
 const ARCHES: &[(&str, &str)] = &[("x86-64", "x86_64"), ("aarch64", "aarch64")];
 
 fn main() {
@@ -39,6 +44,11 @@ fn main() {
     }
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR not set"));
+    // Strict mode is gated on the env var being set, not on the dir being
+    // present. CI explicitly opts in by exporting `LUSID_APPLY_BINARIES_DIR`;
+    // local dev fall-back to `<repo-root>/embed/` stays lenient even if a
+    // contributor happens to have created that dir.
+    let strict = env::var_os("LUSID_APPLY_BINARIES_DIR").is_some();
     let binaries_dir = env::var_os("LUSID_APPLY_BINARIES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -63,6 +73,14 @@ fn main() {
     for (arch_display, cfg_suffix) in ARCHES {
         let source = binaries_dir.join(format!("lusid-apply-{arch_display}"));
         if !source.is_file() {
+            if strict {
+                eprintln!(
+                    "error: lusid-apply for {arch_display} not embedded: {} is missing \
+                     (LUSID_APPLY_BINARIES_DIR is set, so this is a strict-mode build)",
+                    source.display()
+                );
+                process::exit(1);
+            }
             println!(
                 "cargo:warning=lusid-apply for {arch_display} not embedded: \
                  {} is missing — run `just build-lusid-apply`",

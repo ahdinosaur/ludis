@@ -25,7 +25,19 @@ Check out the [examples](./examples/):
 
 Until lusid has binary releases, build it from source. The `lusid-apply`
 worker is **embedded** into the `lusid` binary at build time, so build the
-worker first and the CLI second:
+worker first and the CLI second.
+
+**Prerequisites.** Rust stable + `just`. Because `just build-lusid-apply`
+builds the worker for **both** x86-64 and aarch64, you also need the
+aarch64 cross-compile toolchain installed even when targeting only your
+host arch:
+
+- Debian/Ubuntu: `sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross`
+- Arch: `sudo pacman -S aarch64-linux-gnu-gcc aarch64-linux-gnu-glibc`
+- All: `rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu`
+
+The aarch64 linker is wired up in `.cargo/config.toml`. CI builds each
+arch on a native runner, so the cross-toolchain isn't needed in `release.yml`.
 
 ```sh
 git clone https://github.com/ahdinosaur/lusid

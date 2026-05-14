@@ -165,6 +165,11 @@ jobs:
           pattern: lusid-apply-*
           path: embed
           merge-multiple: true
+          # `needs: build-apply` already skips this job if any matrix entry
+          # failed; this catches the (defensive) case where build-apply
+          # succeeds but uploads no artifact under the expected pattern, so
+          # `build.rs` doesn't silently produce a lusid binary missing arches.
+          if-no-files-found: error
 
       - name: Restore executable bits
         # actions/upload-artifact preserves +x as of v4, but be defensive —
@@ -210,6 +215,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Note(cc): `--generate-notes` replaces whatever notes the draft has
+      # with the GitHub auto-generated commit log. If we ever want curated
+      # release notes, drop the flag here and have `create-release` (or a
+      # human between create + publish) populate `--notes` instead — the
+      # current empty `--notes ""` at create time is what makes the
+      # auto-generated content show up cleanly.
       - name: Promote draft to published
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
