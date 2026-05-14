@@ -78,7 +78,10 @@ pub enum FlatpakOperation {
 
 impl Display for FlatpakOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let scope = |user: bool| if user { " --user" } else { "" };
+        // Render the actual scope flag the command runs with so the user-
+        // facing diff matches the executed argv (the operation always
+        // passes `--user` or `--system` — never neither).
+        let scope = |user: bool| if user { " --user" } else { " --system" };
         match self {
             FlatpakOperation::Install {
                 remote,
@@ -216,14 +219,18 @@ impl OperationType for Flatpak {
                 // `--app` is explicit so a runtime ref declared in the plan
                 // fails fast with flatpak's own error rather than half-
                 // succeeding via the install-default.
+                //
+                // Both `remote` and `names` go AFTER the `--` separator so
+                // a user-supplied value beginning with `-` cannot be
+                // misparsed as an option.
                 let mut cmd = Command::new("flatpak");
                 scope_arg(&mut cmd, *user);
                 cmd.arg("install")
                     .arg("-y")
                     .arg("--noninteractive")
                     .arg("--app")
-                    .arg(remote)
                     .arg("--")
+                    .arg(remote)
                     .args(names);
                 let output = run(cmd, *user).await?;
                 Ok((
@@ -246,9 +253,16 @@ impl OperationType for Flatpak {
                     "[flatpak] uninstall: {}",
                     names.join(", ")
                 );
+                // `--app` mirrors the install path — runtimes are out of
+                // scope for `@core/flatpak`, so an uninstall request for a
+                // name that flatpak might resolve as a runtime fails loudly
+                // rather than removing something we didn't manage.
                 let mut cmd = Command::new("flatpak");
                 scope_arg(&mut cmd, *user);
-                cmd.arg("uninstall").arg("-y").arg("--noninteractive");
+                cmd.arg("uninstall")
+                    .arg("-y")
+                    .arg("--noninteractive")
+                    .arg("--app");
                 if *delete_data {
                     cmd.arg("--delete-data");
                 }

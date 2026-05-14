@@ -307,8 +307,9 @@ impl ResourceType for FlatpakRemote {
 }
 
 /// Split a `flatpak remotes --columns=name,url` line into `(name, url)`.
-/// flatpak emits tab-separated output. Lines that don't contain a tab are
-/// malformed and surface as `ParseRemotesLine`.
+/// flatpak emits tab-separated output. Lines without a tab yield `None` —
+/// callers (currently only [`FlatpakRemote::state`]) skip those rather than
+/// erroring, so a stray header or banner doesn't crash the probe.
 fn parse_remotes_line(line: &str) -> Option<(&str, &str)> {
     line.split_once('\t')
 }
