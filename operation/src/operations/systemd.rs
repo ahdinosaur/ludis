@@ -202,4 +202,3 @@ mod tests {
         assert_eq!(Systemd::merge(vec![restart, reload]).len(), 2);
     }
 }
-

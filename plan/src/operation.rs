@@ -46,9 +46,7 @@ pub fn operation_module(
     }
 }
 
-fn parse<O: ParseParams>(
-    params: Option<Spanned<Value>>,
-) -> Result<O, PlanItemToResourceError> {
+fn parse<O: ParseParams>(params: Option<Spanned<Value>>) -> Result<O, PlanItemToResourceError> {
     let value = params.ok_or(PlanItemToResourceError::MissingParams)?;
     O::parse_params(value).map_err(PlanItemToResourceError::Parse)
 }

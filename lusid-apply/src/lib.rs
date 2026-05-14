@@ -305,8 +305,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     let injected = inject_handlers(PlanTree::from(operations));
     debug!("Operations with handlers injected: {injected:?}");
 
-    let operation_epochs =
-        compute_epochs(injected.map_meta(PlanMeta::to_causality))?;
+    let operation_epochs = compute_epochs(injected.map_meta(PlanMeta::to_causality))?;
     debug!("Operation epochs: {operation_epochs:?}");
     emit(AppUpdate::OperationsApplyStart {
         operations: operation_epochs

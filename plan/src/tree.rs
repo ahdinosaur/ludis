@@ -129,9 +129,7 @@ const HANDLER_ANCHOR: &str = "@@handler-anchor";
 ///
 /// Branches with empty `handlers`, or with handlers but no descendant change,
 /// pass through unchanged.
-pub fn inject_handlers(
-    tree: PlanTree<Option<Operation>>,
-) -> PlanTree<Option<Operation>> {
+pub fn inject_handlers(tree: PlanTree<Option<Operation>>) -> PlanTree<Option<Operation>> {
     match tree {
         Tree::Leaf { meta, node } => Tree::Leaf { meta, node },
         Tree::Branch { meta, children } => {
@@ -412,12 +410,10 @@ mod tests {
                 handlers: vec![handler],
                 ..PlanMeta::default()
             },
-            children: vec![
-                Tree::Leaf {
-                    meta: PlanMeta::default(),
-                    node: Some(resource_op),
-                },
-            ],
+            children: vec![Tree::Leaf {
+                meta: PlanMeta::default(),
+                node: Some(resource_op),
+            }],
         };
         let injected = inject_handlers(tree);
         let causality = injected.map_meta(PlanMeta::to_causality);
@@ -443,5 +439,4 @@ mod tests {
             "handler epoch ({handler_epoch}) must be strictly later than resource epoch ({resource_epoch})",
         );
     }
-
 }

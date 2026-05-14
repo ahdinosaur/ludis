@@ -158,4 +158,3 @@ mod tests {
         assert_eq!(Command::merge(vec![shell, direct]).len(), 2);
     }
 }
-

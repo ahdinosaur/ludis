@@ -36,14 +36,10 @@ pub fn resource_module(
         }
         Pacman::ID => resource_module_for_resource::<Pacman>(params).map(ResourceParams::Pacman),
         Podman::ID => resource_module_for_resource::<Podman>(params).map(ResourceParams::Podman),
-        Command::ID => {
-            resource_module_for_resource::<Command>(params).map(ResourceParams::Command)
-        }
+        Command::ID => resource_module_for_resource::<Command>(params).map(ResourceParams::Command),
         Git::ID => resource_module_for_resource::<Git>(params).map(ResourceParams::Git),
         Secret::ID => resource_module_for_resource::<Secret>(params).map(ResourceParams::Secret),
-        Systemd::ID => {
-            resource_module_for_resource::<Systemd>(params).map(ResourceParams::Systemd)
-        }
+        Systemd::ID => resource_module_for_resource::<Systemd>(params).map(ResourceParams::Systemd),
         User::ID => resource_module_for_resource::<User>(params).map(ResourceParams::User),
         Group::ID => resource_module_for_resource::<Group>(params).map(ResourceParams::Group),
         other => Err(PlanItemToResourceError::UnsupportedResourceModuleId {
