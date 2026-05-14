@@ -705,7 +705,7 @@ These are real but deferred to post-v1. Documented (not runtime-enforced) so use
 >
 > Resources live at the top level of `setup`. Operations live only inside an `on_change` block.
 >
-> **`on_change` hooks.** A resource may declare a list of operations to run when it changes. Hooks fire when the resource has any change to apply (new file contents, different mode, owner change, etc.). They run after the resource's own operations but within the same dependency epoch (the topological layer the resource's operations land in). Identical hooks coalesce within an epoch — ten files in the same epoch that all `on_change: reload nginx` produce one reload, not ten.
+> **`on_change` hooks.** A resource may declare a list of operations to run when it changes. Hooks fire when the resource has any change to apply (new file contents, different mode, owner change, etc.). They run in a strictly-later epoch than every one of the resource's own operations — `inject_handlers` wraps the resource's children in an anchor sub-branch and gives each handler `requires: [anchor_id]`, so per causality's branch-as-group semantics the handler waits for every resource-side leaf. Identical hooks coalesce within that handler epoch — if ten resources in the same epoch each `on_change: reload nginx`, their hooks all land in the next epoch and merge dedup collapses them to one reload.
 >
 > ```rimu
 > - module: "@resource/file"
