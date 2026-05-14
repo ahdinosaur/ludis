@@ -56,8 +56,6 @@ struct ConfigToml {
     #[serde(default)]
     pub machines: BTreeMap<String, MachineConfigToml>,
     pub log: Option<String>,
-    pub lusid_apply_linux_x86_64_path: Option<String>,
-    pub lusid_apply_linux_aarch64_path: Option<String>,
 }
 
 /// Resolved configuration. `path` is the original config file location
@@ -68,8 +66,6 @@ pub struct Config {
     pub path: PathBuf,
     pub machines: BTreeMap<String, MachineConfig>,
     pub log: String,
-    pub lusid_apply_linux_x86_64_path: String,
-    pub lusid_apply_linux_aarch64_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -93,34 +89,16 @@ pub struct MachineConfig {
 impl Config {
     pub async fn load(path: &Path, cli: &Cli) -> Result<Self, ConfigError> {
         let config = Self::load_config(path).await?;
-        let ConfigToml {
-            machines,
-            log,
-            lusid_apply_linux_x86_64_path,
-            lusid_apply_linux_aarch64_path,
-        } = config;
+        let ConfigToml { machines, log } = config;
 
         let machines = Self::resolve_machines(machines, path)?;
 
         let log = cli.log.clone().or(log).unwrap_or("error".into());
 
-        let lusid_apply_linux_x86_64_path = cli
-            .lusid_apply_linux_x86_64_path
-            .clone()
-            .or(lusid_apply_linux_x86_64_path.clone())
-            .unwrap_or("lusid-apply-linux-x86-64".into());
-        let lusid_apply_linux_aarch64_path = cli
-            .lusid_apply_linux_aarch64_path
-            .clone()
-            .or(lusid_apply_linux_aarch64_path.clone())
-            .unwrap_or("lusid-apply-linux-aarch64".into());
-
         Ok(Config {
             path: path.to_owned(),
             machines,
             log,
-            lusid_apply_linux_x86_64_path,
-            lusid_apply_linux_aarch64_path,
         })
     }
 

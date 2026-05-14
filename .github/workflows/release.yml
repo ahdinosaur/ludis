@@ -1,0 +1,227 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)release"
+        required: true
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  # `github.ref_name` on workflow_dispatch is the branch (typically main),
+  # not the input tag. Centralize the resolved tag here for every job.
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  create-release:
+    name: Create draft release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Validate tag format
+        # Reject pasted refs or surprise whitespace before any checkout.
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "error: TAG=$TAG does not match v<semver>"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - name: Create draft release (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Re-runs (workflow_dispatch) must NOT clobber a published release.
+          # Re-using an existing draft is fine — subsequent `gh release upload
+          # --clobber` calls will refresh its assets.
+          if gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null \
+              | grep -qx false; then
+            echo "error: $TAG is already a published release; refusing to overwrite"
+            exit 1
+          fi
+          prerelease_arg=""
+          if [[ "$TAG" == *-* ]]; then
+            prerelease_arg="--prerelease"
+          fi
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft $prerelease_arg \
+              --target "$(git rev-parse HEAD)" \
+              --title "$TAG" --notes ""
+          fi
+
+  build-apply:
+    name: Build lusid-apply (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            arch_display: x86-64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            arch_display: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: apply-${{ matrix.target }}
+
+      - name: Build lusid-apply
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct HEAD)
+          export SOURCE_DATE_EPOCH
+          cargo build -p lusid-apply --release --target ${{ matrix.target }} --locked
+
+      - name: Strip binary
+        run: strip target/${{ matrix.target }}/release/lusid-apply
+
+      - name: Stage artifact with arch-display name
+        run: |
+          # Use Arch::Display value as filename so the embed step in
+          # `build-lusid` lays out files exactly where build.rs expects.
+          cp target/${{ matrix.target }}/release/lusid-apply \
+             lusid-apply-${{ matrix.arch_display }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lusid-apply-${{ matrix.arch_display }}
+          path: lusid-apply-${{ matrix.arch_display }}
+          retention-days: 1
+          if-no-files-found: error
+
+  build-lusid:
+    name: Build lusid (${{ matrix.target }})
+    needs: [create-release, build-apply]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            arch_display: x86-64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            arch_display: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          shared-key: lusid-${{ matrix.target }}
+
+      - name: Download all lusid-apply artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: lusid-apply-*
+          path: embed
+          merge-multiple: true
+          # `needs: build-apply` already skips this job if any matrix entry
+          # failed; this catches the (defensive) case where build-apply
+          # succeeds but uploads no artifact under the expected pattern, so
+          # `build.rs` doesn't silently produce a lusid binary missing arches.
+          if-no-files-found: error
+
+      - name: Restore executable bits
+        # actions/upload-artifact preserves +x as of v4, but be defensive —
+        # build.rs only cares about file contents (`is_file()`), so this is
+        # belt-and-braces for the runtime exec when bytes are unpacked later.
+        run: chmod 0755 embed/lusid-apply-*
+
+      - name: Build lusid (with embedded apply binaries)
+        env:
+          LUSID_APPLY_BINARIES_DIR: ${{ github.workspace }}/embed
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct HEAD)
+          export SOURCE_DATE_EPOCH
+          cargo build -p lusid --release --target ${{ matrix.target }} --locked
+
+      - name: Strip binary
+        run: strip target/${{ matrix.target }}/release/lusid
+
+      - name: Package, checksum, upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct HEAD)
+          ARCHIVE="lusid-${TAG}-${{ matrix.target }}.tar.gz"
+
+          # Reproducible tar: stable sort order, neutral ownership, fixed
+          # mtime from the tag commit. `gzip -n` strips the embedded
+          # timestamp/name so re-runs produce identical bytes.
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+              --mtime="@${SOURCE_DATE_EPOCH}" \
+              -C target/${{ matrix.target }}/release \
+              -cf - lusid \
+            | gzip -n > "$ARCHIVE"
+
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --clobber
+
+  publish-release:
+    name: Publish release
+    needs: [build-lusid]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      # Note(cc): `--generate-notes` replaces whatever notes the draft has
+      # with the GitHub auto-generated commit log. If we ever want curated
+      # release notes, drop the flag here and have `create-release` (or a
+      # human between create + publish) populate `--notes` instead — the
+      # current empty `--notes ""` at create time is what makes the
+      # auto-generated content show up cleanly.
+      - name: Promote draft to published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$TAG" --draft=false --generate-notes --repo "$GITHUB_REPOSITORY"

@@ -22,9 +22,11 @@
 //!   open an interactive shell).
 
 mod config;
+mod embedded;
 mod tui;
 
 use std::{
+    borrow::Cow,
     env,
     net::Ipv4Addr,
     path::{Path, PathBuf},
@@ -49,19 +51,14 @@ use lusid_vm::{Vm, VmError, VmOptions};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tracing::error;
-use which::which;
 
 use crate::config::{Config, ConfigError, MachineConfig};
+use crate::embedded::EmbeddedError;
 use crate::tui::{TuiError, tui};
 
-/// Parsed CLI. `lusid_apply_linux_*_path` point at prebuilt apply binaries
-/// for each target arch — the dev workflow uploads these to VMs rather than
-/// compiling inside the guest. Both fall back to `lusid.toml` → defaults.
-///
-/// Note(cc): only x86_64 and aarch64 are plumbed. Adding a new target arch
-/// means adding a new field + env var here *and* a selector wherever the
-/// arch is matched. Worth revisiting as a `HashMap<Arch, PathBuf>` if the
-/// list grows.
+/// Parsed CLI. The `lusid-apply` worker is baked into this binary at build
+/// time for each supported target arch (see [`crate::embedded`] /
+/// [`build.rs`](../../build.rs)) — there is no runtime override.
 #[derive(Parser, Debug)]
 #[command(name = "lusid", version, about = "Lusid CLI")]
 pub struct Cli {
@@ -73,12 +70,6 @@ pub struct Cli {
 
     #[arg(long = "log", env = "LUSID_LOG", global = true)]
     pub log: Option<String>,
-
-    #[arg(env = "LUSID_APPLY_LINUX_X86_64", global = true)]
-    pub lusid_apply_linux_x86_64_path: Option<String>,
-
-    #[arg(env = "LUSID_APPLY_LINUX_AARCH64", global = true)]
-    pub lusid_apply_linux_aarch64_path: Option<String>,
 
     /// Override `<root>/secrets` as the secrets directory (location of
     /// `lusid-secrets.toml` and `*.age` ciphertexts).
@@ -164,9 +155,6 @@ pub enum AppError {
     Config(#[from] ConfigError),
 
     #[error(transparent)]
-    EnvVar(#[from] env::VarError),
-
-    #[error(transparent)]
     Command(#[from] CommandError),
 
     #[error(transparent)]
@@ -179,9 +167,6 @@ pub enum AppError {
     ParamsTomlToJson(#[from] serde_json::Error),
 
     #[error(transparent)]
-    Which(#[from] which::Error),
-
-    #[error(transparent)]
     Tui(#[from] TuiError),
 
     #[error(transparent)]
@@ -192,6 +177,9 @@ pub enum AppError {
 
     #[error("failed to serialize VM SSH keypair: {0}")]
     SshKeypair(#[from] SshKeypairError),
+
+    #[error(transparent)]
+    Embedded(#[from] EmbeddedError),
 
     #[error("failed to read output from remote SSH command: {0}")]
     ReadSshOutput(#[source] tokio::io::Error),
@@ -323,13 +311,11 @@ async fn cmd_local_apply(
     secrets_dir: PathBuf,
     identity_path: Option<PathBuf>,
 ) -> Result<(), AppError> {
-    let Config {
-        ref lusid_apply_linux_x86_64_path,
-        ..
-    } = config;
     let MachineConfig { plan, params, .. } = config.local_machine()?;
 
-    let mut command = Command::new(lusid_apply_linux_x86_64_path);
+    let apply_bin = embedded::resolve_or_extract_for_arch(Arch::get()).await?;
+
+    let mut command = Command::new(&apply_bin);
     command
         .args(["--root", &config.root().to_string_lossy()])
         .args(["--plan", &plan.to_string_lossy()])
@@ -427,9 +413,9 @@ async fn cmd_remote_apply(
     let forward_secrets = if let Some(host_identity_path) = identity_path.as_deref() {
         match reencrypt_for_declared_machine(host_identity_path, &secrets_dir, &machine_id).await {
             Ok(reencrypted) => {
-                for secret in &reencrypted {
+                for secret in reencrypted.iter() {
                     ssh.sync(SshVolume::FileBytes {
-                        local: secret.ciphertext.clone(),
+                        local: Cow::Owned(secret.ciphertext.clone()),
                         permissions: Some(0o600),
                         remote: format!("{guest_secrets_dir}/{}.age", secret.stem),
                     })
@@ -462,20 +448,21 @@ async fn cmd_remote_apply(
     .await?;
 
     // 5. Upload binary. For non-root, install root-owned via sudo to defend
-    //    against between-SFTP-and-exec swaps.
-    let apply_bin = which(select_apply_binary(&config, &machine.arch))?;
+    //    against between-SFTP-and-exec swaps. The embedded bytes are a
+    //    `&'static [u8]` so `Cow::Borrowed` ships them to SFTP without a copy.
+    let apply_bytes = Cow::Borrowed(embedded::embedded_lusid_apply(machine.arch)?);
     if remote.is_root() {
-        ssh.sync(SshVolume::FilePath {
-            local: apply_bin,
+        ssh.sync(SshVolume::FileBytes {
+            local: apply_bytes,
+            permissions: Some(0o755),
             remote: guest_apply_path.clone(),
         })
         .await?;
-        let chmod_cmd = format!("chmod 0755 {}", shell_words::quote(&guest_apply_path));
-        let (_, _, _) = ssh_run(&mut ssh, &chmod_cmd).await?;
     } else {
         let upload_path = format!("{REMOTE_ROOT}/lusid-apply.upload");
-        ssh.sync(SshVolume::FilePath {
-            local: apply_bin,
+        ssh.sync(SshVolume::FileBytes {
+            local: apply_bytes,
+            permissions: Some(0o755),
             remote: upload_path.clone(),
         })
         .await?;
@@ -770,15 +757,6 @@ async fn clear_remote_secrets_dir(ssh: &mut Ssh, dir: &str, is_root: bool) -> Re
     Ok(())
 }
 
-/// Pick the `lusid-apply` binary for the target arch. Falls back to the
-/// default name if unset; `which()` resolves it on PATH.
-fn select_apply_binary(config: &Config, arch: &Arch) -> String {
-    match arch {
-        Arch::X86_64 => config.lusid_apply_linux_x86_64_path.clone(),
-        Arch::Aarch64 => config.lusid_apply_linux_aarch64_path.clone(),
-    }
-}
-
 // `dev apply`: boot a local QEMU VM matching the machine spec, upload the
 // plan directory and a prebuilt `lusid-apply` binary over SFTP, then run
 // apply remotely and stream its stdout/stderr through the TUI just like
@@ -832,11 +810,11 @@ async fn cmd_dev_apply(
     let dev_dir = format!("/home/{}", vm.user);
     let plan_dir = plan.parent().unwrap();
     let plan_filename = plan.file_name().unwrap().to_string_lossy();
-    let apply_bin = which(select_apply_binary(&config, &machine.arch))?;
 
     let mut volumes = vec![
-        SshVolume::FilePath {
-            local: apply_bin,
+        SshVolume::FileBytes {
+            local: Cow::Borrowed(embedded::embedded_lusid_apply(machine.arch)?),
+            permissions: Some(0o755),
             remote: format!("{dev_dir}/lusid-apply"),
         },
         SshVolume::DirPath {
@@ -871,13 +849,13 @@ async fn cmd_dev_apply(
             Ok(reencrypted) if !reencrypted.is_empty() => {
                 let private_pem = vm_keypair.private_openssh()?;
                 volumes.push(SshVolume::FileBytes {
-                    local: private_pem.into_bytes(),
+                    local: Cow::Owned(private_pem.into_bytes()),
                     permissions: Some(0o600),
                     remote: guest_identity_path.clone(),
                 });
                 for secret in reencrypted {
                     volumes.push(SshVolume::FileBytes {
-                        local: secret.ciphertext,
+                        local: Cow::Owned(secret.ciphertext),
                         permissions: None,
                         remote: format!("{guest_secrets_dir}/{}.age", secret.stem),
                     });
