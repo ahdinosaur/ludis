@@ -19,6 +19,7 @@ secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+shell-words = "1.1.1"
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

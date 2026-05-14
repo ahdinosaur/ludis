@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use lusid_causality::{CausalityMeta, CausalityTree};
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
-use lusid_operation::{operations::systemd::SystemdOperation, Operation};
+use lusid_operation::{Operation, operations::systemd::SystemdOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};

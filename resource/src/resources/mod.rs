@@ -10,4 +10,5 @@ pub mod pacman;
 pub mod podman;
 pub mod secret;
 pub mod systemd;
+pub mod ufw;
 pub mod user;

@@ -58,6 +58,7 @@ use crate::resources::secret::{Secret, SecretParams};
 use crate::resources::systemd::{
     Systemd, SystemdChange, SystemdParams, SystemdResource, SystemdState,
 };
+use crate::resources::ufw::{Ufw, UfwChange, UfwParams, UfwResource, UfwState};
 use crate::resources::user::{User, UserChange, UserParams, UserResource, UserState};
 
 /// The full pipeline for a single resource type.
@@ -130,6 +131,7 @@ pub enum ResourceParams {
     Git(GitParams),
     Secret(SecretParams),
     Systemd(SystemdParams),
+    Ufw(UfwParams),
     User(UserParams),
     Group(GroupParams),
 }
@@ -149,6 +151,7 @@ impl Display for ResourceParams {
             Git(params) => params.fmt(f),
             Secret(params) => params.fmt(f),
             Systemd(params) => params.fmt(f),
+            Ufw(params) => params.fmt(f),
             User(params) => params.fmt(f),
             Group(params) => params.fmt(f),
         }
@@ -170,6 +173,7 @@ impl Render for ResourceParams {
             Git(params) => params.render(),
             Secret(params) => params.render(),
             Systemd(params) => params.render(),
+            Ufw(params) => params.render(),
             User(params) => params.render(),
             Group(params) => params.render(),
         }
@@ -189,6 +193,7 @@ pub enum Resource {
     Command(CommandResource),
     Git(GitResource),
     Systemd(SystemdResource),
+    Ufw(UfwResource),
     User(UserResource),
     Group(GroupResource),
 }
@@ -207,6 +212,7 @@ impl Display for Resource {
             Command(command) => command.fmt(f),
             Git(git) => git.fmt(f),
             Systemd(systemd) => systemd.fmt(f),
+            Ufw(ufw) => ufw.fmt(f),
             User(user) => user.fmt(f),
             Group(group) => group.fmt(f),
         }
@@ -227,6 +233,7 @@ impl Render for Resource {
             Command(params) => params.render(),
             Git(params) => params.render(),
             Systemd(params) => params.render(),
+            Ufw(params) => params.render(),
             User(params) => params.render(),
             Group(params) => params.render(),
         }
@@ -249,6 +256,7 @@ pub enum ResourceState {
     Command(CommandState),
     Git(GitState),
     Systemd(SystemdState),
+    Ufw(UfwState),
     User(UserState),
     Group(GroupState),
 }
@@ -267,6 +275,7 @@ impl Display for ResourceState {
             Command(command) => command.fmt(f),
             Git(git) => git.fmt(f),
             Systemd(systemd) => systemd.fmt(f),
+            Ufw(ufw) => ufw.fmt(f),
             User(user) => user.fmt(f),
             Group(group) => group.fmt(f),
         }
@@ -287,6 +296,7 @@ impl Render for ResourceState {
             Command(params) => params.render(),
             Git(params) => params.render(),
             Systemd(params) => params.render(),
+            Ufw(params) => params.render(),
             User(params) => params.render(),
             Group(params) => params.render(),
         }
@@ -327,6 +337,9 @@ pub enum ResourceStateError {
     #[error("systemd state error: {0}")]
     Systemd(#[from] <Systemd as ResourceType>::StateError),
 
+    #[error("ufw state error: {0}")]
+    Ufw(#[from] <Ufw as ResourceType>::StateError),
+
     #[error("user state error: {0}")]
     User(#[from] <User as ResourceType>::StateError),
 
@@ -347,6 +360,7 @@ pub enum ResourceChange {
     Command(CommandChange),
     Git(GitChange),
     Systemd(SystemdChange),
+    Ufw(UfwChange),
     User(UserChange),
     Group(GroupChange),
 }
@@ -365,6 +379,7 @@ impl Display for ResourceChange {
             Command(command) => command.fmt(f),
             Git(git) => git.fmt(f),
             Systemd(systemd) => systemd.fmt(f),
+            Ufw(ufw) => ufw.fmt(f),
             User(user) => user.fmt(f),
             Group(group) => group.fmt(f),
         }
@@ -385,6 +400,7 @@ impl Render for ResourceChange {
             Command(params) => params.render(),
             Git(params) => params.render(),
             Systemd(params) => params.render(),
+            Ufw(params) => params.render(),
             User(params) => params.render(),
             Group(params) => params.render(),
         }
@@ -417,6 +433,7 @@ impl ResourceParams {
             ResourceParams::Git(params) => typed::<Git>(params, Resource::Git),
             ResourceParams::Secret(params) => typed::<Secret>(params, Resource::File),
             ResourceParams::Systemd(params) => typed::<Systemd>(params, Resource::Systemd),
+            ResourceParams::Ufw(params) => typed::<Ufw>(params, Resource::Ufw),
             ResourceParams::User(params) => typed::<User>(params, Resource::User),
             ResourceParams::Group(params) => typed::<Group>(params, Resource::Group),
         }
@@ -503,6 +520,9 @@ impl Resource {
                 )
                 .await
             }
+            Resource::Ufw(resource) => {
+                typed::<Ufw>(ctx, resource, ResourceState::Ufw, ResourceStateError::Ufw).await
+            }
             Resource::User(resource) => {
                 typed::<User>(ctx, resource, ResourceState::User, ResourceStateError::User).await
             }
@@ -561,6 +581,9 @@ impl Resource {
             }
             (Resource::Systemd(resource), ResourceState::Systemd(state)) => {
                 typed::<Systemd>(resource, state, ResourceChange::Systemd)
+            }
+            (Resource::Ufw(resource), ResourceState::Ufw(state)) => {
+                typed::<Ufw>(resource, state, ResourceChange::Ufw)
             }
             (Resource::User(resource), ResourceState::User(state)) => {
                 typed::<User>(resource, state, ResourceChange::User)
@@ -739,6 +762,7 @@ impl ResourceChange {
             ResourceChange::Command(change) => Command::operations(change),
             ResourceChange::Git(change) => Git::operations(change),
             ResourceChange::Systemd(change) => Systemd::operations(change),
+            ResourceChange::Ufw(change) => Ufw::operations(change),
             ResourceChange::User(change) => User::operations(change),
             ResourceChange::Group(change) => Group::operations(change),
         }

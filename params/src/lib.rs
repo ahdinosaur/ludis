@@ -49,8 +49,8 @@
 pub mod parse;
 
 pub use crate::parse::{
-    parse_bool, parse_host_path, parse_list, parse_number, parse_string, parse_target_path,
-    parse_u32, ParseError, ParseParams, StructFields,
+    ParseError, ParseParams, StructFields, parse_bool, parse_host_path, parse_list, parse_number,
+    parse_string, parse_target_path, parse_u32,
 };
 
 use std::path::{Path, PathBuf};

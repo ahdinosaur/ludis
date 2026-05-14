@@ -9,4 +9,5 @@ pub mod group;
 pub mod pacman;
 pub mod podman;
 pub mod systemd;
+pub mod ufw;
 pub mod user;
