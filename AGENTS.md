@@ -117,9 +117,7 @@ A plan item's `id` registers all of its hooks too: if another plan item declares
 
 #### Implementation: the `inject_handlers` post-pass
 
-Handlers are parsed alongside the rest of a plan item and stashed in `PlanMeta::handlers`. They flow through the resource → state → change → operations pipeline as inert passengers. After operations expansion, `inject_handlers` (in `lusid-plan`) walks the tree branch-by-branch and, wherever a branch's `meta.handlers` is non-empty AND its subtree contains a `Some(_)` leaf (i.e. the resource actually had a change), wraps the existing children in a synthetic anchor branch (`id = SubItem(fresh_scope, "@@handler-anchor")`) and appends one handler leaf per operation, each `requires`-ing the anchor. Per causality's branch-as-group semantics, the handlers wait for every resource-side op, and the outer branch's plan-item id transitively registers the handlers for dependents.
-
-The `@@` prefix is reserved for the plan layer; resource atoms must not emit intra-scope ids starting with it (enforced by `debug_assert!` in `map_plan_subitems`).
+Handlers are parsed alongside the rest of a plan item and stashed in `PlanMeta::handlers`. They flow through the resource → state → change → operations pipeline as inert passengers. After operations expansion, `inject_handlers` (in `lusid-plan`) walks the tree branch-by-branch and, wherever a branch's `meta.handlers` is non-empty AND its subtree contains a `Some(_)` leaf (i.e. the resource actually had a change), wraps the existing children in a synthetic anchor branch (`id = SubItem(fresh_scope, "@@handler-anchor")`) and appends one handler leaf per operation, each `requires`-ing the anchor. Per causality's branch-as-group semantics, the handlers wait for every resource-side op, and the outer branch's plan-item id transitively registers the handlers for dependents. The anchor's `scope_id` is freshly minted per `inject_handlers` call, so it can't collide with the resource's own atom ids (which live under a different scope from `map_plan_subitems`).
 
 
 ## Build / run / test (agent checklist)

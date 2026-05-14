@@ -202,8 +202,7 @@ impl FromRimu for PlanItem {
                         let mut out = Vec::with_capacity(items.len());
                         for item in items {
                             let (item_value, item_span) = item.clone().take();
-                            let op = InlineOperation::from_rimu(item_value)
-                                .map_err(|e| inject_item_span(e, item_span.clone()))?;
+                            let op = parse_inline_operation(item_value, item_span.clone())?;
                             out.push(Spanned::new(op, item_span));
                         }
                         out
@@ -224,73 +223,54 @@ impl FromRimu for PlanItem {
     }
 }
 
-impl FromRimu for InlineOperation {
-    type Error = IntoPlanItemError;
+/// Parse one `on_change` entry into an [`InlineOperation`].
+///
+/// Not a [`FromRimu`] impl because we need the enclosing list-item span at
+/// hand for error variants like `OnChangeItemNotAnObject` and
+/// `OnChangeItemModuleMissing` where the offending location is the item itself,
+/// not a sub-field.
+fn parse_inline_operation(
+    value: Value,
+    item_span: Span,
+) -> Result<InlineOperation, IntoPlanItemError> {
+    let Value::Object(mut object) = value else {
+        return Err(IntoPlanItemError::OnChangeItemNotAnObject { item_span });
+    };
 
-    /// `from_rimu` here uses [`Span::default`] placeholders for the
-    /// "not-an-object" and "module-missing" cases — the caller in
-    /// `PlanItem::from_rimu` rewrites those with the real `item_span` via
-    /// [`inject_item_span`]. Field-level errors (e.g. id/requires rejection)
-    /// already carry the correct field span.
-    fn from_rimu(value: Value) -> Result<Self, Self::Error> {
-        let Value::Object(mut object) = value else {
-            return Err(IntoPlanItemError::OnChangeItemNotAnObject {
-                item_span: Span::default(),
-            });
-        };
+    // Reject v1 disallowed fields with span pointing at the offending key's value.
+    if let Some(sp) = object.swap_remove("id") {
+        let (_, span) = sp.take();
+        return Err(IntoPlanItemError::InlineOperationHasId { span });
+    }
+    if let Some(sp) = object.swap_remove("requires") {
+        let (_, span) = sp.take();
+        return Err(IntoPlanItemError::InlineOperationHasRequires { span });
+    }
+    if let Some(sp) = object.swap_remove("required_by") {
+        let (_, span) = sp.take();
+        return Err(IntoPlanItemError::InlineOperationHasRequiredBy { span });
+    }
 
-        // Reject v1 disallowed fields with span pointing at the offending key's value.
-        if let Some(sp) = object.swap_remove("id") {
-            let (_, span) = sp.take();
-            return Err(IntoPlanItemError::InlineOperationHasId { span });
-        }
-        if let Some(sp) = object.swap_remove("requires") {
-            let (_, span) = sp.take();
-            return Err(IntoPlanItemError::InlineOperationHasRequires { span });
-        }
-        if let Some(sp) = object.swap_remove("required_by") {
-            let (_, span) = sp.take();
-            return Err(IntoPlanItemError::InlineOperationHasRequiredBy { span });
-        }
-
-        let module = match object.swap_remove("module") {
-            Some(sp) => {
-                let (value, span) = sp.clone().take();
-                match value {
-                    Value::String(s) => Spanned::new(s, span),
-                    _ => {
-                        return Err(IntoPlanItemError::OnChangeItemModuleNotAString {
-                            item_span: span,
-                        });
-                    }
+    let module = match object.swap_remove("module") {
+        Some(sp) => {
+            let (value, span) = sp.clone().take();
+            match value {
+                Value::String(s) => Spanned::new(s, span),
+                _ => {
+                    return Err(IntoPlanItemError::OnChangeItemModuleNotAString {
+                        item_span: span,
+                    });
                 }
             }
-            None => {
-                return Err(IntoPlanItemError::OnChangeItemModuleMissing {
-                    item_span: Span::default(),
-                });
-            }
-        };
-
-        let params = object.swap_remove("params");
-
-        Ok(InlineOperation { module, params })
-    }
-}
-
-/// Rewrite the placeholder `Span::default()` in errors that `InlineOperation::from_rimu`
-/// can't compute internally, with the real `item_span` known to the caller.
-fn inject_item_span(error: IntoPlanItemError, item_span: Span) -> IntoPlanItemError {
-    match error {
-        IntoPlanItemError::OnChangeItemNotAnObject { .. } => {
-            IntoPlanItemError::OnChangeItemNotAnObject { item_span }
         }
-        IntoPlanItemError::OnChangeItemModuleMissing { .. } => {
-            IntoPlanItemError::OnChangeItemModuleMissing { item_span }
+        None => {
+            return Err(IntoPlanItemError::OnChangeItemModuleMissing { item_span });
         }
-        // Other variants already carry the correct field-level span.
-        other => other,
-    }
+    };
+
+    let params = object.swap_remove("params");
+
+    Ok(InlineOperation { module, params })
 }
 
 #[derive(Debug, Clone)]

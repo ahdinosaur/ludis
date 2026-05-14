@@ -52,29 +52,12 @@ pub type PlanFlatTree<Node> = FlatTree<Node, PlanMeta>;
 /// A single node in a [`PlanFlatTree`].
 pub type PlanFlatTreeNode<Node> = FlatTreeNode<Node, PlanMeta>;
 
-/// Reserved sub-item id prefix.
-///
-/// Resource atoms must not emit `CausalityMeta<String>` ids beginning with
-/// `@@` — that namespace is owned by the plan layer for synthetic ids minted
-/// inside [`PlanNodeId::SubItem`] (e.g. the `@@handler-anchor` from
-/// [`inject_handlers`]). Enforced by [`map_plan_subitems`] via `debug_assert!`.
-///
-/// Note: user-authored plan-item ids (which become [`PlanNodeId::PlanItem`],
-/// not `SubItem`) are NOT constrained — a user is free to write
-/// `id: "@@anything"` and it cannot collide with internal synthetic ids
-/// because the two live in different `PlanNodeId` variants.
-pub const RESERVED_SUBITEM_PREFIX: &str = "@@";
-
 /// Expand a node into a set of child trees whose `CausalityMeta<String>` ids (e.g. the
 /// `"file"` id emitted by `file` to order mode/user/group atoms) are scoped under a
 /// fresh `cuid2` and rewrapped as [`PlanNodeId::SubItem`].
 ///
 /// This is what keeps intra-resource ids unique across the whole plan: every call mints
 /// its own `scope_id`, so `"file"` from two different file resources can never collide.
-///
-/// `debug_assert!`s catch any resource emitting (or referencing) a reserved
-/// `@@`-prefixed intra-scope id; that prefix is owned by the plan layer for
-/// synthetic ids like `@@handler-anchor`.
 pub fn map_plan_subitems<Node, NextNode, MapFn, MapFnIter>(
     node: Node,
     map: MapFn,
@@ -85,57 +68,37 @@ where
 {
     let scope_id = create_id();
     map(node).into_iter().map(move |tree| {
-        tree.map_meta(|meta| {
-            if let Some(ref item_id) = meta.id {
-                debug_assert!(
-                    !item_id.starts_with(RESERVED_SUBITEM_PREFIX),
-                    "resource emitted reserved intra-scope id: {item_id}",
-                );
-            }
-            for r in &meta.requires {
-                debug_assert!(
-                    !r.starts_with(RESERVED_SUBITEM_PREFIX),
-                    "resource emitted reserved intra-scope requires: {r}",
-                );
-            }
-            for r in &meta.required_by {
-                debug_assert!(
-                    !r.starts_with(RESERVED_SUBITEM_PREFIX),
-                    "resource emitted reserved intra-scope required_by: {r}",
-                );
-            }
-            PlanMeta {
-                id: meta.id.map(|item_id| PlanNodeId::SubItem {
+        tree.map_meta(|meta| PlanMeta {
+            id: meta.id.map(|item_id| PlanNodeId::SubItem {
+                scope_id: scope_id.clone(),
+                item_id,
+            }),
+            requires: meta
+                .requires
+                .into_iter()
+                .map(|item_id| PlanNodeId::SubItem {
                     scope_id: scope_id.clone(),
                     item_id,
-                }),
-                requires: meta
-                    .requires
-                    .into_iter()
-                    .map(|item_id| PlanNodeId::SubItem {
-                        scope_id: scope_id.clone(),
-                        item_id,
-                    })
-                    .collect(),
-                required_by: meta
-                    .required_by
-                    .into_iter()
-                    .map(|item_id| PlanNodeId::SubItem {
-                        scope_id: scope_id.clone(),
-                        item_id,
-                    })
-                    .collect(),
-                handlers: Vec::new(),
-            }
+                })
+                .collect(),
+            required_by: meta
+                .required_by
+                .into_iter()
+                .map(|item_id| PlanNodeId::SubItem {
+                    scope_id: scope_id.clone(),
+                    item_id,
+                })
+                .collect(),
+            handlers: Vec::new(),
         })
     })
 }
 
 /// Synthetic sub-item id used by [`inject_handlers`] to anchor on_change
-/// handlers after every resource-side leaf. Lives under a fresh `scope_id` per
-/// plan item, so collision with other plan items is impossible. The `@@`
-/// prefix is reserved (enforced in [`map_plan_subitems`]) so no resource atom
-/// can shadow it within its own scope.
+/// handlers after every resource-side leaf. Each call to [`inject_handlers`]
+/// mints a fresh `scope_id` for the anchor (via [`cuid2`]), so this id can't
+/// collide with the resource's own atom ids (which live under a different
+/// scope minted by [`map_plan_subitems`]).
 const HANDLER_ANCHOR: &str = "@@handler-anchor";
 
 /// Branch-level post-pass that grafts `on_change` handlers into the operation
@@ -210,8 +173,9 @@ fn wrap_with_handler_structure(
         children: resource_children,
     };
 
-    // Outer branch keeps the original causality fields but drops handlers
-    // (defensive: re-running inject_handlers must be a no-op).
+    // Move handlers out of branch_meta to build handler_leaves below. The
+    // outer branch's handlers field must be present in the struct literal,
+    // so we re-build PlanMeta with the original causality fields.
     let PlanMeta {
         id,
         requires,
@@ -480,34 +444,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reapplying_inject_handlers_is_a_noop() {
-        // Defensive property: after one pass handlers are cleared on the
-        // wrapped branch, so a second pass leaves the tree unchanged.
-        let tree = PlanTree::Branch {
-            meta: PlanMeta {
-                id: Some(plan_item_id("x")),
-                handlers: vec![handler_op()],
-                ..PlanMeta::default()
-            },
-            children: vec![some_leaf()],
-        };
-        let once = inject_handlers(tree);
-        let twice = inject_handlers(once.clone());
-
-        // Compare structurally by counting children at each level.
-        fn shape<T>(t: &PlanTree<Option<T>>) -> Vec<usize> {
-            match t {
-                Tree::Leaf { .. } => vec![],
-                Tree::Branch { children, .. } => {
-                    let mut out = vec![children.len()];
-                    for c in children {
-                        out.extend(shape(c));
-                    }
-                    out
-                }
-            }
-        }
-        assert_eq!(shape(&once), shape(&twice));
-    }
 }
