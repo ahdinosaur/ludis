@@ -284,7 +284,8 @@ async fn plan_item_to_resource(
 /// Lower a parsed `on_change` list to a flat vector of typed [`Operation`]s.
 ///
 /// Each entry must use a `@operation/<id>` module string; any other prefix
-/// (nested plan path, `@resource/...`, `@core/...`) is rejected.
+/// (nested plan path, `@resource/...`, or a legacy `@core/...`) surfaces as
+/// `OnChangeItemModuleNotAnOperation`.
 fn parse_on_change(
     items: Vec<Spanned<crate::model::InlineOperation>>,
 ) -> Result<Vec<lusid_operation::Operation>, PlanItemToResourceError> {

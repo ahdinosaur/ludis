@@ -54,10 +54,15 @@ pub type PlanFlatTreeNode<Node> = FlatTreeNode<Node, PlanMeta>;
 
 /// Reserved sub-item id prefix.
 ///
-/// Resource atoms must not emit intra-scope ids beginning with `@@` — that
-/// namespace is owned by the plan layer for synthetic ids (e.g. the
-/// `@@handler-anchor` minted by `inject_handlers`). Enforced by [`map_plan_subitems`]
-/// via `debug_assert!`.
+/// Resource atoms must not emit `CausalityMeta<String>` ids beginning with
+/// `@@` — that namespace is owned by the plan layer for synthetic ids minted
+/// inside [`PlanNodeId::SubItem`] (e.g. the `@@handler-anchor` from
+/// [`inject_handlers`]). Enforced by [`map_plan_subitems`] via `debug_assert!`.
+///
+/// Note: user-authored plan-item ids (which become [`PlanNodeId::PlanItem`],
+/// not `SubItem`) are NOT constrained — a user is free to write
+/// `id: "@@anything"` and it cannot collide with internal synthetic ids
+/// because the two live in different `PlanNodeId` variants.
 pub const RESERVED_SUBITEM_PREFIX: &str = "@@";
 
 /// Expand a node into a set of child trees whose `CausalityMeta<String>` ids (e.g. the
@@ -205,11 +210,25 @@ fn wrap_with_handler_structure(
         children: resource_children,
     };
 
-    // Convert each handler op into a leaf that requires the anchor.
-    let handler_leaves: Vec<_> = branch_meta
-        .handlers
-        .iter()
-        .cloned()
+    // Outer branch keeps the original causality fields but drops handlers
+    // (defensive: re-running inject_handlers must be a no-op).
+    let PlanMeta {
+        id,
+        requires,
+        required_by,
+        handlers,
+    } = branch_meta;
+    let outer_meta = PlanMeta {
+        id,
+        requires,
+        required_by,
+        handlers: Vec::new(),
+    };
+
+    // Convert each handler op into a leaf that requires the anchor. Consume
+    // `handlers` (no `.iter().cloned()`) — outer_meta already dropped them.
+    let handler_leaves: Vec<_> = handlers
+        .into_iter()
         .map(|op| Tree::Leaf {
             meta: PlanMeta {
                 requires: vec![anchor_id.clone()],
@@ -218,13 +237,6 @@ fn wrap_with_handler_structure(
             node: Some(op),
         })
         .collect();
-
-    // Outer branch keeps the original causality fields but drops handlers
-    // (defensive: re-running inject_handlers must be a no-op).
-    let outer_meta = PlanMeta {
-        handlers: Vec::new(),
-        ..branch_meta
-    };
     let mut all_children = Vec::with_capacity(1 + handler_leaves.len());
     all_children.push(anchor_branch);
     all_children.extend(handler_leaves);

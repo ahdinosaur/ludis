@@ -202,7 +202,8 @@ impl FromRimu for PlanItem {
                         let mut out = Vec::with_capacity(items.len());
                         for item in items {
                             let (item_value, item_span) = item.clone().take();
-                            let op = InlineOperation::from_rimu(item_value)?;
+                            let op = InlineOperation::from_rimu(item_value)
+                                .map_err(|e| inject_item_span(e, item_span.clone()))?;
                             out.push(Spanned::new(op, item_span));
                         }
                         out
@@ -226,14 +227,13 @@ impl FromRimu for PlanItem {
 impl FromRimu for InlineOperation {
     type Error = IntoPlanItemError;
 
+    /// `from_rimu` here uses [`Span::default`] placeholders for the
+    /// "not-an-object" and "module-missing" cases — the caller in
+    /// `PlanItem::from_rimu` rewrites those with the real `item_span` via
+    /// [`inject_item_span`]. Field-level errors (e.g. id/requires rejection)
+    /// already carry the correct field span.
     fn from_rimu(value: Value) -> Result<Self, Self::Error> {
         let Value::Object(mut object) = value else {
-            // Caller wraps with the proper item_span; we don't have one here.
-            // The list-iteration path above attaches the per-item span via
-            // Spanned, but the error itself needs a span — fabricate from
-            // first-found field's span or fall back to a "no span" marker.
-            // Easier: surface as OnChangeItemNotAnObject with span set by
-            // the iteration code. Here we synthesize a placeholder.
             return Err(IntoPlanItemError::OnChangeItemNotAnObject {
                 item_span: Span::default(),
             });
@@ -275,6 +275,21 @@ impl FromRimu for InlineOperation {
         let params = object.swap_remove("params");
 
         Ok(InlineOperation { module, params })
+    }
+}
+
+/// Rewrite the placeholder `Span::default()` in errors that `InlineOperation::from_rimu`
+/// can't compute internally, with the real `item_span` known to the caller.
+fn inject_item_span(error: IntoPlanItemError, item_span: Span) -> IntoPlanItemError {
+    match error {
+        IntoPlanItemError::OnChangeItemNotAnObject { .. } => {
+            IntoPlanItemError::OnChangeItemNotAnObject { item_span }
+        }
+        IntoPlanItemError::OnChangeItemModuleMissing { .. } => {
+            IntoPlanItemError::OnChangeItemModuleMissing { item_span }
+        }
+        // Other variants already carry the correct field-level span.
+        other => other,
     }
 }
 
