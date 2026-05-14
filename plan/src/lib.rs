@@ -156,9 +156,6 @@ pub enum PlanItemToResourceError {
     /// unknown @resource/ module: \"{id}\"
     UnsupportedResourceModuleId { id: String },
 
-    /// `@core/` was renamed to `@resource/` — try `@resource/{id}`
-    LegacyCorePrefix { id: String, span: Span },
-
     /// operations cannot appear at the top level — `@operation/{id}` is only valid inside `on_change`. To run an action when a resource changes, attach it via `on_change` on the relevant `@resource/*`. For idempotent imperative actions at the top level, see `@resource/command`.
     OperationModuleAsTopLevel { id: String, span: Span },
 
@@ -198,16 +195,6 @@ async fn plan_item_to_resource(
         required_by,
         on_change,
     } = plan_item;
-
-    // Legacy-prefix hint — must fire before any prefix dispatch, otherwise
-    // `@core/foo` falls through to the nested-plan path and produces a
-    // misleading "could not read plan" error.
-    if let Some(id) = module.inner().strip_prefix("@core/") {
-        return Err(PlanItemToResourceError::LegacyCorePrefix {
-            id: id.to_string(),
-            span: module.span(),
-        });
-    }
 
     // `@operation/*` only lives inside `on_change`; reject as a top-level item.
     if let Some(op_id) = is_operation_module(&module) {
