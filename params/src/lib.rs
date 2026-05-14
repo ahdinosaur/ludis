@@ -76,16 +76,39 @@ use thiserror::Error;
 /// literal strings that arrive at the sub-plan boundary. That makes parent →
 /// child forwarding behave consistently regardless of how deep the recursion
 /// runs.
+///
+/// `forbid_cli_relative_host_paths` rejects a relative `host-path` string with
+/// an empty span source rather than synthesising a fallback path. Set this on
+/// guest-side `lusid-apply` runs (`remote apply` / `dev apply`): the operator's
+/// root path is meaningless on the target, so silently resolving against it
+/// would produce a path that doesn't exist and surface as a confusing
+/// "host-path not found" later in the pipeline.
+///
+/// TODO(cc): a future remote/dev apply could detect operator-side
+/// `host-path` strings on the host, upload the referenced bytes alongside
+/// the plan, and rewrite the params JSON to point at the guest copy
+/// before exec. That removes the restriction here. Until then we
+/// fail loudly at the boundary.
 #[derive(Debug, Clone)]
 pub struct ParamsContext {
     root_path: PathBuf,
+    forbid_cli_relative_host_paths: bool,
 }
 
 impl ParamsContext {
     pub fn new(root_path: impl Into<PathBuf>) -> Self {
         Self {
             root_path: root_path.into(),
+            forbid_cli_relative_host_paths: false,
         }
+    }
+
+    /// Reject relative `host-path` strings whose span has no real source
+    /// (i.e. CLI-supplied `--params`). See [`ParamsContext`] for the
+    /// motivation.
+    pub fn forbid_cli_relative_host_paths(mut self) -> Self {
+        self.forbid_cli_relative_host_paths = true;
+        self
     }
 
     pub fn root_path(&self) -> &Path {
@@ -381,6 +404,9 @@ pub enum ValidateValueError {
         #[source]
         error: Box<ValidateValueError>,
     },
+
+    /// Relative host-path {value:?} supplied via --params is not allowed for guest applies (operator-side paths don't exist on the target); pass an absolute path or anchor host-paths in the plan source
+    HostPathRelativeFromCli { value: String },
 }
 
 #[derive(Debug, Clone, Error, Display)]
@@ -485,6 +511,14 @@ fn coerce_type(
             let path = Path::new(&s);
             if !path.is_relative() {
                 return Err(mismatch(param_type, &Spanned::new(Value::String(s), span)));
+            }
+            // CLI-supplied params have an empty span source; on guest applies
+            // (`remote apply` / `dev apply`) the operator's fallback root
+            // doesn't exist on the target, so silently synthesising a path
+            // there would surface as a confusing "host-path not found" later.
+            // Fail at the boundary instead.
+            if ctx.forbid_cli_relative_host_paths && span.source().as_str().is_empty() {
+                return Err(ValidateValueError::HostPathRelativeFromCli { value: s });
             }
             let origin = coerce_origin(&span, ctx);
             Ok(Spanned::new(Value::HostPath(origin.join(path)), span))
@@ -797,6 +831,52 @@ mod tests {
                 );
             }
             other => panic!("expected InvalidParam, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn forbid_cli_relative_host_paths_rejects_empty_source_relative_string() {
+        // `forbid_cli_relative_host_paths` is the guest-apply guard: a
+        // relative host-path with no real span source would otherwise be
+        // resolved against the operator's `root_path`, which doesn't exist
+        // on the target. Pin the rejection so a future relaxation is
+        // intentional.
+        let schema = struct_schema(vec![("path", ParamType::HostPath, false)]);
+        let value = obj(vec![("path", Value::String("./foo".into()))], empty_span());
+        let ctx = ctx().forbid_cli_relative_host_paths();
+        let err = validate(Some(&schema), Some(value), &ctx).unwrap_err();
+        let ParamsValidationError::Struct(boxed) = err else {
+            panic!("expected Struct error");
+        };
+        match boxed.errors.first() {
+            Some(ParamValidationError::InvalidParam { error, .. }) => assert!(
+                matches!(
+                    error.as_ref(),
+                    ValidateValueError::HostPathRelativeFromCli { value } if value == "./foo"
+                ),
+                "expected HostPathRelativeFromCli, got {error:?}"
+            ),
+            other => panic!("expected InvalidParam, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn forbid_cli_relative_host_paths_allows_file_source_relative_string() {
+        // A relative host-path written in a `.lusid` file has a real span
+        // source — the guard targets only CLI-supplied (empty-source)
+        // values, so plan-anchored host-paths must still coerce normally
+        // even when the flag is set.
+        let schema = struct_schema(vec![("path", ParamType::HostPath, false)]);
+        let span = file_span("/plans/foo.lusid");
+        let value = obj(vec![("path", Value::String("bar".into()))], span);
+        let ctx = ctx().forbid_cli_relative_host_paths();
+        let coerced = validate(Some(&schema), Some(value), &ctx)
+            .expect("ok")
+            .expect("some");
+        let map = unwrap_object(coerced);
+        match map.get("path").expect("path field").inner() {
+            Value::HostPath(p) => assert_eq!(p, &PathBuf::from("/plans/bar")),
+            other => panic!("expected HostPath, got {other:?}"),
         }
     }
 

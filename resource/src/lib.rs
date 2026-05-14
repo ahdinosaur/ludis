@@ -50,6 +50,13 @@ use crate::resources::directory::{
     Directory, DirectoryChange, DirectoryParams, DirectoryResource, DirectoryState,
 };
 use crate::resources::file::{File, FileChange, FileParams, FileResource, FileState};
+use crate::resources::flatpak::{
+    Flatpak, FlatpakChange, FlatpakParams, FlatpakResource, FlatpakState,
+};
+use crate::resources::flatpak_remote::{
+    FlatpakRemote, FlatpakRemoteChange, FlatpakRemoteParams, FlatpakRemoteResource,
+    FlatpakRemoteState,
+};
 use crate::resources::git::{Git, GitChange, GitParams, GitResource, GitState};
 use crate::resources::group::{Group, GroupChange, GroupParams, GroupResource, GroupState};
 use crate::resources::pacman::{Pacman, PacmanChange, PacmanParams, PacmanResource, PacmanState};
@@ -124,6 +131,8 @@ pub enum ResourceParams {
     Aur(AurParams),
     File(FileParams),
     Directory(DirectoryParams),
+    Flatpak(FlatpakParams),
+    FlatpakRemote(FlatpakRemoteParams),
     Pacman(PacmanParams),
     Podman(PodmanParams),
     Command(CommandParams),
@@ -143,6 +152,8 @@ impl Display for ResourceParams {
             Aur(params) => params.fmt(f),
             File(params) => params.fmt(f),
             Directory(params) => params.fmt(f),
+            Flatpak(params) => params.fmt(f),
+            FlatpakRemote(params) => params.fmt(f),
             Pacman(params) => params.fmt(f),
             Podman(params) => params.fmt(f),
             Command(params) => params.fmt(f),
@@ -164,6 +175,8 @@ impl Render for ResourceParams {
             Aur(params) => params.render(),
             File(params) => params.render(),
             Directory(params) => params.render(),
+            Flatpak(params) => params.render(),
+            FlatpakRemote(params) => params.render(),
             Pacman(params) => params.render(),
             Podman(params) => params.render(),
             Command(params) => params.render(),
@@ -184,6 +197,8 @@ pub enum Resource {
     Aur(AurResource),
     File(FileResource),
     Directory(DirectoryResource),
+    Flatpak(FlatpakResource),
+    FlatpakRemote(FlatpakRemoteResource),
     Pacman(PacmanResource),
     Podman(PodmanResource),
     Command(CommandResource),
@@ -202,6 +217,8 @@ impl Display for Resource {
             Aur(aur) => aur.fmt(f),
             File(file) => file.fmt(f),
             Directory(directory) => directory.fmt(f),
+            Flatpak(flatpak) => flatpak.fmt(f),
+            FlatpakRemote(flatpak_remote) => flatpak_remote.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
             Podman(podman) => podman.fmt(f),
             Command(command) => command.fmt(f),
@@ -222,6 +239,8 @@ impl Render for Resource {
             Aur(params) => params.render(),
             File(params) => params.render(),
             Directory(params) => params.render(),
+            Flatpak(params) => params.render(),
+            FlatpakRemote(params) => params.render(),
             Pacman(params) => params.render(),
             Podman(params) => params.render(),
             Command(params) => params.render(),
@@ -244,6 +263,8 @@ pub enum ResourceState {
     Aur(AurState),
     File(FileState),
     Directory(DirectoryState),
+    Flatpak(FlatpakState),
+    FlatpakRemote(FlatpakRemoteState),
     Pacman(PacmanState),
     Podman(PodmanState),
     Command(CommandState),
@@ -262,6 +283,8 @@ impl Display for ResourceState {
             Aur(aur) => aur.fmt(f),
             File(file) => file.fmt(f),
             Directory(directory) => directory.fmt(f),
+            Flatpak(flatpak) => flatpak.fmt(f),
+            FlatpakRemote(flatpak_remote) => flatpak_remote.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
             Podman(podman) => podman.fmt(f),
             Command(command) => command.fmt(f),
@@ -282,6 +305,8 @@ impl Render for ResourceState {
             Aur(params) => params.render(),
             File(params) => params.render(),
             Directory(params) => params.render(),
+            Flatpak(params) => params.render(),
+            FlatpakRemote(params) => params.render(),
             Pacman(params) => params.render(),
             Podman(params) => params.render(),
             Command(params) => params.render(),
@@ -311,6 +336,12 @@ pub enum ResourceStateError {
 
     #[error("directory state error: {0}")]
     Directory(#[from] <Directory as ResourceType>::StateError),
+
+    #[error("flatpak state error: {0}")]
+    Flatpak(#[from] <Flatpak as ResourceType>::StateError),
+
+    #[error("flatpak-remote state error: {0}")]
+    FlatpakRemote(#[from] <FlatpakRemote as ResourceType>::StateError),
 
     #[error("pacman state error: {0}")]
     Pacman(#[from] <Pacman as ResourceType>::StateError),
@@ -342,6 +373,8 @@ pub enum ResourceChange {
     Aur(AurChange),
     File(FileChange),
     Directory(DirectoryChange),
+    Flatpak(FlatpakChange),
+    FlatpakRemote(FlatpakRemoteChange),
     Pacman(PacmanChange),
     Podman(PodmanChange),
     Command(CommandChange),
@@ -360,6 +393,8 @@ impl Display for ResourceChange {
             Aur(aur) => aur.fmt(f),
             File(file) => file.fmt(f),
             Directory(directory) => directory.fmt(f),
+            Flatpak(flatpak) => flatpak.fmt(f),
+            FlatpakRemote(flatpak_remote) => flatpak_remote.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
             Podman(podman) => podman.fmt(f),
             Command(command) => command.fmt(f),
@@ -380,6 +415,8 @@ impl Render for ResourceChange {
             Aur(params) => params.render(),
             File(params) => params.render(),
             Directory(params) => params.render(),
+            Flatpak(params) => params.render(),
+            FlatpakRemote(params) => params.render(),
             Pacman(params) => params.render(),
             Podman(params) => params.render(),
             Command(params) => params.render(),
@@ -411,6 +448,10 @@ impl ResourceParams {
             ResourceParams::Aur(params) => typed::<Aur>(params, Resource::Aur),
             ResourceParams::File(params) => typed::<File>(params, Resource::File),
             ResourceParams::Directory(params) => typed::<Directory>(params, Resource::Directory),
+            ResourceParams::Flatpak(params) => typed::<Flatpak>(params, Resource::Flatpak),
+            ResourceParams::FlatpakRemote(params) => {
+                typed::<FlatpakRemote>(params, Resource::FlatpakRemote)
+            }
             ResourceParams::Pacman(params) => typed::<Pacman>(params, Resource::Pacman),
             ResourceParams::Podman(params) => typed::<Podman>(params, Resource::Podman),
             ResourceParams::Command(params) => typed::<Command>(params, Resource::Command),
@@ -461,6 +502,24 @@ impl Resource {
                     resource,
                     ResourceState::Directory,
                     ResourceStateError::Directory,
+                )
+                .await
+            }
+            Resource::Flatpak(resource) => {
+                typed::<Flatpak>(
+                    ctx,
+                    resource,
+                    ResourceState::Flatpak,
+                    ResourceStateError::Flatpak,
+                )
+                .await
+            }
+            Resource::FlatpakRemote(resource) => {
+                typed::<FlatpakRemote>(
+                    ctx,
+                    resource,
+                    ResourceState::FlatpakRemote,
+                    ResourceStateError::FlatpakRemote,
                 )
                 .await
             }
@@ -546,6 +605,12 @@ impl Resource {
             }
             (Resource::Directory(resource), ResourceState::Directory(state)) => {
                 typed::<Directory>(resource, state, ResourceChange::Directory)
+            }
+            (Resource::Flatpak(resource), ResourceState::Flatpak(state)) => {
+                typed::<Flatpak>(resource, state, ResourceChange::Flatpak)
+            }
+            (Resource::FlatpakRemote(resource), ResourceState::FlatpakRemote(state)) => {
+                typed::<FlatpakRemote>(resource, state, ResourceChange::FlatpakRemote)
             }
             (Resource::Pacman(resource), ResourceState::Pacman(state)) => {
                 typed::<Pacman>(resource, state, ResourceChange::Pacman)
@@ -734,6 +799,8 @@ impl ResourceChange {
             ResourceChange::Aur(change) => Aur::operations(change),
             ResourceChange::File(change) => File::operations(change),
             ResourceChange::Directory(change) => Directory::operations(change),
+            ResourceChange::Flatpak(change) => Flatpak::operations(change),
+            ResourceChange::FlatpakRemote(change) => FlatpakRemote::operations(change),
             ResourceChange::Pacman(change) => Pacman::operations(change),
             ResourceChange::Podman(change) => Podman::operations(change),
             ResourceChange::Command(change) => Command::operations(change),

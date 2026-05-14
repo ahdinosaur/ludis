@@ -4,7 +4,7 @@ use tokio::io::AsyncWrite;
 use tracing::info;
 
 use crate::SshError;
-use crate::session::{AsyncChannel, AsyncSession, NoCheckHandler};
+use crate::session::{AsyncChannel, AsyncSession, HostKeyHandler};
 use crate::stream::ReadStream;
 
 /// Command execution specific errors.
@@ -89,7 +89,7 @@ pub struct SshCommandHandle {
 /// - exec requests a reply, so success_failure() will resolve.
 #[tracing::instrument(skip(session))]
 pub(super) async fn ssh_command(
-    session: &AsyncSession<NoCheckHandler>,
+    session: &AsyncSession<HostKeyHandler>,
     command: &str,
 ) -> Result<SshCommandHandle, SshCommandError> {
     let channel = session

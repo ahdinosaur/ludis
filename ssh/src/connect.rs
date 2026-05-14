@@ -7,7 +7,7 @@ use thiserror::Error;
 use tokio::net::ToSocketAddrs;
 use tokio::time::{Instant, sleep};
 
-use crate::session::{AsyncSession, NoCheckHandler};
+use crate::session::{AsyncSession, HostKeyHandler, HostKeyVerification};
 
 #[derive(Debug, Clone)]
 pub struct SshConnectOptions<Addrs>
@@ -19,6 +19,11 @@ where
     pub username: String,
     pub config: Arc<Config>,
     pub timeout: Duration,
+    /// Strategy for verifying the server's host key. Pick
+    /// [`HostKeyVerification::Tofu`] for real remote machines and
+    /// [`HostKeyVerification::Disabled`] only for ephemeral local targets
+    /// (e.g. dev VMs the caller has just booted).
+    pub host_key_verification: HostKeyVerification,
 }
 
 #[derive(Error, Debug)]
@@ -34,11 +39,12 @@ pub enum SshConnectError {
 ///
 /// - Retries transient IO errors until timeout is exceeded.
 /// - Authenticates via public key.
-/// - Host key verification is disabled (NoCheckHandler).
+/// - Verifies the host key according to
+///   [`SshConnectOptions::host_key_verification`].
 #[tracing::instrument(skip(options))]
 pub(super) async fn connect_with_retry<Addrs>(
     options: SshConnectOptions<Addrs>,
-) -> Result<AsyncSession<NoCheckHandler>, SshConnectError>
+) -> Result<AsyncSession<HostKeyHandler>, SshConnectError>
 where
     Addrs: ToSocketAddrs + Clone + Send,
 {
@@ -48,13 +54,15 @@ where
         username,
         config,
         timeout,
+        host_key_verification,
     } = options;
 
     let start = Instant::now();
     tracing::info!("Connecting to SSH");
 
     let mut session = loop {
-        match AsyncSession::connect(config.clone(), addrs.clone(), NoCheckHandler).await {
+        let handler = HostKeyHandler::new(host_key_verification.clone());
+        match AsyncSession::connect(config.clone(), addrs.clone(), handler).await {
             Ok(session) => {
                 tracing::trace!("SSH transport established");
                 break session;

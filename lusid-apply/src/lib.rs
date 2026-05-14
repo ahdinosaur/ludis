@@ -178,7 +178,17 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     // Anchoring on the project root means a `--params '{"src": "./foo"}'`
     // invocation resolves "./foo" relative to the directory the user thinks of
     // as their project root, not the CWD lusid-apply happens to run from.
-    let params_ctx = ParamsContext::new(root_path.clone());
+    //
+    // In guest mode we refuse that fallback: the operator's root path
+    // doesn't exist on this target, so synthesising a path there would
+    // surface as a confusing "host-path not found" downstream. See
+    // `ParamsContext::forbid_cli_relative_host_paths` for the TODO on
+    // future upload+rewrite support.
+    let params_ctx = if guest_mode {
+        ParamsContext::new(root_path.clone()).forbid_cli_relative_host_paths()
+    } else {
+        ParamsContext::new(root_path.clone())
+    };
 
     // Parse/evaluate to tree of resource params.
     let resource_params = plan(plan_id, param_values, &params_ctx, &mut store, &system).await?;

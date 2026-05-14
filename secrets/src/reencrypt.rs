@@ -1,16 +1,15 @@
 //! Host-side re-encryption of a secrets directory for a single target.
 //!
-//! [`reencrypt_for_target`] scopes the bundle to what `machine_id` is
-//! declared a recipient of in `[files]`, then re-encrypts each file to
-//! `target_pubkey` alone.
+//! Two entry points, both scope by `[files]` membership for `machine_id`
+//! and then re-encrypt each in-scope ciphertext to a single recipient:
 //!
-//! Two callers:
-//!
-//! - `remote apply`: target IS the declared machine. Caller passes
-//!   `machine_id`'s own key from `[machines]`.
-//! - `dev apply`: target SHADOWS the declared machine (an ephemeral VM
-//!   keypair). Caller passes `machine_id` for `[files]` scoping and the
-//!   VM's pubkey as the cryptographic recipient.
+//! - [`reencrypt_for_declared_machine`] — recipient is `machine_id`'s own
+//!   key from `[machines]`. The `lusid remote apply` flavour: target IS
+//!   the declared machine.
+//! - [`reencrypt_for_target`] — recipient is supplied by the caller. The
+//!   `lusid dev apply` flavour: target SHADOWS the declared machine
+//!   (ephemeral VM keypair). `machine_id` only drives `[files]` scoping;
+//!   the cryptographic recipient is whatever the caller passes in.
 
 use std::path::{Path, PathBuf};
 
@@ -82,6 +81,66 @@ pub async fn reencrypt_for_target(
     target_pubkey: &str,
 ) -> Result<Vec<ReencryptedSecret>, ReencryptForTargetError> {
     let recipients = Recipients::load(secrets_dir).await?;
+    reencrypt_with_recipients(
+        &recipients,
+        host_identity_path,
+        secrets_dir,
+        machine_id,
+        target_pubkey,
+    )
+    .await
+}
+
+/// Scope by `[files]` for `machine_id`, decrypt each with the operator
+/// identity, re-encrypt to `machine_id`'s own key from `[machines]`. The
+/// `lusid remote apply` flavour — target IS the declared machine, so we
+/// resolve the recipient internally instead of asking the caller to look
+/// it up.
+///
+/// Same return-shape and error semantics as [`reencrypt_for_target`]:
+/// `Ok(vec![])` when the machine is declared but listed on no file,
+/// [`ReencryptForTargetError::UnknownMachine`] when it isn't declared.
+#[tracing::instrument(skip(host_identity_path, secrets_dir), fields(machine_id))]
+pub async fn reencrypt_for_declared_machine(
+    host_identity_path: &Path,
+    secrets_dir: &Path,
+    machine_id: &str,
+) -> Result<Vec<ReencryptedSecret>, ReencryptForTargetError> {
+    let recipients = Recipients::load(secrets_dir).await?;
+    // Resolve `[machines][machine_id]` here so the inner helper sees the
+    // pubkey as a string, identical to the caller-supplied path. Errors
+    // here look identical to what `reencrypt_for_target` would raise if a
+    // caller passed an unknown machine_id, so the public surface is the
+    // same shape from either entry point.
+    let target_pubkey = recipients
+        .machines
+        .get(machine_id)
+        .ok_or_else(|| ReencryptForTargetError::UnknownMachine {
+            machine_id: machine_id.to_owned(),
+        })?
+        .to_string();
+    reencrypt_with_recipients(
+        &recipients,
+        host_identity_path,
+        secrets_dir,
+        machine_id,
+        &target_pubkey,
+    )
+    .await
+}
+
+/// Shared body of both public entry points: takes an already-parsed
+/// `Recipients`, validates `machine_id`, scopes by `[files]`, decrypts +
+/// re-encrypts each in-scope ciphertext to `target_pubkey`. Private — the
+/// callers above are the only intended consumers and `&Recipients`
+/// isn't part of our stable surface.
+async fn reencrypt_with_recipients(
+    recipients: &Recipients,
+    host_identity_path: &Path,
+    secrets_dir: &Path,
+    machine_id: &str,
+    target_pubkey: &str,
+) -> Result<Vec<ReencryptedSecret>, ReencryptForTargetError> {
     if !recipients.machines.contains_key(machine_id) {
         return Err(ReencryptForTargetError::UnknownMachine {
             machine_id: machine_id.to_owned(),
@@ -320,5 +379,58 @@ other  = "{}"
             .await
             .unwrap_err();
         assert!(matches!(err, ReencryptForTargetError::RecipientKey(_)));
+    }
+
+    /// `reencrypt_for_declared_machine` resolves the recipient from
+    /// `[machines]` itself; the resulting ciphertext decrypts under the
+    /// declared key without the caller having to pass it in.
+    #[tokio::test]
+    async fn declared_machine_uses_machines_table_pubkey() {
+        let (_dir, host_identity_path, secrets_dir, target_rpi) = two_machine_fixture();
+
+        let reencrypted = reencrypt_for_declared_machine(&host_identity_path, &secrets_dir, "rpi")
+            .await
+            .unwrap();
+        assert_eq!(reencrypted.len(), 1);
+        assert_eq!(reencrypted[0].stem, "rpi_only");
+
+        let rpi_id: Identity = target_rpi.to_string().expose_secret().parse().unwrap();
+        let pt = decrypt_bytes(&rpi_id, Path::new("rpi_only"), &reencrypted[0].ciphertext).unwrap();
+        assert_eq!(pt.expose_secret().as_str(), "rpipayload");
+    }
+
+    #[tokio::test]
+    async fn declared_machine_unknown_errors() {
+        let (_dir, host_identity_path, secrets_dir, _) = two_machine_fixture();
+        let err = reencrypt_for_declared_machine(&host_identity_path, &secrets_dir, "missing")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ReencryptForTargetError::UnknownMachine { machine_id } if machine_id == "missing"
+        ));
+    }
+
+    #[tokio::test]
+    async fn declared_machine_missing_toml_errors() {
+        let dir = TempDir::new().unwrap();
+        let host_identity_path = dir.path().join("host_identity");
+        std::fs::write(
+            &host_identity_path,
+            age::x25519::Identity::generate()
+                .to_string()
+                .expose_secret(),
+        )
+        .unwrap();
+        let secrets_dir = dir.path().join("secrets");
+        std::fs::create_dir(&secrets_dir).unwrap();
+
+        let err = reencrypt_for_declared_machine(&host_identity_path, &secrets_dir, "any")
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ReencryptForTargetError::Recipients(RecipientsError::Missing { .. })
+        ));
     }
 }
