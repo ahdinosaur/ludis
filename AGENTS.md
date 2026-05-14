@@ -83,6 +83,44 @@ Implementation notes:
 `lusid-apply` emits **newline-delimited JSON** `AppUpdate` messages to stdout.
 The `lusid` TUI expects this exact protocol. Avoid printing human text to stdout from `lusid-apply`; use tracing/logging to stderr.
 
+### Resources, operations, and `on_change` hooks
+
+Plans declare two kinds of items, in two namespaces:
+
+- A **resource** (`@resource/<id>`) describes *desired state* — "nginx should be enabled and active". Lusid probes current state, computes a diff, and converges. Idempotent across re-applies.
+- An **operation** (`@operation/<id>`) describes an *imperative action* — "reload nginx", "run this command". Operations are not state-checked; they run when triggered.
+
+Resources live at the top level of `setup`. Operations live only inside an `on_change` block.
+
+#### `on_change` hooks
+
+A resource may declare a list of operations to run when it changes. Hooks fire when the resource has any change to apply (new file contents, different mode, owner change, etc.). They run after the resource's own operations but within the same dependency epoch (the topological layer the resource's operations land in). Identical hooks coalesce within an epoch — ten files in the same epoch that all `on_change: reload nginx` produce one reload, not ten.
+
+```rimu
+- module: "@resource/file"
+  params: { path: "/etc/nginx/nginx.conf", source: "./nginx.conf", state: "sourced" }
+  on_change:
+    - module: "@operation/systemd"
+      params: { name: "nginx", action: "reload" }
+```
+
+A plan item's `id` registers all of its hooks too: if another plan item declares `requires: [<id>]`, it waits for both the resource and its hooks before running. Dependents see the hook's effect, not just the resource's state.
+
+#### v1 limitations
+
+- Hooks are inline only — no by-reference (`on_change: ["handler-id"]`).
+- Inline operations cannot declare `id`, `requires`, or `required_by`.
+- Triggered on any change — no add/modify/remove distinction.
+- **Cross-epoch coalescing not handled.** If resource A reloads nginx, resource B also reloads nginx, and B `requires: ["A"]` (so they're in different epochs), nginx reloads twice. Workaround: factor the reload into a single dedicated `@resource/command` downstream, or accept the duplicate (nginx reload is idempotent).
+- **Hook failure leaves you stuck.** If a hook fails, apply aborts. The resource is now in its target state, so re-applying will NOT re-trigger the hook. Recovery: either run the operation manually (e.g. `sudo systemctl reload nginx`), or briefly toggle a field on the resource (e.g. change `mode` on a `@resource/file`, or `enabled` on a `@resource/systemd`) and re-apply, then revert.
+- **`@operation/command` covers a lot.** Although only `command` and `systemd` are exposed as operations in v1, `@operation/command` shells out — logrotate signals, cron reloads, cache invalidation, etc. all fit under it.
+
+#### Implementation: the `inject_handlers` post-pass
+
+Handlers are parsed alongside the rest of a plan item and stashed in `PlanMeta::handlers`. They flow through the resource → state → change → operations pipeline as inert passengers. After operations expansion, `inject_handlers` (in `lusid-plan`) walks the tree branch-by-branch and, wherever a branch's `meta.handlers` is non-empty AND its subtree contains a `Some(_)` leaf (i.e. the resource actually had a change), wraps the existing children in a synthetic anchor branch (`id = SubItem(fresh_scope, "@@handler-anchor")`) and appends one handler leaf per operation, each `requires`-ing the anchor. Per causality's branch-as-group semantics, the handlers wait for every resource-side op, and the outer branch's plan-item id transitively registers the handlers for dependents.
+
+The `@@` prefix is reserved for the plan layer; resource atoms must not emit intra-scope ids starting with it (enforced by `debug_assert!` in `map_plan_subitems`).
+
 
 ## Build / run / test (agent checklist)
 
