@@ -17,6 +17,7 @@
 //!   open an interactive shell).
 
 mod config;
+mod embedded;
 mod tui;
 
 use std::{env, net::Ipv4Addr, path::PathBuf, sync::Arc, time::Duration};
@@ -28,17 +29,21 @@ use lusid_ctx::Context;
 use lusid_secrets::cli::{CliEnv as SecretsCliEnv, CliError as SecretsCliError, SecretsCommand};
 use lusid_secrets::{RecipientsError, ReencryptForTargetError, reencrypt_for_target};
 use lusid_ssh::{Ssh, SshConnectOptions, SshError, SshKeypairError, SshVolume};
+use lusid_system::Arch;
 use lusid_vm::{Vm, VmError, VmOptions};
 use thiserror::Error;
 use tracing::error;
 use which::which;
 
 use crate::config::{Config, ConfigError, MachineConfig};
+use crate::embedded::EmbeddedError;
 use crate::tui::{TuiError, tui};
 
-/// Parsed CLI. `lusid_apply_linux_*_path` point at prebuilt apply binaries
-/// for each target arch — the dev workflow uploads these to VMs rather than
-/// compiling inside the guest. Both fall back to `lusid.toml` → defaults.
+/// Parsed CLI. `lusid_apply_linux_*_path` override the embedded `lusid-apply`
+/// worker for a given target arch — useful when iterating on `lusid-apply`
+/// itself without rebuilding `lusid` to re-embed. Each falls back to the
+/// matching `lusid.toml` field, then to the binary baked in at build time
+/// (see [`crate::embedded`]).
 ///
 /// Note(cc): only x86_64 and aarch64 are plumbed. Adding a new target arch
 /// means adding a new field + env var here *and* a selector wherever the
@@ -56,10 +61,18 @@ pub struct Cli {
     #[arg(long = "log", env = "LUSID_LOG", global = true)]
     pub log: Option<String>,
 
-    #[arg(env = "LUSID_APPLY_LINUX_X86_64", global = true)]
+    #[arg(
+        long = "lusid-apply-linux-x86-64",
+        env = "LUSID_APPLY_LINUX_X86_64",
+        global = true
+    )]
     pub lusid_apply_linux_x86_64_path: Option<String>,
 
-    #[arg(env = "LUSID_APPLY_LINUX_AARCH64", global = true)]
+    #[arg(
+        long = "lusid-apply-linux-aarch64",
+        env = "LUSID_APPLY_LINUX_AARCH64",
+        global = true
+    )]
     pub lusid_apply_linux_aarch64_path: Option<String>,
 
     /// Override `<root>/secrets` as the secrets directory (location of
@@ -189,6 +202,9 @@ pub enum AppError {
 
     #[error("failed to serialize VM SSH keypair: {0}")]
     SshKeypair(#[from] SshKeypairError),
+
+    #[error(transparent)]
+    Embedded(#[from] EmbeddedError),
 }
 
 /// Resolve the config path (CLI flag → `LUSID_CONFIG` env → CWD → `.`) and
@@ -262,13 +278,11 @@ async fn cmd_local_apply(
     secrets_dir: PathBuf,
     identity_path: Option<PathBuf>,
 ) -> Result<(), AppError> {
-    let Config {
-        ref lusid_apply_linux_x86_64_path,
-        ..
-    } = config;
     let MachineConfig { plan, params, .. } = config.local_machine()?;
 
-    let mut command = Command::new(lusid_apply_linux_x86_64_path);
+    let apply_bin = resolve_local_apply_path(&config, Arch::get()).await?;
+
+    let mut command = Command::new(&apply_bin);
     command
         .args(["--root", &config.root().to_string_lossy()])
         .args(["--plan", &plan.to_string_lossy()])
@@ -370,13 +384,11 @@ async fn cmd_dev_apply(
     let dev_dir = format!("/home/{}", vm.user);
     let plan_dir = plan.parent().unwrap();
     let plan_filename = plan.file_name().unwrap().to_string_lossy();
-    let apply_bin = which(&config.lusid_apply_linux_x86_64_path)?;
+    let apply_volume =
+        resolve_apply_volume(&config, machine.arch, format!("{dev_dir}/lusid-apply"))?;
 
     let mut volumes = vec![
-        SshVolume::FilePath {
-            local: apply_bin,
-            remote: format!("{dev_dir}/lusid-apply"),
-        },
+        apply_volume,
         SshVolume::DirPath {
             local: plan_dir.to_path_buf(),
             remote: format!("{dev_dir}/plan"),
@@ -507,4 +519,49 @@ async fn cmd_dev_ssh(config: Config, machine_id: String) -> Result<(), AppError>
     ssh.disconnect().await?;
 
     Ok(())
+}
+
+/// Pick the `lusid-apply` override path for `arch` from `Config`, if any.
+///
+/// Returning `None` means the caller should fall through to the embedded
+/// binary for that arch.
+fn override_apply_path(config: &Config, arch: Arch) -> Option<&str> {
+    match arch {
+        Arch::X86_64 => config.lusid_apply_linux_x86_64_path.as_deref(),
+        Arch::Aarch64 => config.lusid_apply_linux_aarch64_path.as_deref(),
+    }
+}
+
+/// Resolve a `lusid-apply` binary on disk for `local apply` to spawn as a
+/// subprocess. Prefers the override (resolved through `which`, accepting
+/// both literal paths and bare names on `$PATH`); otherwise extracts the
+/// embedded binary into the user cache and returns that path.
+async fn resolve_local_apply_path(config: &Config, arch: Arch) -> Result<PathBuf, AppError> {
+    if let Some(p) = override_apply_path(config, arch) {
+        return Ok(which(p)?);
+    }
+    Ok(embedded::resolve_or_extract_for_arch(arch).await?)
+}
+
+/// Pick the `SshVolume` that carries `lusid-apply` to a remote target of the
+/// given `arch`. Override paths are uploaded by path (preserves dev
+/// iteration); the embedded binary is uploaded straight from memory via
+/// `SshVolume::FileBytes`.
+fn resolve_apply_volume(
+    config: &Config,
+    arch: Arch,
+    remote: String,
+) -> Result<SshVolume, AppError> {
+    if let Some(p) = override_apply_path(config, arch) {
+        return Ok(SshVolume::FilePath {
+            local: which(p)?,
+            remote,
+        });
+    }
+    let bytes = embedded::embedded_lusid_apply(arch)?.to_vec();
+    Ok(SshVolume::FileBytes {
+        local: bytes,
+        permissions: Some(0o755),
+        remote,
+    })
 }

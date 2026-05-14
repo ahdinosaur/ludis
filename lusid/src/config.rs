@@ -63,13 +63,17 @@ struct ConfigToml {
 /// Resolved configuration. `path` is the original config file location
 /// (used to derive `root()`, the plan-resolution base). `machines` map is
 /// keyed by the TOML section name.
+///
+/// `lusid_apply_linux_*_path` are dev/operator overrides for the embedded
+/// `lusid-apply` worker — when `None`, the runtime extracts the binary baked
+/// into `lusid` at build time (see [`crate::embedded`]).
 #[derive(Debug, Clone)]
 pub struct Config {
     pub path: PathBuf,
     pub machines: BTreeMap<String, MachineConfig>,
     pub log: String,
-    pub lusid_apply_linux_x86_64_path: String,
-    pub lusid_apply_linux_aarch64_path: String,
+    pub lusid_apply_linux_x86_64_path: Option<String>,
+    pub lusid_apply_linux_aarch64_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -107,13 +111,11 @@ impl Config {
         let lusid_apply_linux_x86_64_path = cli
             .lusid_apply_linux_x86_64_path
             .clone()
-            .or(lusid_apply_linux_x86_64_path.clone())
-            .unwrap_or("lusid-apply-linux-x86-64".into());
+            .or(lusid_apply_linux_x86_64_path);
         let lusid_apply_linux_aarch64_path = cli
             .lusid_apply_linux_aarch64_path
             .clone()
-            .or(lusid_apply_linux_aarch64_path.clone())
-            .unwrap_or("lusid-apply-linux-aarch64".into());
+            .or(lusid_apply_linux_aarch64_path);
 
         Ok(Config {
             path: path.to_owned(),
