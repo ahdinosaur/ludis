@@ -92,13 +92,6 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
 
-      # Defensive: runner images ship libssl-dev + pkg-config, but openssl-sys
-      # is in the dep tree (via reqwest → native-tls) so be explicit.
-      - name: Install native build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -155,11 +148,6 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: refs/tags/${{ env.TAG }}
-
-      - name: Install native build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libssl-dev pkg-config
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
