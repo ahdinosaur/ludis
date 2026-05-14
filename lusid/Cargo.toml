@@ -17,7 +17,7 @@ lusid-view = { path = "../view", version = "0.1" }
 lusid-vm = { path = "../vm", version = "0.1" }
 comfy-table = "7.2.1"
 clap.workspace = true
-crossterm = "0.27"
+crossterm = "0.29"
 displaydoc.workspace = true
 ratatui = "0.29"
 rimu.workspace = true
