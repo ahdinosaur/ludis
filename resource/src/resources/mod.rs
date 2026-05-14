@@ -4,6 +4,8 @@ pub mod aur;
 pub mod command;
 pub mod directory;
 pub mod file;
+pub mod flatpak;
+pub mod flatpak_remote;
 pub mod git;
 pub mod group;
 pub mod pacman;
