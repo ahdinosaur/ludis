@@ -19,9 +19,6 @@ pub fn is_resource_module(module: &Spanned<String>) -> Option<&str> {
     module.inner().strip_prefix("@resource/")
 }
 
-/// Parse `params` directly into the matching resource module's typed
-/// [`ResourceParams`] variant. Errors if `id` is unknown or the params don't fit
-/// the resource's shape.
 pub fn resource_module(
     resource_module_id: &str,
     params: Option<Spanned<Value>>,

@@ -1,25 +1,5 @@
-//! Resource types — the user-facing "thing I want on my machine" layer.
-//!
-//! Each resource (apt, file, pacman, command, git) describes one kind of managed
-//! system entity. The pipeline for every resource is the same five-step shape,
-//! captured by the [`ResourceType`] trait:
-//!
-//! 1. **Params** — friendly user-facing struct, parsed from the plan's Rimu
-//!    value via [`ParseParams`] (one-pass shape validation + typed extraction).
-//! 2. **Resource** — one or more "atoms" produced from Params. One apt
-//!    `packages: [a, b]` param expands to two atoms (one per package). Atoms are
-//!    arranged in a [`CausalityTree`] so resource-internal ordering can be declared.
-//! 3. **State** — current observed state for an atom (e.g. Installed/NotInstalled).
-//! 4. **Change** — the delta from State to the desired Resource. `None` means
-//!    "already matches".
-//! 5. **Operations** — the concrete actions (apt install, write file, etc.) derived
-//!    from the Change. Lives in the `lusid-operation` crate.
-//!
-//! The crate-level [`Resource`] / [`ResourceState`] / [`ResourceChange`] /
-//! [`ResourceParams`] enums are plain dispatchers — each variant boxes the per-type
-//! data and delegates through the trait. Adding a new resource means: writing a
-//! `ResourceType` impl, adding a variant to each of these enums, and threading it
-//! through the match arms.
+//! User-facing resource types. See the crate README for the pipeline shape
+//! and the conventions for adding a new resource.
 
 use std::fmt::Display;
 use std::path::PathBuf;
@@ -189,7 +169,6 @@ impl Render for ResourceParams {
     }
 }
 
-/// Dispatcher over every resource's `Resource` atom.
 #[derive(Debug, Clone)]
 pub enum Resource {
     Apt(AptResource),
@@ -365,7 +344,6 @@ pub enum ResourceStateError {
     Group(#[from] <Group as ResourceType>::StateError),
 }
 
-/// Dispatcher over every resource's `Change`.
 #[derive(Debug, Clone)]
 pub enum ResourceChange {
     Apt(AptChange),
@@ -633,10 +611,7 @@ impl Resource {
             (Resource::Group(resource), ResourceState::Group(state)) => {
                 typed::<Group>(resource, state, ResourceChange::Group)
             }
-            _ => {
-                // Programmer error, should never happen, or if it does should be immediately obvious.
-                panic!("Unmatched resource and state")
-            }
+            _ => panic!("Unmatched resource and state"),
         }
     }
 }
@@ -1051,8 +1026,6 @@ mod tests {
         absent.validate_host_paths().await.expect("no-op");
     }
 
-    /// `@resource/file state: "sourced"` with a source that's a symlink to a
-    /// *directory* must error out — the validator declares files-only.
     #[tokio::test]
     async fn file_sourced_errors_when_source_is_a_symlink_to_a_directory() {
         let dir = tempdir().unwrap();

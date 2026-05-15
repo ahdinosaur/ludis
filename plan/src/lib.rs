@@ -97,8 +97,6 @@ pub async fn plan(
     Ok(tree)
 }
 
-/// Inner recursive routine. Each call handles exactly one `.lusid` source: load, validate
-/// params, evaluate `setup`, and convert each returned item into a subtree.
 async fn plan_recursive(
     plan_id: PlanId,
     params_value: Option<Spanned<Value>>,
@@ -196,7 +194,6 @@ async fn plan_item_to_resource(
         on_change,
     } = plan_item;
 
-    // `@operation/*` only lives inside `on_change`; reject as a top-level item.
     if let Some(op_id) = is_operation_module(&module) {
         return Err(PlanItemToResourceError::OperationModuleAsTopLevel {
             id: op_id.to_string(),
@@ -204,7 +201,6 @@ async fn plan_item_to_resource(
         });
     }
 
-    // Parse on_change. Rejected for non-`@resource/*` plan items.
     let handlers = if on_change.is_empty() {
         Vec::new()
     } else {
@@ -250,7 +246,6 @@ async fn plan_item_to_resource(
             node: params,
         })
     } else {
-        // Nested plan path. on_change already rejected above.
         let path = PathBuf::from(module.inner());
         let plan_id = current_plan_id.join(path);
         let children = plan_recursive(plan_id, params_value, ctx, store, system)

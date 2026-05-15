@@ -1,44 +1,28 @@
 # AGENTS.md
 
-**lusid** is a Rust project for declarative machine configuration via “plans”, producing a dependency-aware resource/operation tree and applying it with a streaming TUI.
+**lusid** is a Rust project for declarative machine configuration via "plans".
 
 ## What this project is
 
-**Lusid** takes a `.lusid` plan (written in the **Rimu** language), optionally a parameters object, and:
+Lusid takes a `.lusid` plan (written in the **Rimu** language), optionally a parameters object, and:
 
-1. Loads + evaluates the plan’s `setup(params, system)` function → returns a list of **PlanItem**s.
+1. Loads + evaluates the plan's `setup(params, system)` function → returns a list of **PlanItem**s.
 2. Converts PlanItems into either:
-   - **Resource modules** (`@resource/*`) → become typed `ResourceParams` (apt/file/pacman today)
-   - Or nested plans (module path) → recursively planned
-3. Validates parameter schemas and values (with good span/source error reporting).
-4. Builds a **causality tree** (nodes can have `id`, `requires`, `required_by` dependencies).
-5. Computes dependency **epochs** (topological layers).
-6. Applies operations epoch-by-epoch, streaming structured UI updates as JSON to stdout.
-7. The `lusid` CLI runs `lusid-apply-*` and renders a TUI from those updates.
-
-Key design themes:
-- Strong typing at the boundaries (params → typed structs).
-- Span-aware diagnostics using Rimu `Spanned<T>` values.
-- Tree-first architecture: nested `Tree` and arena-based `FlatTree`.
-- Dependency ordering via `CausalityMeta { id, requires, required_by }` and Kahn’s algorithm.
+   - **Resource modules** (`@resource/*`) → typed `ResourceParams` (apt/file/pacman/…).
+   - Or nested plans (module path) → recursively planned.
+3. Validates parameter schemas and values (with span/source error reporting).
+4. Builds a **causality tree** (nodes can have `id`, `requires`, `required_by`).
+5. Computes dependency **epochs** (topological layers via Kahn's algorithm).
+6. Applies operations epoch-by-epoch, streaming structured updates as JSON to stdout.
+7. The `lusid` CLI renders a TUI from those updates.
 
 ## Principles
 
-- Premature optimization is the root of all evil
-- Do not second guess or make assumptions
-- Prefer robustness over performance
-- Achieve performance with simple fit-for-purpose abstractions, not clever hacks
-
-### Complexity check
-
-Before adding significant amounts of code, verify:
-
-1. The approach is solid — not just the first thing that came to mind.
-2. No simpler alternative achieves the same goal.
-3. Compare to industry-standard tools and specifications if relevant.
-4. Check if a good Rust crate already handles the task.
-
-Complexity is fine when warranted - this is a genuinely complex project. The point is to be deliberate.
+- Premature optimization is the root of all evil.
+- Do not second guess or make assumptions.
+- Prefer robustness over performance.
+- Achieve performance with simple fit-for-purpose abstractions, not clever hacks.
+- Before adding non-trivial code: confirm the approach is solid, check for simpler alternatives, look at industry tools and existing crates. Complexity is fine when warranted; the point is to be deliberate.
 
 ## Reading order
 
@@ -49,7 +33,7 @@ To understand the runtime behavior, read in this order:
 4. `causality/src/epoch.rs` (dependency scheduling)
 5. `lusid/src/tui.rs` (how updates are rendered)
 
-## “Gotchas” / invariants to preserve
+## Gotchas / invariants to preserve
 
 ### Spans and diagnostics are important
 Many errors are `Spanned<...>` or embed `Span` to point to plan source locations. When adding new parsing/validation logic:
@@ -94,7 +78,7 @@ Resources live at the top level of `setup`. Operations live only inside an `on_c
 
 #### `on_change` hooks
 
-A resource may declare a list of operations to run when it changes. Hooks fire when the resource has any change to apply (new file contents, different mode, owner change, etc.). They run in a strictly-later epoch than every one of the resource's own operations — `inject_handlers` wraps the resource's children in an anchor sub-branch and gives each handler `requires: [anchor_id]`, so per causality's branch-as-group semantics the handler waits for every resource-side leaf. Identical hooks coalesce within that handler epoch — if ten resources in the same epoch each `on_change: reload nginx`, their hooks all land in the next epoch and merge dedup collapses them to one reload.
+A resource may declare a list of operations to run when it changes. Hooks fire on any change (new contents, different mode, owner change, etc.) and run in a strictly-later epoch than the resource's own operations. Identical hooks in the same epoch coalesce — ten resources each declaring `on_change: reload nginx` collapse to one reload.
 
 ```rimu
 - module: "@resource/file"
@@ -104,7 +88,7 @@ A resource may declare a list of operations to run when it changes. Hooks fire w
       params: { name: "nginx", action: "reload" }
 ```
 
-A plan item's `id` registers all of its hooks too: if another plan item declares `requires: [<id>]`, it waits for both the resource and its hooks before running. Dependents see the hook's effect, not just the resource's state.
+A plan item's `id` registers its hooks too: a `requires: [<id>]` dependent waits for both the resource and its hooks. See the `inject_handlers` post-pass below for the mechanism.
 
 #### v1 limitations
 
@@ -155,25 +139,20 @@ This project runs privileged operations (`sudo apt-get`, `sudo pacman`, filesyst
 
 ## Reviews
 
-- Think about the long-term maintenance of the project
-- Check all algorithms are correct
-  - Look at relevant specifications where possible
-- Check all unsafe usage is correct (and documented with SAFETY comments)
-- Check there's not a simpler way to do (or say) what is needed
-- Imagine alternative abstractions, compare with current abstractions
-- Add `debug_assert!` to validate any assumptions
-- Add more tests, but only if useful
-- For any observations that don't lead to a change now:
-  - Make a comment `Note(cc): xxx` to document for future readers,
-  - Or `TODO(cc): xxx` if we should make a change in the future
+- Think about long-term maintenance.
+- Verify algorithms against relevant specs.
+- Check `unsafe` usage is correct and documented with `SAFETY` comments.
+- Look for simpler ways to do (or say) the same thing.
+- Compare current abstractions against alternatives.
+- Add `debug_assert!` to validate assumptions.
+- For observations that don't lead to a change now: `Note(cc): xxx` for future readers, `TODO(cc): xxx` if we should change it later.
 
 ## Testing
 
-- Don't assume the current code is correct
-  - Don't ever fix a test in order to pass, unless you are absolutely certain this is correct
-- Before adding tests, think about specific edge cases that should be tested
-  - Don't add tests just for the sake of adding tests
-- If a test is redundant, remove it
+- Don't assume the current code is correct.
+- Never change a test just to make it pass — fix the cause.
+- Add tests for specific edge cases, not for the sake of count.
+- Remove redundant tests.
 
 ## Tracing
 

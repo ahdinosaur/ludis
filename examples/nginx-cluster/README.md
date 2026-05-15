@@ -25,13 +25,8 @@ install-nginx ──► publish-index ──► systemd: enable + start nginx
 ```
 
 1. `@resource/apt` installs the `nginx` package.
-2. `@resource/command` runs a shell one-liner that `printf`s a small HTML page
-   containing this machine's `params.greeting` and `system.hostname`, then
-   pipes it through `sudo -n tee /var/www/html/index.html`. It's idempotent:
-   the `is_installed` check uses `grep -qF` to see if the file already has
-   the greeting, so reapplies are a no-op.
-3. `@resource/systemd` ensures `nginx.service` is both `enabled` (on boot) and
-   `active` (right now).
+2. `@resource/command` writes `/var/www/html/index.html` with `params.greeting` and `system.hostname`. The `is_installed` check (`grep -qF` for the greeting) keeps re-applies a no-op.
+3. `@resource/systemd` ensures `nginx.service` is `enabled` (on boot) and `active` (right now).
 
 ## Try it (local dev VMs)
 

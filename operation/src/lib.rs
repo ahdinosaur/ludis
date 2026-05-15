@@ -1,21 +1,6 @@
-//! Concrete mutations executed against a target machine.
-//!
-//! Operations are what actually *runs* — `apt install`, `write file`, `git clone`,
-//! etc. They are produced by [`lusid_resource::ResourceChange::operations`] and are
-//! the leaves of the causality tree handed to `lusid-apply` for per-epoch execution.
-//!
-//! Each operation family (apt, pacman, file, command, git) implements the
-//! [`OperationType`] trait, which defines:
-//!
-//! - **`merge`** — coalesce same-type operations in one epoch (e.g. combine
-//!   multiple `apt install` calls into one).
-//! - **`apply`** — run the operation against the machine and return a future plus
-//!   streaming stdout/stderr that the TUI can tail.
-//!
-//! The crate-level [`Operation`] / [`OperationApplyError`] / [`OperationApplyOutput`]
-//! / [`OperationApplyStdout`] / [`OperationApplyStderr`] enums are thin dispatchers.
-//! The three `ApplyXxx` enums use `pin_project` so they can forward `Future` /
-//! `AsyncRead` polls to the per-type impls without boxing each call.
+//! Concrete mutations executed against a target machine. See the crate
+//! README for the [`OperationType`] trait shape and the `merge` / `apply`
+//! contract.
 
 use async_trait::async_trait;
 use core::task;

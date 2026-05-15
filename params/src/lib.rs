@@ -1,50 +1,9 @@
-//! Parameter schemas for lusid plans, plus the typed parser used at the
-//! resource boundary.
+//! Parameter schemas, validation, and typed parsing. See the crate README
+//! for components, path-type conventions, and union semantics.
 //!
-//! The crate is in two halves:
-//!
-//! - **Schema** — [`ParamType`] / [`ParamField`] / [`ParamTypes`] describe the
-//!   shape a value must take. A plan declares its own params schema in its
-//!   `.lusid` source; [`validate`] checks user-supplied values against it
-//!   *and* coerces string-shaped paths into the typed Rimu variants
-//!   (`Value::HostPath` / `Value::TargetPath`) before handing them to
-//!   `setup` (see [`ParamsContext`] for how resolution origins are picked).
-//! - **Parser** — the [`parse`] module ([`ParseParams`], [`StructFields`], the
-//!   `parse_*` helpers) takes a Rimu value and produces a typed Rust value
-//!   in one pass. Each `@resource/<id>` resource implements [`ParseParams`] for its
-//!   `Params` type.
-//!
-//! Resources used to declare a [`ParamTypes`] schema *and* a serde
-//! `Deserialize` impl, with a multi-pass `validate` → `ParamValue` →
-//! `SerdeValue` round-trip in between. That pipeline is gone — resources
-//! parse straight from `Spanned<Value>` to their typed `Params`.
-//!
-//! # Spans are load-bearing
-//!
-//! Schemas, values, and errors are all `Spanned<T>`. That's how diagnostics
-//! point back at the offending line in the user's `.lusid` file. When adding
-//! a new type or error variant, keep the span all the way through.
-//!
-//! # Path-type conventions (see also AGENTS.md)
-//!
-//! - [`ParamType::HostPath`]: a path on the local machine. [`validate`] accepts
-//!   either Rimu's typed [`rimu::Value::HostPath`] or a relative
-//!   [`rimu::Value::String`] and rewrites the string into a `Value::HostPath`
-//!   resolved against the value's span source (or [`ParamsContext::root_path`]
-//!   when there isn't one).
-//! - [`ParamType::TargetPath`]: an absolute path on the managed host. Accepts
-//!   [`rimu::Value::TargetPath`] or an absolute [`rimu::Value::String`]; the
-//!   string is wrapped as a `Value::TargetPath` (no resolution — target paths
-//!   live on the managed host, not the local filesystem).
-//!
-//! # Union semantics
-//!
-//! A [`ParamTypes::Union`] is a list of struct cases. [`validate`] uses
-//! **first-match**: cases are tried in declaration order, and the first one
-//! that validates wins — so authors should order from most-specific to
-//! most-general. Resource-side parsers normally dispatch by an explicit
-//! discriminator field (see [`StructFields::take_discriminator`]) instead of
-//! relying on first-match.
+//! Spans are load-bearing: schemas, values, and errors are all `Spanned<T>`
+//! so diagnostics can point at the offending plan line. When adding a new
+//! type or error variant, keep the span all the way through.
 
 pub mod parse;
 

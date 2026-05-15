@@ -2,12 +2,6 @@
 
 Declarative description of a lusid *target* machine.
 
-Distinct from `lusid-system`:
+Distinct from [`lusid-system`](../system): `System` describes the *current* host; `Machine` describes the *target*.
 
-- `lusid-system::System` — facts about the machine lusid is running on *right now*.
-- `lusid-machine::Machine` — the machine we want to provision (may be a VM,
-  may be remote), described by its intended hostname / arch / OS plus optional
-  `MachineVmOptions` (cpu, memory, graphics).
-
-Currently a minimal data container; expected to grow as remote deployment,
-credentials, and lifecycle policies are added.
+A `Machine` bundles its intended hostname, arch, OS, an optional `remote = { host = "..." }` block (for SSH targets), and optional `MachineVmOptions` (cpu, memory, graphics — used by `dev apply`).

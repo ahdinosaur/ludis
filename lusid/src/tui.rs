@@ -483,14 +483,11 @@ impl TuiApp {
                 self.navigate_stage_relative(1);
             }
 
-            // Optional: keep Tab behavior as another way to move between stages.
             KeyCode::Tab => {
                 self.follow_pipeline = false;
                 self.navigate_stage_relative(1);
             }
 
-            // Optional: keep Shift-Tab behavior as another way to move between
-            // stages.
             KeyCode::BackTab => {
                 self.follow_pipeline = false;
                 self.navigate_stage_relative(-1);

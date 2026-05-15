@@ -1,32 +1,5 @@
-//! Generic nested and flat tree data structures used throughout lusid.
-//!
-//! Provides two representations:
-//!
-//! - [`Tree`]: A recursive nested tree. Each node is either a `Branch` (with children) or
-//!   a `Leaf` (with a value). Both carry a `Meta` payload. Used where recursive structure
-//!   is natural (e.g. plan items before flattening).
-//!
-//! - [`FlatTree`]: An arena-backed flat tree (`Vec<Option<FlatTreeNode>>`). Nodes reference
-//!   children by index. The `Option` layer allows tombstoning — nodes can be removed by
-//!   setting their slot to `None` without shifting indices.
-//!
-//! The async `map` family on `FlatTree` accept `write_start`/`write_update` callbacks,
-//! which is how the streaming TUI protocol gets progress updates during tree transformations.
-//!
-//! # FlatTree invariants
-//!
-//! - Root is always at index 0.
-//! - Missing children (None slots or out-of-bounds indices) are tolerated by lenient
-//!   reconstruction.
-//! - Replacing a subtree recursively clears existing descendants first, then appends
-//!   new children at the end of the arena.
-//! - Depth-first traversal is post-order (children before parent).
-//!
-//! # Conversions
-//!
-//! - `Tree → FlatTree`: root lands at index 0.
-//! - `FlatTree → Tree`: lenient — missing children are skipped; if the root itself is
-//!   missing, returns an empty `Branch` with `Meta::default()`.
+//! Generic tree data structures: nested [`Tree`] and arena-backed [`FlatTree`].
+//! See the crate README for invariants and usage.
 
 use std::future::Future;
 use thiserror::Error;
@@ -279,9 +252,6 @@ where
     Meta: Clone,
 {
     /// Transform every leaf synchronously, emitting a `write_update` event per leaf.
-    ///
-    /// The callback lets callers stream progress (used by `lusid-apply` to emit JSON
-    /// updates as the tree is transformed).
     pub async fn map<NextNode, Error, MapFn, WriteUpdateFn, WriteUpdateFut>(
         self,
         map: MapFn,
@@ -368,9 +338,6 @@ where
 
     /// Expand each leaf into a (possibly nested) subtree. The leaf's slot becomes the
     /// new subtree's root, and any extra nodes are appended to the arena.
-    ///
-    /// This is how the plan crate recursively expands plan-item leaves into resource
-    /// branches.
     pub async fn map_tree<NextNode, Error, MapFn, WriteFut, WriteUpdateFn>(
         self,
         map: MapFn,

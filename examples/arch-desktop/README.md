@@ -4,24 +4,17 @@ A single Arch Linux machine provisioned as a minimal graphical workstation:
 X.org, XFCE, and LightDM. You log in at the LightDM greeter and land in an
 XFCE session.
 
-The point of this example is to show:
+The point of this example:
 
-- How to apply a plan to a **graphical VM** (XFCE is visible in the QEMU
-  window opened by `dev apply`).
-- How to install a **group of packages** in one go with `@resource/pacman`.
-- How to create a **login account with a password**, combining `@resource/user`
-  with a shell-out to `chpasswd` via `@resource/command`.
-- How to sequence a **package install** with a **service enable** so the
-  display manager is ready to start as soon as its packages are on disk.
+- Applying a plan to a **graphical VM** (XFCE is visible in the QEMU window opened by `dev apply`).
+- Installing a **group of packages** in one go with `@resource/pacman`.
+- Creating a **login account with password** via `@resource/user` + a `chpasswd` shell-out.
+- Sequencing a **package install** before a **service enable** with `requires`.
 
 ## Files
 
-- [`lusid.toml`](./lusid.toml) — declares one machine (`desktop`) targeting
-  Arch Linux x86-64, and the username/password the plan will seed. No VM
-  overrides, so graphics is on and memory/CPU defaults apply.
-- [`desktop.lusid`](./desktop.lusid) — the plan. Installs X + XFCE + LightDM,
-  creates a login user with a password, then enables and starts
-  `lightdm.service`.
+- [`lusid.toml`](./lusid.toml) — declares one machine (`desktop`) targeting Arch Linux x86-64, plus the username/password the plan seeds.
+- [`desktop.lusid`](./desktop.lusid) — installs X + XFCE + LightDM, creates a login user with a password, then enables and starts `lightdm.service`.
 
 ## What the plan does
 
@@ -33,22 +26,10 @@ user create <username> ──► command chpasswd <username>:<password> ──�
                                                     systemd enable + start lightdm
 ```
 
-1. `@resource/pacman` installs the five packages in a single transaction:
-   - `xorg-server`, `xorg-xinit` — the X11 display server.
-   - `xfce4` — the XFCE meta-package (window manager, panel, session,
-     Thunar file manager, terminal).
-   - `lightdm`, `lightdm-gtk-greeter` — the login display manager and its
-     greeter UI.
-2. `@resource/user` creates the login account named by `params.username`. The
-   cloud image's default `arch` user has a locked password and can't sign
-   in at the greeter, so the plan adds a real account.
-3. `@resource/command` sets that account's password to `params.password` using
-   `chpasswd`. An `is_installed` check against `passwd -S` keeps it
-   idempotent — once the account has a password, re-applies skip this step.
-4. `@resource/systemd` enables `lightdm.service` (so it starts on every boot)
-   and activates it immediately, after the user + password are in place. A
-   QEMU window will show the LightDM greeter a few seconds after the apply
-   finishes.
+1. `@resource/pacman` installs `xorg-server`, `xorg-xinit`, `xfce4`, `lightdm`, `lightdm-gtk-greeter` in a single transaction.
+2. `@resource/user` creates the login account named by `params.username`. The cloud image's default `arch` user has a locked password and can't sign in at the greeter, so the plan adds a real account.
+3. `@resource/command` sets the password with `chpasswd`. An `is_installed` check against `passwd -S` keeps it idempotent — once the account has a password, re-applies skip this step.
+4. `@resource/systemd` enables and starts `lightdm.service` after the user is in place. A QEMU window shows the LightDM greeter a few seconds after apply finishes.
 
 ## Try it (local dev VM)
 

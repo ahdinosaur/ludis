@@ -1,25 +1,9 @@
-//! The `lusid` CLI: user-facing front door for applying plans to local,
-//! remote, and VM-dev targets.
+//! The `lusid` CLI. See the crate README for the subcommand surface.
 //!
 //! Architecture: the CLI doesn't run the apply pipeline in-process. It
-//! spawns [`lusid-apply`](lusid_apply) (either locally for `local apply`,
-//! or inside a dev VM / a remote machine over SSH for `dev apply` /
-//! `remote apply`) and pipes its stdout JSON into the [`tui`] module to
-//! render a live pipeline view. stderr is buffered and shown on a separate
-//! pane.
-//!
-//! ## Subcommands
-//!
-//! - `machines list` — table of all machines in `lusid.toml`.
-//! - `local apply` — apply the machine matching `$(hostname)` to this host.
-//! - `remote apply`/`ssh` — connect over SSH to a real machine declared
-//!   with a `remote = { host = "..." }` block; SFTP the plan +
-//!   `lusid-apply` binary into `/var/lib/lusid/`, run apply, stream output
-//!   through the TUI. Same secret-forwarding pattern as `dev apply` but the
-//!   guest identity is the target's existing `/etc/ssh/ssh_host_ed25519_key`.
-//! - `dev apply`/`ssh` — spin up a local QEMU VM (via [`lusid-vm`]), SFTP
-//!   the plan + `lusid-apply` binary into it, and run apply over SSH (or
-//!   open an interactive shell).
+//! spawns [`lusid-apply`](lusid_apply) (locally, in a dev VM, or over SSH
+//! to a remote machine) and pipes its stdout JSON into the [`tui`] module
+//! to render a live pipeline view. stderr is buffered into a separate pane.
 
 mod config;
 mod embedded;
@@ -303,8 +287,6 @@ async fn cmd_secrets(
     Ok(())
 }
 
-// Spawns `lusid-apply` as a subprocess and pipes its stdout + stderr into
-// the TUI.
 async fn cmd_local_apply(
     config: Config,
     secrets_dir: PathBuf,
@@ -890,9 +872,8 @@ async fn cmd_dev_apply(
     }
     if let Some(params) = params {
         let params_json = serde_json::to_string(&params)?;
-        // `shell_words::quote` properly POSIX-escapes embedded single quotes,
-        // which serde_json doesn't escape and the previous `'…'` quoting
-        // mishandled.
+        // `shell_words::quote` correctly POSIX-escapes embedded single quotes;
+        // serde_json doesn't.
         command.push_str(&format!(" --params {}", shell_words::quote(&params_json)));
     }
 

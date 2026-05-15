@@ -534,14 +534,11 @@ impl AppView {
                     resource_states,
                 },
                 ResourceStatesComplete,
-            ) => {
-                // Stay in ResourceStates
-                Ok(AppView::ResourceStates {
-                    resource_params,
-                    resources,
-                    resource_states,
-                })
-            }
+            ) => Ok(AppView::ResourceStates {
+                resource_params,
+                resources,
+                resource_states,
+            }),
 
             // Phase: ResourceStates -> ResourceChanges
             (

@@ -1,35 +1,8 @@
-//! Pipeline orchestrator: loads a plan, validates params, builds the resource
-//! → state → change → operation trees, schedules operations by epoch, and
-//! applies them — all while streaming [`AppUpdate`]s as newline-delimited
-//! JSON on stdout for the `lusid` TUI to render.
+//! Pipeline orchestrator. Public surface: [`apply`] + [`ApplyOptions`].
+//! See the crate README for the phase-by-phase pipeline.
 //!
-//! The public surface is [`apply`] + [`ApplyOptions`]; `main.rs` is a thin
-//! clap wrapper.
-//!
-//! ## Pipeline (one phase per [`AppUpdate`] group)
-//!
-//! 1. [`plan`](lusid_plan::plan) — evaluate the plan, validate params,
-//!    produce a [`PlanTree<ResourceParams>`](lusid_plan::PlanTree).
-//! 2. `ResourceParams → Resources` via `ResourceParams::resources` — each
-//!    plan node can expand into multiple resources with intra-scope ordering
-//!    (file mode/user/group, etc.), handled by
-//!    [`map_plan_subitems`](lusid_plan::map_plan_subitems).
-//! 3. `Resource → ResourceState` via async state probes. This is the only
-//!    I/O-bound phase prior to apply; emits per-leaf `NodeStart`/`NodeComplete`
-//!    so the TUI can show a spinner while each probe runs.
-//! 4. `(Resource, State) → ResourceChange` — pure; `None` means "no-op, prune".
-//! 5. `ResourceChange → Operations` tree — each change expands to one or
-//!    more ordered operations. Short-circuits if step 4 produced no changes.
-//! 6. [`compute_epochs`] — Kahn's topological layering over the causality
-//!    metadata in the operations tree; operations within an epoch are
-//!    independent, operations across epochs have a required-before edge.
-//! 7. [`Operation::merge`] + [`Operation::apply`] — per-epoch, merge like
-//!    operations (e.g. multiple `apt install`s into one), then apply
-//!    sequentially. Stdout + stderr are streamed line-by-line back into
-//!    `AppUpdate` events.
-//!
-//! Human-facing output belongs on stderr (via `tracing`); stdout is reserved
-//! for the machine-readable protocol.
+//! Stdout is reserved for the newline-delimited [`AppUpdate`] protocol;
+//! human-facing output goes to stderr via `tracing`.
 
 use std::path::PathBuf;
 use std::sync::LazyLock;

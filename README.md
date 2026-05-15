@@ -8,11 +8,9 @@ _STATUS: MAD SCIENCE 🧪_
 
 ## About
 
-Lusid helps you configure your computers with the exact setup you describe.
+Configure your computers with the exact setup you describe — like .dotfiles on steroids, less ideological than NixOS, friendlier than Ansible or Salt for personal setups.
 
-Like .dotfiles on steroids, but less "pure" (ideological) than NixOS. Like Ansible or Salt Stack, but more friendly and functional for personal setups.
-
-Lusid can be used for your workstations (desktops or laptops) or your servers (homelab or cloud).
+Works on workstations (desktops, laptops) and servers (homelab, cloud).
 
 ## Get Started
 
@@ -23,40 +21,28 @@ Check out the [examples](./examples/):
 
 ### Install
 
-Until lusid has binary releases, build it from source. The `lusid-apply`
-worker is **embedded** into the `lusid` binary at build time, so build the
-worker first and the CLI second.
+No binary releases yet — build from source. The `lusid-apply` worker is **embedded** into the `lusid` CLI at build time, so build the worker first.
 
-**Prerequisites.** Rust stable + `just`. Because `just build-lusid-apply`
-builds the worker for **both** x86-64 and aarch64, you also need the
-aarch64 cross-compile toolchain installed even when targeting only your
-host arch:
+**Prerequisites.** Rust stable, [`just`](https://github.com/casey/just), and the aarch64 cross-compile toolchain (the worker builds for both x86-64 and aarch64 even on a single-arch host):
 
 - Debian/Ubuntu: `sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross`
 - Arch: `sudo pacman -S aarch64-linux-gnu-gcc aarch64-linux-gnu-glibc`
 - All: `rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu`
 
-The aarch64 linker is wired up in `.cargo/config.toml`. CI builds each
-arch on a native runner, so the cross-toolchain isn't needed in `release.yml`.
+The aarch64 linker is wired up in `.cargo/config.toml`. CI builds each arch on a native runner, so this isn't needed in `release.yml`.
 
 ```sh
 git clone https://github.com/ahdinosaur/lusid
 cd lusid
-just build-lusid-apply           # builds lusid-apply, stages it under ./embed/
+just build-lusid-apply           # builds lusid-apply, stages under ./embed/
 cargo build -p lusid --release   # picks up ./embed/ by default
 ```
 
-If you have [just](https://github.com/casey/just) installed, the example
-recipes (e.g. `just nginx-cluster-apply-a`) chain both steps for you.
+The example recipes (e.g. `just nginx-cluster-apply-a`) chain both steps.
 
-This produces one runnable binary at `./target/release/lusid` — the CLI
-you run: `lusid machines list`, `lusid local apply`, `lusid dev apply`,
-`lusid remote apply`, …. The worker is invisible to operators: it's
-extracted to `~/.cache/lusid/lusid-apply/<version>/<arch>/lusid-apply`
-on first `local apply`, and streamed directly over SFTP for `dev apply`
-and `remote apply`.
+You get one binary at `./target/release/lusid`. The worker is extracted to `~/.cache/lusid/lusid-apply/<version>/<arch>/` on first `local apply`, and streamed over SFTP for `dev apply` / `remote apply`.
 
-For running the `dev apply` / `dev ssh` flow you also need QEMU and a couple of image-building tools — see the [examples prerequisites](./examples/README.md#prerequisites) for the exact packages.
+For `dev apply` / `dev ssh` you also need QEMU and image-building tools — see the [examples prerequisites](./examples/README.md#prerequisites).
 
 ### Create a plan
 
@@ -127,7 +113,7 @@ Applying the same plan twice is always safe: lusid reads the current state of ev
 
 A plan describes a modular set of resources you want to be applied to the machine.
 
-Plans are written in the [the Rimu language](https://rimu.dev):
+Plans are written in [the Rimu language](https://rimu.dev):
 
 ```yaml
 name: "example-git-setup"
@@ -158,89 +144,43 @@ setup: (params, system) =>
       - "install-curl"
 ```
 
-A plan:
+A plan has metadata (`name`, `version`), declared `params`, and a `setup` function returning a list of items. Each item is either another plan (called recursively) or a core resource (`@resource/*`). Items can declare `requires` / `required_by` to order them.
 
-- Defines basic metadata like name and version (e.g. think `package.json` or `Cargo.toml`)
-- Defines parameters that it expects to receive
-- Defines a `setup` function, which return a list of items to apply.
-  - An item can refer to another plan defined by the user, in which case they are called.
-  - Or, an item can a core states, these are defined in Rust and called like any other plan.
-- Items can be dependent: there is a way to say this _requires_ or is _required_by_ another item.
-
-When a plan is applied:
-
-- Given the inputs, the outputs should construct a tree.
-  - The branches are user modules, the leaves are core states.
-- The core states are evaluated from user-facing params into a sub-tree of atomic resources.
-- For each resource, find the current state of the resource on your computer, then compare with the desired state to determine a resource change.
-- Convert each resource change into a sub-tree of operations.
-- From the causality tree, find a minimal list of ordered epochs, where each epoch is a list of operations that can be applied together.
-- Merge all operations of the same type in the same epoch.
-- Iterate through each epoch in order, applying the operations.
+On apply, lusid expands plans into atomic resources, diffs each against the live system, computes a dependency-ordered set of operations, merges duplicates, and runs them in epochs.
 
 ### Resource
 
-A resource represents the intended state of a thing on your computer, e.g. a package or a file or a service.
-
-Resource types:
-
-- [x] [Apt](./resource/src/resources/apt.rs)
-- [x] [AptRepo](./resource/src/resources/apt_repo.rs)
-- [x] [Command](./resource/src/resources/command.rs)
-- [x] [Directory](./resource/src/resources/directory.rs)
-- [x] [File](./resource/src/resources/file.rs)
-- [x] [Git](./resource/src/resources/git.rs)
-- [x] [Group](./resource/src/resources/group.rs)
-- [x] [Pacman](./resource/src/resources/pacman.rs)
-- [x] [Podman](./resource/src/resources/podman.rs)
-- [x] [Systemd](./resource/src/resources/systemd.rs)
-- [x] [User](./resource/src/resources/user.rs)
-- [ ] FlatPak ([TODO](https://github.com/ahdinosaur/lusid/issues/32))
-
-Each resource type defines:
-
-- The user-facing parameters to describe such resources
-- How to evaluate user-facing params into atomic resources: each atomic resource representing one thing on your computer.
-- How to find the current state of the resource on your computer.
-- Given the current state and the desired state, what change should be applied?
-- How to apply the change as a set of operations.
+A resource is the intended state of a thing on your computer — a package, a file, a service. Each resource type defines its user-facing params, how to observe current state, how to compute a change, and how to lower that change into operations.
 
 ### Operation
 
-An operation is an action you can apply to your computer, e.g. installing a package, writing a file, or reloading a service.
+An operation is an action that actually runs on your computer — installing a package, writing a file, reloading a service. Each operation type defines how to merge same-typed operations within an epoch, and how to apply one.
 
-Operation types:
+### Built-in types
 
-- [x] [Apt](./operation/src/operations/apt.rs)
-- [x] [AptRepo](./operation/src/operations/apt_repo.rs)
-- [x] [Command](./operation/src/operations/command.rs)
-- [x] [Directory](./operation/src/operations/directory.rs)
-- [x] [File](./operation/src/operations/file.rs)
-- [x] [Git](./operation/src/operations/git.rs)
-- [x] [Group](./operation/src/operations/group.rs)
-- [x] [Pacman](./operation/src/operations/pacman.rs)
-- [x] [Podman](./operation/src/operations/podman.rs)
-- [x] [Systemd](./operation/src/operations/systemd.rs)
-- [x] [User](./operation/src/operations/user.rs)
-- [ ] FlatPak ([TODO](https://github.com/ahdinosaur/lusid/issues/32))
-
-Each operation type defines:
-
-- How to merge multiple operations of the same type
-- How to apply an operation
+| Type | Resource | Operation |
+| --- | --- | --- |
+| `apt` | [resource](./resource/src/resources/apt.rs) | [operation](./operation/src/operations/apt.rs) |
+| `apt-repo` | [resource](./resource/src/resources/apt_repo.rs) | [operation](./operation/src/operations/apt_repo.rs) |
+| `command` | [resource](./resource/src/resources/command.rs) | [operation](./operation/src/operations/command.rs) |
+| `directory` | [resource](./resource/src/resources/directory.rs) | [operation](./operation/src/operations/directory.rs) |
+| `file` | [resource](./resource/src/resources/file.rs) | [operation](./operation/src/operations/file.rs) |
+| `git` | [resource](./resource/src/resources/git.rs) | [operation](./operation/src/operations/git.rs) |
+| `group` | [resource](./resource/src/resources/group.rs) | [operation](./operation/src/operations/group.rs) |
+| `pacman` | [resource](./resource/src/resources/pacman.rs) | [operation](./operation/src/operations/pacman.rs) |
+| `podman` | [resource](./resource/src/resources/podman.rs) | [operation](./operation/src/operations/podman.rs) |
+| `systemd` | [resource](./resource/src/resources/systemd.rs) | [operation](./operation/src/operations/systemd.rs) |
+| `user` | [resource](./resource/src/resources/user.rs) | [operation](./operation/src/operations/user.rs) |
+| `flatpak` | [#32](https://github.com/ahdinosaur/lusid/issues/32) | — |
 
 ## Glossary
 
 - **Rimu**: embedded language used for `.lusid` plans.
-- **Spanned**: value annotated with source span for diagnostics.
-- **Plan**: parsed/evaluated Rimu object containing `setup`.
-- **PlanItem**: an entry returned by setup, either resource module or nested plan.
-- **ResourceParams**: typed configuration definition (user-facing).
-- **Resource**: atomized resource node(s) derived from params.
-- **State**: observed current system state for a resource.
-- **Change**: computed delta from state to desired.
-- **Operation**: executable action(s) derived from change.
-- **Epoch**: dependency layer computed from causality constraints.
+- **Plan**: a `.lusid` file declaring metadata, params, and a `setup` function.
+- **Resource**: the desired state of one thing on a machine.
+- **Operation**: a concrete action that runs on a machine.
+- **Change**: the delta from observed state to desired state.
+- **Epoch**: a layer of operations with no remaining dependencies, run together.
 
 ## Roadmap
 
