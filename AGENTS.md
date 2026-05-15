@@ -24,6 +24,14 @@ Lusid takes a `.lusid` plan (written in the **Rimu** language), optionally a par
 - Achieve performance with simple fit-for-purpose abstractions, not clever hacks.
 - Before adding non-trivial code: confirm the approach is solid, check for simpler alternatives, look at industry tools and existing crates. Complexity is fine when warranted; the point is to be deliberate.
 
+## Working style
+
+- Plain, direct, human-friendly language.
+- Value the attention of the reader, be clear and concise, do not be verbose and over-explain.
+- No em dashes (—) in prose. Use hyphens, commas, or shorter sentences.
+- Don't co-author commits as Claude. Drop the `Co-Authored-By: Claude ...` trailer.
+- Comments should age well. Describe intent or a non-obvious constraint, not the change you just made. Avoid "added X for Y", "previously this was Z", or "fixes the case from #123". That belongs in PR descriptions and rots fast.
+
 ## Reading order
 
 To understand the runtime behavior, read in this order:
@@ -169,4 +177,3 @@ This project runs privileged operations (`sudo apt-get`, `sudo pacman`, filesyst
 - Are causality IDs still unique and dependencies valid?
 - Are new operations safe/non-interactive and appropriately `sudo()`-wrapped?
 - Did you add/adjust tests for logic-heavy changes?
-
