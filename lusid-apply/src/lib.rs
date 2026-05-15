@@ -121,7 +121,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     let system = System::get().await?;
 
     // Resolve secrets_dir to <root>/secrets by default. Only consulted when
-    // an identity is supplied — without one, there's no key to decrypt with
+    // an identity is supplied - without one, there's no key to decrypt with
     // so the directory's existence is irrelevant.
     let secrets_dir = secrets_dir.unwrap_or_else(|| root_path.join("secrets"));
     // Built alongside `Secrets` so it can be cloned into per-operation
@@ -147,7 +147,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     };
 
     // Fallback root path for resolving relative `host-path` strings that
-    // arrive without a real source span — i.e. CLI-supplied `--params`.
+    // arrive without a real source span - i.e. CLI-supplied `--params`.
     // Anchoring on the project root means a `--params '{"src": "./foo"}'`
     // invocation resolves "./foo" relative to the directory the user thinks of
     // as their project root, not the CWD lusid-apply happens to run from.
@@ -176,7 +176,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     // confusing apply-time symlink/copy failure. Only `@resource/file` and
     // `@resource/directory` "sourced" variants currently have a host-path source
     // to validate; everything else is a no-op. The probes are independent
-    // `lstat`/`stat` calls, so we fan them out — on a network filesystem a
+    // `lstat`/`stat` calls, so we fan them out - on a network filesystem a
     // serial walk would multiply round-trips by the leaf count.
     let validations = resource_params
         .leaves()
@@ -378,7 +378,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
 /// Serializes access to stdout across the apply. Operation stdout/stderr are
 /// drained concurrently via `tokio::try_join!`, so without a mutex two
-/// `emit()` calls can interleave — one task's JSON can land between another's
+/// `emit()` calls can interleave - one task's JSON can land between another's
 /// JSON and its trailing newline, which the TUI reads as a single line with
 /// trailing characters. Pipe writes are only atomic up to `PIPE_BUF` (4 KiB);
 /// AppUpdates with large trees exceed that easily.

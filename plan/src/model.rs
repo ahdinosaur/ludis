@@ -101,11 +101,11 @@ pub enum IntoPlanItemError {
     OnChangeItemModuleMissing { item_span: Span },
     /// "on_change" item property "module" must be a string
     OnChangeItemModuleNotAString { item_span: Span },
-    /// "on_change" items cannot declare "id" — hooks are anonymous in v1 and cannot be referenced from elsewhere. If you need a named, reusable action, declare a separate `@resource/command` with an `is_installed` probe.
+    /// "on_change" items cannot declare "id" - hooks are anonymous in v1 and cannot be referenced from elsewhere. If you need a named, reusable action, declare a separate `@resource/command` with an `is_installed` probe.
     InlineOperationHasId { span: Span },
-    /// "on_change" items cannot declare "requires" — handlers run after the resource they're attached to. To order one hook before another, combine them into a single shell operation, or attach the second hook to a downstream resource.
+    /// "on_change" items cannot declare "requires" - handlers run after the resource they're attached to. To order one hook before another, combine them into a single shell operation, or attach the second hook to a downstream resource.
     InlineOperationHasRequires { span: Span },
-    /// "on_change" items cannot declare "required_by" — see `InlineOperationHasRequires`.
+    /// "on_change" items cannot declare "required_by" - see `InlineOperationHasRequires`.
     InlineOperationHasRequiredBy { span: Span },
 }
 

@@ -16,7 +16,7 @@
 //!   plan authors can write a single string instead of a vector.
 //
 // TODO(cc): `async-promise` is declared in `Cargo.toml` but not used anywhere in this
-// crate — it's only used by `lusid-ssh`. Drop it from this manifest.
+// crate - it's only used by `lusid-ssh`. Drop it from this manifest.
 //
 // TODO(cc): this crate uses `tokio::io::{AsyncReadExt, AsyncWriteExt}` but doesn't enable
 // tokio's `io-util` feature locally. It currently compiles only because another workspace
@@ -165,7 +165,7 @@ impl Command {
     /// Rewrap this command as `sudo -n <program> <args>`, preserving explicitly-set
     /// env vars (passed as `KEY=VALUE` args so sudo forwards them) and the working
     /// directory. The `-n` flag makes sudo fail fast rather than block for a password
-    /// prompt — lusid operations must be non-interactive.
+    /// prompt - lusid operations must be non-interactive.
     pub fn sudo(self) -> Self {
         let mut privileged_cmd = Command::new("sudo");
 
@@ -263,7 +263,7 @@ impl Command {
 
     /// Run the command to completion and return the exit status plus fully-captured
     /// stdout and stderr. Use when a non-zero exit carries information the caller
-    /// wants to branch on directly — e.g. `getent` returns non-zero for an absent
+    /// wants to branch on directly - e.g. `getent` returns non-zero for an absent
     /// name. Unlike [`Self::handle`], the success and failure paths don't need to
     /// share a return type; unlike [`Self::run`], non-zero exits are not errors.
     pub async fn outcome(&mut self) -> Result<CommandOutcome, CommandError> {
@@ -316,7 +316,7 @@ impl Command {
     }
 
     /// Run with pluggable success/failure handlers. Use this when a non-zero exit
-    /// carries meaning — e.g. the `command` resource's `is_installed` check probes
+    /// carries meaning - e.g. the `command` resource's `is_installed` check probes
     /// a boolean via exit code, not via error.
     ///
     /// If `stderr_handler` returns `Ok(Some(value))` the exit is treated as a success;

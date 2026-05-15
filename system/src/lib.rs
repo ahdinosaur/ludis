@@ -5,7 +5,7 @@
 //! `rimu-interop` and exposed so plans can branch on hostname, OS distro, user,
 //! and so on.
 //!
-//! Detection is best-effort and `non_exhaustive` — new fields and OS variants
+//! Detection is best-effort and `non_exhaustive` - new fields and OS variants
 //! can be added without a breaking change to the Rust API.
 
 mod arch;

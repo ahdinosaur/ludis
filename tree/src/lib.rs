@@ -40,7 +40,7 @@ impl<Node, Meta> Tree<Node, Meta> {
         matches!(self, Tree::Branch { .. })
     }
 
-    /// A tree is "empty" when it contains no leaves — i.e. every branch contains only
+    /// A tree is "empty" when it contains no leaves - i.e. every branch contains only
     /// empty branches. A leaf is never empty.
     pub fn is_empty(&self) -> bool {
         match self {
@@ -98,7 +98,7 @@ pub enum FlatTreeNode<Node, Meta> {
 }
 
 /// Arena-backed flat tree. Nodes are stored in a `Vec<Option<...>>` where indices serve
-/// as node identifiers. `None` slots are tombstones — previously occupied positions that
+/// as node identifiers. `None` slots are tombstones - previously occupied positions that
 /// have been cleared (e.g. after a subtree replacement).
 #[derive(Debug, Clone)]
 pub struct FlatTree<Node, Meta> {
@@ -489,7 +489,7 @@ fn append_tree_nodes<Node, Meta>(
 
 // Core subtree replacement. First recursively tombstones any existing descendants of
 // `root_index` (so they don't dangle), then installs the new content. When the new tree
-// is a branch, its children are appended to the end of the arena — meaning the new
+// is a branch, its children are appended to the end of the arena - meaning the new
 // root keeps its slot but descendants live at fresh indices.
 //
 // Note(cc): the `None` branch below grows the arena just to immediately write `None`

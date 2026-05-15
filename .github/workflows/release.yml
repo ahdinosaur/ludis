@@ -54,7 +54,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Re-runs (workflow_dispatch) must NOT clobber a published release.
-          # Re-using an existing draft is fine — subsequent `gh release upload
+          # Re-using an existing draft is fine - subsequent `gh release upload
           # --clobber` calls will refresh its assets.
           if gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null \
               | grep -qx false; then
@@ -195,7 +195,7 @@ jobs:
           if-no-files-found: error
 
       - name: Restore executable bits
-        # actions/upload-artifact preserves +x as of v4, but be defensive —
+        # actions/upload-artifact preserves +x as of v4, but be defensive -
         # build.rs only cares about file contents (`is_file()`), so this is
         # belt-and-braces for the runtime exec when bytes are unpacked later.
         run: chmod 0755 embed/lusid-apply-*

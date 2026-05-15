@@ -1,12 +1,12 @@
 # Installation
 
-No binary releases yet — build from source.
+No binary releases yet - build from source.
 
 ## Prerequisites
 
 - **Rust** (stable toolchain).
-- **[`just`](https://github.com/casey/just)** — runs the build recipes.
-- **aarch64 cross-compile toolchain.** The `lusid-apply` worker builds for both x86-64 and aarch64 (so a host can drive a guest VM of either arch) — you need the cross-tools even if you only care about your host arch.
+- **[`just`](https://github.com/casey/just)** - runs the build recipes.
+- **aarch64 cross-compile toolchain.** The `lusid-apply` worker builds for both x86-64 and aarch64 (so a host can drive a guest VM of either arch) - you need the cross-tools even if you only care about your host arch.
 
 ### Cross-compile toolchain
 
@@ -71,4 +71,4 @@ The example recipes (e.g. `just nginx-cluster-apply-a`) chain both steps for you
 
 ## Next
 
-- [Quickstart](./quickstart.md) — write and apply your first plan.
+- [Quickstart](./quickstart.md) - write and apply your first plan.

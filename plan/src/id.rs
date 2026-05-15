@@ -1,7 +1,7 @@
 //! Identifiers for plans and their internal nodes.
 //!
-//! - [`PlanId`] — where to find a plan (local path or, eventually, a git URL).
-//! - [`PlanNodeId`] — how to name a specific node inside a planned tree for causality
+//! - [`PlanId`] - where to find a plan (local path or, eventually, a git URL).
+//! - [`PlanNodeId`] - how to name a specific node inside a planned tree for causality
 //!   references (`requires` / `required_by`).
 
 use lusid_store::StoreItemId;
@@ -65,7 +65,7 @@ impl From<PlanId> for StoreItemId {
         match value {
             PlanId::Path(path) => StoreItemId::LocalFile(path),
             // TODO(cc): wire `PlanId::Git` through the store. The rest of the pipeline
-            // already accepts it (SourceId, diagnostics, etc.) — the missing piece is
+            // already accepts it (SourceId, diagnostics, etc.) - the missing piece is
             // a Git-aware `StoreItemId` variant.
             PlanId::Git(_url, _path) => todo!(),
         }
@@ -87,9 +87,9 @@ impl From<PlanId> for SourceId {
 
 /// Identifier for any node in a planned tree.
 ///
-/// - `Plan` — the root of a plan.
-/// - `PlanItem` — a plan item declared with a user-authored `id` (scoped by plan).
-/// - `SubItem` — an id minted *inside* a resource's expansion (e.g. the `"file"` id used
+/// - `Plan` - the root of a plan.
+/// - `PlanItem` - a plan item declared with a user-authored `id` (scoped by plan).
+/// - `SubItem` - an id minted *inside* a resource's expansion (e.g. the `"file"` id used
 ///   by `file` to order mode/user/group atoms). Scoped by a fresh `cuid2` so the
 ///   inner ids can never collide across resources.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

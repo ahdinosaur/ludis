@@ -11,7 +11,7 @@ use crate::instance::VmPaths;
 /// up quickly under real workloads (e.g. installing a desktop environment is
 /// ~500 MB on its own). qcow2 is sparse and the backing image is shared
 /// across instances, so the host only allocates blocks the guest actually
-/// writes — making this effectively free until used. Cloud-init's `growpart`
+/// writes - making this effectively free until used. Cloud-init's `growpart`
 /// and `resize_rootfs` modules expand the root partition and filesystem to
 /// fill the disk on first boot.
 const DEFAULT_OVERLAY_VIRTUAL_SIZE_BYTES: u64 = 20 * 1024 * 1024 * 1024;

@@ -50,10 +50,10 @@ pub trait OperationType {
     /// Failure returned when `apply`'s future resolves.
     type ApplyError;
 
-    /// Stdout stream of the running operation — polled by the TUI.
+    /// Stdout stream of the running operation - polled by the TUI.
     type ApplyStdout: AsyncRead;
 
-    /// Stderr stream of the running operation — polled by the TUI.
+    /// Stderr stream of the running operation - polled by the TUI.
     type ApplyStderr: AsyncRead;
 
     /// Future that resolves when the operation finishes.
@@ -91,7 +91,7 @@ impl Operation {
     /// Partition `operations` by family, merge each family via its [`OperationType::merge`]
     /// impl, and re-wrap in family order (apt, pacman, file, command, git).
     ///
-    /// Called once per epoch before `apply` — the whole point is to collapse e.g. 20
+    /// Called once per epoch before `apply` - the whole point is to collapse e.g. 20
     /// separate `apt install` operations into one multi-package install.
     pub fn merge(operations: impl IntoIterator<Item = Operation>) -> Vec<Operation> {
         let OperationsByType {

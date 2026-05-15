@@ -14,7 +14,7 @@ use crate::secrets::{Secret, Secrets};
 /// Decrypt every `*.age` file directly under `secrets_dir` with `identity`,
 /// returning a [`Secrets`] keyed by filename stem.
 ///
-/// Unlike [`crate::decrypt_dir`], this does not consult `lusid-secrets.toml` —
+/// Unlike [`crate::decrypt_dir`], this does not consult `lusid-secrets.toml` -
 /// it decrypts whatever ciphertexts happen to be in the directory. Used on
 /// guest-mode applies (dev / remote re-encryption targets) where the host
 /// has already filtered the set of files to exactly what this target should

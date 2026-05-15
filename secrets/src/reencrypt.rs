@@ -3,10 +3,10 @@
 //! Two entry points, both scope by `[files]` membership for `machine_id`
 //! and then re-encrypt each in-scope ciphertext to a single recipient:
 //!
-//! - [`reencrypt_for_declared_machine`] — recipient is `machine_id`'s own
+//! - [`reencrypt_for_declared_machine`] - recipient is `machine_id`'s own
 //!   key from `[machines]`. The `lusid remote apply` flavour: target IS
 //!   the declared machine.
-//! - [`reencrypt_for_target`] — recipient is supplied by the caller. The
+//! - [`reencrypt_for_target`] - recipient is supplied by the caller. The
 //!   `lusid dev apply` flavour: target SHADOWS the declared machine
 //!   (ephemeral VM keypair). `machine_id` only drives `[files]` scoping;
 //!   the cryptographic recipient is whatever the caller passes in.
@@ -67,7 +67,7 @@ pub enum ReencryptForTargetError {
 /// comments are tolerated.
 ///
 /// Returns `Ok(vec![])` when `machine_id` is in `[machines]` but listed
-/// on no file (warn-logged — "this target gets no project secrets").
+/// on no file (warn-logged - "this target gets no project secrets").
 /// Returns [`ReencryptForTargetError::UnknownMachine`] when `machine_id`
 /// is absent from `[machines]`.
 #[tracing::instrument(
@@ -93,7 +93,7 @@ pub async fn reencrypt_for_target(
 
 /// Scope by `[files]` for `machine_id`, decrypt each with the operator
 /// identity, re-encrypt to `machine_id`'s own key from `[machines]`. The
-/// `lusid remote apply` flavour — target IS the declared machine, so we
+/// `lusid remote apply` flavour - target IS the declared machine, so we
 /// resolve the recipient internally instead of asking the caller to look
 /// it up.
 ///
@@ -131,7 +131,7 @@ pub async fn reencrypt_for_declared_machine(
 
 /// Shared body of both public entry points: takes an already-parsed
 /// `Recipients`, validates `machine_id`, scopes by `[files]`, decrypts +
-/// re-encrypts each in-scope ciphertext to `target_pubkey`. Private — the
+/// re-encrypts each in-scope ciphertext to `target_pubkey`. Private - the
 /// callers above are the only intended consumers and `&Recipients`
 /// isn't part of our stable surface.
 async fn reencrypt_with_recipients(
@@ -339,7 +339,7 @@ known = "{}"
     }
 
     /// Machine appears in `[machines]` but is listed on no file. Returns
-    /// Ok(empty), not an error — and skips the operator identity load.
+    /// Ok(empty), not an error - and skips the operator identity load.
     #[tokio::test]
     async fn machine_with_no_files_returns_empty() {
         let target = age::x25519::Identity::generate();

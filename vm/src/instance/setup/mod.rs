@@ -63,7 +63,7 @@ pub enum VmSetupError {
 
 /// Do everything needed to take a fresh instance id to a bootable (but not yet
 /// running) [`Vm`]. Allocates the host-side SSH forwarding port with
-/// [`get_free_tcp_port`] — there is an inherent TOCTOU here (another process
+/// [`get_free_tcp_port`] - there is an inherent TOCTOU here (another process
 /// could grab the port between release and qemu binding it), but in practice
 /// picking at spawn time and binding immediately is close enough.
 pub async fn setup_instance(

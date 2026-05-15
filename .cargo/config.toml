@@ -6,7 +6,7 @@
 #
 # Arch users: `pacman -S aarch64-linux-gnu-gcc` provides the same binary.
 #
-# CI does not use this file — release.yml builds each arch on a native
+# CI does not use this file - release.yml builds each arch on a native
 # runner (ubuntu-24.04 / ubuntu-24.04-arm) and never cross-compiles.
 [target.aarch64-unknown-linux-gnu]
 linker = "aarch64-linux-gnu-gcc"

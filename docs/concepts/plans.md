@@ -10,7 +10,7 @@ A plan has three top-level fields:
 name: "my-plan"
 version: "0.1.0"
 
-params:           # optional — declares what params the plan accepts
+params:           # optional - declares what params the plan accepts
   greeting:
     type: "string"
 
@@ -22,18 +22,18 @@ setup: (params, system) =>
       path: "/etc/hello.txt"
 ```
 
-- **`name`** and **`version`** — identifying metadata, like a Cargo or npm manifest.
-- **`params`** — schema for the parameters the plan accepts. Optional; omit if the plan takes none.
-- **`setup`** — a function that takes `(params, system)` and returns a list of plan items.
+- **`name`** and **`version`** - identifying metadata, like a Cargo or npm manifest.
+- **`params`** - schema for the parameters the plan accepts. Optional; omit if the plan takes none.
+- **`setup`** - a function that takes `(params, system)` and returns a list of plan items.
 
 ## The `setup` function
 
 `setup` is the only logic in a plan. It returns a list of items, each being either:
 
-- A **resource** — `module: "@resource/<id>"` (apt, file, systemd, …).
-- A **nested plan** — `module: "./other.lusid"` (a sibling file path; recursively planned).
+- A **resource** - `module: "@resource/<id>"` (apt, file, systemd, …).
+- A **nested plan** - `module: "./other.lusid"` (a sibling file path; recursively planned).
 
-Rimu's expression language lets `setup` build the list dynamically — conditional items, lists derived from params, computed strings. See the [plan syntax reference](../reference/plan-syntax.md).
+Rimu's expression language lets `setup` build the list dynamically - conditional items, lists derived from params, computed strings. See the [plan syntax reference](../reference/plan-syntax.md).
 
 ## Params
 
@@ -63,15 +63,15 @@ system.hostname        # "my-laptop"
 system.arch            # "x86-64" or "aarch64"
 system.os.type         # "linux"
 system.os.linux        # "debian" / "ubuntu" / "arch"
-system.os.debian       # 13 (number) — only when linux = "debian"
-system.os.ubuntu       # "22.04" (string) — only when linux = "ubuntu"
+system.os.debian       # 13 (number) - only when linux = "debian"
+system.os.ubuntu       # "22.04" (string) - only when linux = "ubuntu"
 system.user.name       # current user running apply
 system.user.home       # current user's $HOME
 ```
 
 The version field is named after the distro and only exists on that distro (Arch is rolling, so no version field).
 
-Use `system` to make a plan portable — write a dotfile to `system.user.home + "/.zshrc"` instead of hard-coding a path. Full schema: [the system object](../reference/system.md).
+Use `system` to make a plan portable - write a dotfile to `system.user.home + "/.zshrc"` instead of hard-coding a path. Full schema: [the system object](../reference/system.md).
 
 ## Nested plans
 
@@ -86,7 +86,7 @@ setup: (params, system) =>
   - module: "./database.lusid"
 ```
 
-This is the composition mechanism — split a large machine config into per-role plans, share plans across machines.
+This is the composition mechanism - split a large machine config into per-role plans, share plans across machines.
 
 ## Plan items: optional fields
 

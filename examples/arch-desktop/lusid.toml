@@ -5,7 +5,7 @@ log = "info"
 # (graphics on by default) so you can actually see the desktop.
 #
 # `params` seeds the LightDM login account that the plan creates. These are
-# throwaway demo credentials — replace them before applying this plan to
+# throwaway demo credentials - replace them before applying this plan to
 # anything you care about.
 
 [machines.desktop]

@@ -30,7 +30,7 @@ use crate::OperationType;
 pub enum FlatpakOperation {
     /// Install one or more refs from `remote` into the named scope. Batched at
     /// merge time when multiple `@core/flatpak` resources share the same
-    /// `(user, remote)`. Apps only — `--app` is passed explicitly so a runtime
+    /// `(user, remote)`. Apps only - `--app` is passed explicitly so a runtime
     /// ref declared by mistake fails fast with flatpak's own error.
     Install {
         remote: String,
@@ -48,7 +48,7 @@ pub enum FlatpakOperation {
         delete_data: bool,
     },
 
-    /// Add a remote with the given name and URL. No `--if-not-exists` — the
+    /// Add a remote with the given name and URL. No `--if-not-exists` - the
     /// resource layer only emits `Add` when state is `Absent`.
     AddRemote {
         name: String,
@@ -80,7 +80,7 @@ impl Display for FlatpakOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Render the actual scope flag the command runs with so the user-
         // facing diff matches the executed argv (the operation always
-        // passes `--user` or `--system` — never neither).
+        // passes `--user` or `--system` - never neither).
         let scope = |user: bool| if user { " --user" } else { " --system" };
         match self {
             FlatpakOperation::Install {
@@ -214,7 +214,7 @@ impl OperationType for Flatpak {
                 // `-y` (assumeyes) covers install confirmations; `--noninteractive`
                 // (flatpak ≥ 1.10) additionally suppresses authenticator and
                 // "unverified author" prompts that `-y` alone misses. EULA-
-                // gated refs still fail under both — that's by design upstream.
+                // gated refs still fail under both - that's by design upstream.
                 //
                 // `--app` is explicit so a runtime ref declared in the plan
                 // fails fast with flatpak's own error rather than half-
@@ -253,7 +253,7 @@ impl OperationType for Flatpak {
                     "[flatpak] uninstall: {}",
                     names.join(", ")
                 );
-                // `--app` mirrors the install path — runtimes are out of
+                // `--app` mirrors the install path - runtimes are out of
                 // scope for `@core/flatpak`, so an uninstall request for a
                 // name that flatpak might resolve as a runtime fails loudly
                 // rather than removing something we didn't manage.
@@ -410,7 +410,7 @@ mod tests {
         ];
         let merged = Flatpak::merge(ops);
         assert_eq!(merged.len(), 2);
-        // BTreeMap orders by key — `(false, "flathub")` sorts before
+        // BTreeMap orders by key - `(false, "flathub")` sorts before
         // `(false, "flathub-beta")` lexicographically? Actually "flathub" <
         // "flathub-beta", so flathub comes first.
         let remotes: Vec<&str> = merged

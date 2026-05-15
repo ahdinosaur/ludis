@@ -1,5 +1,5 @@
 # Sample zshrc managed by lusid (examples/dotfiles).
-# Replace with whatever your shell needs — edits here propagate immediately
+# Replace with whatever your shell needs - edits here propagate immediately
 # to `~/.zshrc` because `local apply` symlinks rather than copies.
 
 export EDITOR=hx

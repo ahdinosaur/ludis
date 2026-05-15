@@ -17,7 +17,7 @@ pub enum DirectoryOperation {
 
     /// Atomically create (or replace) a symlink at `path` targeting `source`.
     /// Emitted by `@resource/directory state: "linked"`. Implemented via the same
-    /// `fs::create_symlink_atomic` primitive as the file equivalent — kept in
+    /// `fs::create_symlink_atomic` primitive as the file equivalent - kept in
     /// this enum so the streaming TUI message reads `Directory::*` for a
     /// directory resource, rather than `File::Write`.
     CreateSymlink {

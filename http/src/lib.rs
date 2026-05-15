@@ -2,7 +2,7 @@
 //!
 //! Wraps `reqwest` with sensible defaults (gzip/brotli, read timeout) and exposes
 //! a streaming `download_file` that writes through a `.tmp` sidecar and renames on
-//! success — so partial downloads never appear as completed files.
+//! success - so partial downloads never appear as completed files.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -70,7 +70,7 @@ impl HttpClient {
 
     /// Stream a URL to a file on disk.
     ///
-    /// If `file_path` already exists, this is a no-op — the URL is trusted to be
+    /// If `file_path` already exists, this is a no-op - the URL is trusted to be
     /// content-stable. The download is staged to a `.tmp` sidecar and atomically
     /// renamed on success, so interrupted runs don't leave a half-written file
     /// masquerading as complete.

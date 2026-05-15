@@ -11,7 +11,7 @@
 //! - [`embedded_lusid_apply`] returns the static bytes for an arch. Used by
 //!   `dev apply` and `remote apply`, which ship the bytes to SFTP via
 //!   [`SshVolume::FileBytes`](lusid_ssh::SshVolume::FileBytes) wrapped in
-//!   `Cow::Borrowed` — no copy of the ~10–30 MB blob per apply.
+//!   `Cow::Borrowed` - no copy of the ~10–30 MB blob per apply.
 //! - [`resolve_or_extract_for_arch`] writes the bytes to an XDG-style cache
 //!   path and returns the path. Used by `local apply`, which spawns
 //!   `lusid-apply` as a subprocess.
@@ -86,7 +86,7 @@ pub fn embedded_lusid_apply(arch: Arch) -> Result<&'static [u8], EmbeddedError> 
 }
 
 /// Materialize the embedded `lusid-apply` for `arch` on disk and return its
-/// path. Always overwrites — a ~10 MB rewrite per `local apply` is
+/// path. Always overwrites - a ~10 MB rewrite per `local apply` is
 /// negligible, and avoids subtle freshness bugs (a length-only check would
 /// false-match a stale file of the same size, and a content hash adds
 /// complexity for no real win).

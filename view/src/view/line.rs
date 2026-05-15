@@ -6,7 +6,7 @@ use crate::{Alignment, Span, TextStyle, View};
 
 /// A single logical line of text, composed of one or more [`Span`]s. `style`
 /// applies to the whole line as a backdrop; individual spans can override.
-/// `alignment` is advisory — the `Display` impl doesn't honour it, consumers
+/// `alignment` is advisory - the `Display` impl doesn't honour it, consumers
 /// that care (e.g. a ratatui renderer) read it off the struct.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Line {

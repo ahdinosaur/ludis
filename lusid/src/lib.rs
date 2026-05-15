@@ -41,7 +41,7 @@ use crate::tui::{TuiError, tui};
 
 /// Parsed CLI. The `lusid-apply` worker is baked into this binary at build
 /// time for each supported target arch (see [`crate::embedded`] /
-/// [`build.rs`](../../build.rs)) — there is no runtime override.
+/// [`build.rs`](../../build.rs)) - there is no runtime override.
 #[derive(Parser, Debug)]
 #[command(name = "lusid", version, about = "Lusid CLI")]
 pub struct Cli {
@@ -168,7 +168,7 @@ pub enum AppError {
     ReadSshOutput(#[source] tokio::io::Error),
 
     #[error(
-        "machine {machine_id:?} is not configured for remote management — \
+        "machine {machine_id:?} is not configured for remote management - \
          add a [machines.{machine_id}] `remote = {{ host = \"...\" }}` block"
     )]
     NoRemoteConfig { machine_id: String },
@@ -262,7 +262,7 @@ pub async fn run(cli: Cli, config: Config) -> Result<(), AppError> {
 }
 
 /// CLI flag wins over `<root>/secrets` default. No `lusid.toml` field for
-/// this yet — add one only once a real project needs to override.
+/// this yet - add one only once a real project needs to override.
 fn resolve_secrets_dir(cli: &Cli, config: &Config) -> PathBuf {
     cli.secrets_dir
         .clone()
@@ -367,7 +367,7 @@ async fn cmd_remote_apply(
     }
 
     // 2. Pre-cleanup: drop any leftover ciphertexts from a previous run.
-    //    Best-effort — never fail the apply over this. We log either way so a
+    //    Best-effort - never fail the apply over this. We log either way so a
     //    silent failure doesn't strand stale `.age` files alongside whatever
     //    we're about to upload; if we know we're about to forward secrets,
     //    escalate to `warn!` because we'd be writing into a dir whose state
@@ -387,7 +387,7 @@ async fn cmd_remote_apply(
 
     // 3. Re-encrypt secrets per-target if --identity supplied AND machine is
     //    listed in lusid-secrets.toml. Missing toml or absent [machines]
-    //    entry both fall through to "no secrets forwarded" — operators can
+    //    entry both fall through to "no secrets forwarded" - operators can
     //    set --identity globally and only configure machines that need
     //    secrets. Plans that reference @core/secret will fail at apply time
     //    with a clear missing-secret error.
@@ -463,7 +463,7 @@ async fn cmd_remote_apply(
     //
     // TODO(cc): audit `--root` semantics for remote/dev apply. We pass the
     // operator's local path, but `lusid-apply` uses it on the guest to
-    // anchor relative `host-path` resolution and the cache dir — and plans
+    // anchor relative `host-path` resolution and the cache dir - and plans
     // typically anchor host-paths on the source span (the uploaded plan
     // file's location), making the operator-side path largely ineffective.
     let log = &config.log;
@@ -576,7 +576,7 @@ async fn connect_remote(remote: &Remote) -> Result<Ssh, AppError> {
     Ok(ssh)
 }
 
-/// `~/.ssh/known_hosts` — OpenSSH's canonical location. No CLI override for
+/// `~/.ssh/known_hosts` - OpenSSH's canonical location. No CLI override for
 /// now; operators who need one can shadow `HOME` or symlink. Errors when
 /// `HOME` is unset since we have nowhere sensible to default to.
 fn resolve_known_hosts_path() -> Result<PathBuf, AppError> {
@@ -623,7 +623,7 @@ fn resolve_ssh_key_path(remote: &Remote) -> Result<PathBuf, AppError> {
         (None, Some(home)) => PathBuf::from(home).join(".ssh/id_ed25519"),
         (None, None) => return Err(AppError::HomeUnset),
     };
-    // A literal `~` survived `expand_tilde` — either HOME was unset (only
+    // A literal `~` survived `expand_tilde` - either HOME was unset (only
     // bare `~`/`~/...` can need HOME) or the form is `~user/...` which we
     // don't expand. Distinguish the two so the error tells the operator
     // what to fix; otherwise the tilde would flow through to
@@ -640,7 +640,7 @@ fn resolve_ssh_key_path(remote: &Remote) -> Result<PathBuf, AppError> {
 }
 
 /// Manual tilde-expansion (no `shellexpand` in the workspace; not worth a
-/// new dep). Treats both bare `~` and `~/...`. Pure — `home` is passed in
+/// new dep). Treats both bare `~` and `~/...`. Pure - `home` is passed in
 /// rather than read from the environment so the function is trivially
 /// testable and parallel-safe. When `home` is `None`, returns the input
 /// unchanged; the caller is responsible for surfacing a clear error.
@@ -659,7 +659,7 @@ fn expand_tilde(path: &Path, home: Option<&std::ffi::OsStr>) -> PathBuf {
 }
 
 /// Validate `<ssh-user>` against shell-injection. First character must be
-/// ASCII alphanumeric or underscore (NOT dash — `chown -x` would treat the
+/// ASCII alphanumeric or underscore (NOT dash - `chown -x` would treat the
 /// value as a flag); subsequent characters add dash; total length 1..=32.
 ///
 /// More permissive than shadow-utils' `useradd` regex (we allow uppercase and
@@ -816,7 +816,7 @@ async fn cmd_dev_apply(
     // Plans referencing `@resource/secret` will fail at apply time with a
     // clear missing-secret error.
     //
-    // Unknown-machine is warn-logged and treated as no-secrets — a
+    // Unknown-machine is warn-logged and treated as no-secrets - a
     // typo'd --machine would otherwise silently produce a successful VM
     // boot with no secrets and an opaque plan failure later.
     let guest_identity_path = format!("{dev_dir}/identity");
@@ -843,7 +843,7 @@ async fn cmd_dev_apply(
                 }
                 true
             }
-            // Machine declared but on no [files] entry — nothing to ship.
+            // Machine declared but on no [files] entry - nothing to ship.
             Ok(_) => false,
             Err(ReencryptForTargetError::Recipients(RecipientsError::Missing { .. })) => false,
             Err(ReencryptForTargetError::UnknownMachine { machine_id }) => {
@@ -896,9 +896,9 @@ async fn cmd_dev_apply(
     Ok(())
 }
 
-// `dev ssh`: boot the VM (idempotent — reuses the instance if it already
+// `dev ssh`: boot the VM (idempotent - reuses the instance if it already
 // exists) and attach the local TTY to a remote interactive shell via
-// `Ssh::terminal`. No TUI, no apply — just a shell inside the guest.
+// `Ssh::terminal`. No TUI, no apply - just a shell inside the guest.
 async fn cmd_dev_ssh(config: Config, machine_id: String) -> Result<(), AppError> {
     let MachineConfig {
         plan: _,

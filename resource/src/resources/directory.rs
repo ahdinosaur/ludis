@@ -23,7 +23,7 @@ pub enum DirectoryParams {
     /// Recursive copy of the directory tree at `source` into `path`. Edits
     /// to `source` only propagate on the next apply. The state probe is
     /// intentionally weak (existence-as-directory at `path` ⇒ `Sourced`);
-    /// content drift in `source` after first apply is not detected — declare
+    /// content drift in `source` after first apply is not detected - declare
     /// `state: "absent"` and re-apply to force a refresh.
     /// Note(cc): a content-aware recursive diff is a follow-up; see Salt's
     /// `file.recurse`.
@@ -42,7 +42,7 @@ pub enum DirectoryParams {
     /// host-path on the machine running apply). Mirror of
     /// [`FileParams::Linked`](super::file::FileParams::Linked); same rationale
     /// for refusing `mode`/`user`/`group` here at the parser level, and
-    /// same `Note(cc)` about absolute symlink targets — see
+    /// same `Note(cc)` about absolute symlink targets - see
     /// [`FileParams::Linked`](super::file::FileParams::Linked) for the
     /// relative-target follow-up.
     Linked {
@@ -211,13 +211,13 @@ pub enum DirectoryChange {
     Create {
         path: FilePath,
     },
-    /// Materialise `path` as a symlink to `source` — emitted for
+    /// Materialise `path` as a symlink to `source` - emitted for
     /// `state: "linked"`.
     CreateSymlink {
         source: FilePath,
         path: FilePath,
     },
-    /// Recursively copy `source` to `path` — emitted for `state: "sourced"`.
+    /// Recursively copy `source` to `path` - emitted for `state: "sourced"`.
     CopyTree {
         source: FilePath,
         path: FilePath,
@@ -543,7 +543,7 @@ impl ResourceType for Directory {
 }
 
 /// Probe `path` for whether it's a symlink with `source` as its lexical
-/// target. Mirror of [`super::file::probe_linked_state`] — see the
+/// target. Mirror of [`super::file::probe_linked_state`] - see the
 /// non-canonicalisation rationale there.
 async fn probe_linked_state(
     source: &FilePath,

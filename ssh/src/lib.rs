@@ -2,12 +2,12 @@
 //!
 //! Built on [`russh`]. Provides:
 //!
-//! - [`Ssh::connect`] — connect with retry + public key auth.
-//! - [`Ssh::command`] — run a remote command and tail stdout/stderr as
+//! - [`Ssh::connect`] - connect with retry + public key auth.
+//! - [`Ssh::command`] - run a remote command and tail stdout/stderr as
 //!   [`tokio::io::AsyncRead`] streams.
-//! - [`Ssh::sync`] — SFTP a local file / directory / bytes onto the remote.
-//! - [`Ssh::terminal`] — forward the current TTY to an interactive remote shell.
-//! - [`SshKeypair`] — create / load an ed25519 keypair on disk.
+//! - [`Ssh::sync`] - SFTP a local file / directory / bytes onto the remote.
+//! - [`Ssh::terminal`] - forward the current TTY to an interactive remote shell.
+//! - [`SshKeypair`] - create / load an ed25519 keypair on disk.
 //!
 //! Host-key verification is configured per-connection via
 //! [`HostKeyVerification`] on [`SshConnectOptions`]: real remote machines use

@@ -2,7 +2,7 @@ log = "info"
 
 # A dotfiles-style plan that symlinks a small set of config files and one
 # config directory into the operator's `$HOME` via `state: "linked"`. Edits
-# to the sources in this repo propagate to the link targets immediately —
+# to the sources in this repo propagate to the link targets immediately -
 # the dotfiles ergonomic.
 
 [machines.localhost]
@@ -10,6 +10,6 @@ hostname = "localhost"
 arch = "x86-64"
 os = { type = "linux", linux = "debian" }
 plan = "./dotfiles.lusid"
-# The plan reads `system.user.home` directly, so no params are needed —
+# The plan reads `system.user.home` directly, so no params are needed -
 # `lusid local apply` drops symlinks under whatever `$HOME` the invoking
 # shell has.

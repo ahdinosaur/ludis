@@ -1,14 +1,14 @@
 # lusid-resource
 
-User-facing resource types — the "thing I want on my machine" layer.
+User-facing resource types - the "thing I want on my machine" layer.
 
 Each resource implements [`ResourceType`], a five-step pipeline:
 
-1. **Params** — user-facing struct, parsed from the plan's Rimu value.
-2. **Resource** — one or more atoms produced from Params. A single `apt { packages: [a, b] }` expands to two atoms. Atoms sit in a [`CausalityTree`] so intra-resource ordering (e.g. `chmod` after `write`) can be declared.
-3. **State** — observed state for an atom (e.g. `Installed` / `NotInstalled`).
-4. **Change** — delta from State to Resource. `None` means already correct.
-5. **Operations** — concrete actions derived from Change. Defined in [`lusid-operation`](../operation).
+1. **Params** - user-facing struct, parsed from the plan's Rimu value.
+2. **Resource** - one or more atoms produced from Params. A single `apt { packages: [a, b] }` expands to two atoms. Atoms sit in a [`CausalityTree`] so intra-resource ordering (e.g. `chmod` after `write`) can be declared.
+3. **State** - observed state for an atom (e.g. `Installed` / `NotInstalled`).
+4. **Change** - delta from State to Resource. `None` means already correct.
+5. **Operations** - concrete actions derived from Change. Defined in [`lusid-operation`](../operation).
 
 `ResourceParams`, `Resource`, `ResourceState`, `ResourceChange` are dispatch enums; each variant delegates to the per-type trait impl.
 

@@ -7,7 +7,7 @@ version: "0.1.0"
 #
 # `state: "linked"` is the dotfiles-friendly choice: the symlink at `path`
 # points back at `source` in this repo, so edits to the source show up
-# immediately at the link target — no re-apply needed. Use `state: "sourced"`
+# immediately at the link target - no re-apply needed. Use `state: "sourced"`
 # instead for files whose bytes need to live independently on the target
 # (deployable artifacts, system configs, anything reachable over dev/remote
 # apply where the operator's filesystem isn't accessible).
@@ -16,7 +16,7 @@ params: {}
 
 setup: (params, system) =>
   # Symlink a single config file. `<home>/.zshrc` will point at this repo's
-  # `./files/zshrc` — edits to the source propagate to the link target
+  # `./files/zshrc` - edits to the source propagate to the link target
   # immediately. `<home>` is `system.user.home`, the `$HOME` of whoever ran
   # `lusid local apply`, so this plan works without any params overrides.
   # `<home>` itself is assumed to exist; only nested dirs like

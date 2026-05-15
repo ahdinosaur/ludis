@@ -59,7 +59,7 @@ pub struct VmImage {
 
 impl VmImage {
     // Note(cc): VMs are Linux-only today. The `Os::Linux(_)` narrowing is
-    // deliberate — the `_ => unimplemented!()` arm would fire if `images.toml`
+    // deliberate - the `_ => unimplemented!()` arm would fire if `images.toml`
     // ever lists a non-Linux `os:` value, which isn't a supported state. If
     // FreeBSD/etc. guests are ever added, this needs a real error path.
     pub fn new(paths: &Paths, image_index: VmImageIndex) -> Self {

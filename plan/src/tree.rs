@@ -22,7 +22,7 @@ pub type PlanTree<Node> = Tree<Node, PlanMeta>;
 /// the operation tree before causality flattening.
 ///
 /// Invariant: every `map_tree` call that turns a `PlanTree` leaf into a branch
-/// must pass `meta` straight through to the produced branch — otherwise
+/// must pass `meta` straight through to the produced branch - otherwise
 /// `handlers` is silently dropped.
 #[derive(Debug, Clone, Default)]
 pub struct PlanMeta {
@@ -188,7 +188,7 @@ fn wrap_with_handler_structure(
     };
 
     // Convert each handler op into a leaf that requires the anchor. Consume
-    // `handlers` (no `.iter().cloned()`) — outer_meta already dropped them.
+    // `handlers` (no `.iter().cloned()`) - outer_meta already dropped them.
     let handler_leaves: Vec<_> = handlers
         .into_iter()
         .map(|op| Tree::Leaf {

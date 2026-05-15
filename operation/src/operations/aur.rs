@@ -11,8 +11,8 @@ use crate::OperationType;
 
 // TODO(cc): the AUR helper command is hardcoded to `paru`. `yay` and
 // `pikaur` cover the same install surface, but their review-suppression
-// flags differ — paru uses `--skipreview`, yay relies on bare
-// `--noconfirm`, pikaur uses `--noedit` — so a future `helper` field on
+// flags differ - paru uses `--skipreview`, yay relies on bare
+// `--noconfirm`, pikaur uses `--noedit` - so a future `helper` field on
 // `AurParams` would route through a per-helper arg builder rather than
 // re-using this exact command shape.
 const AUR_HELPER: &str = "paru";

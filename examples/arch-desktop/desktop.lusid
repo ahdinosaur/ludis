@@ -8,7 +8,7 @@ version: "0.1.0"
 #   - the XFCE desktop environment (`xfce4` meta-package)
 #   - a display manager (`lightdm` + `lightdm-gtk-greeter`)
 #   - a login account (`params.username` / `params.password`) so the greeter
-#     has someone to let in — the Arch cloud image's default `arch` user has
+#     has someone to let in - the Arch cloud image's default `arch` user has
 #     a locked password and can't sign in graphically.
 #
 # Then enables + starts LightDM so the graphical login greeter appears on

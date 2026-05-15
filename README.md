@@ -8,48 +8,32 @@ _STATUS: MAD SCIENCE 🧪_
 
 ## About
 
-Configure your computers with the exact setup you describe — like .dotfiles on steroids, less ideological than NixOS, friendlier than Ansible or Salt for personal setups.
+Lusid configures your computers with the exact setup you describe.
 
-Works on workstations (desktops, laptops) and servers (homelab, cloud).
+- Like .dotfiles on steroids: less ideological than NixOS, friendlier than Ansible or Salt for personal setups
+- Works on workstations (desktops, laptops) and servers (homelab, cloud)
 
 ## Get Started
 
 Check out the [examples](./examples/):
 
-- [`examples/nginx-cluster`](./examples/nginx-cluster/) — two Debian servers each running nginx with a per-machine greeting.
-- [`examples/arch-desktop`](./examples/arch-desktop/) — one Arch machine running a minimal XFCE desktop.
+- [`examples/nginx-cluster`](./examples/nginx-cluster/) - two Debian servers each running nginx with a per-machine greeting.
+- [`examples/arch-desktop`](./examples/arch-desktop/) - one Arch machine running a minimal XFCE desktop.
 
 ### Install
 
-No binary releases yet — build from source. The `lusid-apply` worker is **embedded** into the `lusid` CLI at build time, so build the worker first.
+Download `lusid` from [latest releases](https://github.com/ahdinosaur/lusid/releases).
 
-**Prerequisites.** Rust stable, [`just`](https://github.com/casey/just), and the aarch64 cross-compile toolchain (the worker builds for both x86-64 and aarch64 even on a single-arch host):
+The `lusid-apply` worker, which will execute the plan (on your local, virtual, or remote machine) is **embedded** into the `lusid` program at build-time.
 
-- Debian/Ubuntu: `sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross`
-- Arch: `sudo pacman -S aarch64-linux-gnu-gcc aarch64-linux-gnu-glibc`
-- All: `rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu`
-
-The aarch64 linker is wired up in `.cargo/config.toml`. CI builds each arch on a native runner, so this isn't needed in `release.yml`.
-
-```sh
-git clone https://github.com/ahdinosaur/lusid
-cd lusid
-just build-lusid-apply           # builds lusid-apply, stages under ./embed/
-cargo build -p lusid --release   # picks up ./embed/ by default
-```
-
-The example recipes (e.g. `just nginx-cluster-apply-a`) chain both steps.
-
-You get one binary at `./target/release/lusid`. The worker is extracted to `~/.cache/lusid/lusid-apply/<version>/<arch>/` on first `local apply`, and streamed over SFTP for `dev apply` / `remote apply`.
-
-For `dev apply` / `dev ssh` you also need QEMU and image-building tools — see the [examples prerequisites](./examples/README.md#prerequisites).
+For `dev apply` / `dev ssh` you also need QEMU and image-building tools - see the [examples prerequisites](./examples/README.md#prerequisites).
 
 ### Create a plan
 
 A lusid project is just a directory with two files:
 
-- `lusid.toml` — lists the machines you want to manage and pairs each with a plan file.
-- `*.lusid` — one or more plan files written in [Rimu](https://rimu.dev), each exporting a `setup(params, system)` function that returns a list of resources.
+- `lusid.toml` - lists the machines you want to manage and pairs each with a plan file.
+- `*.lusid` - one or more plan files written in [Rimu](https://rimu.dev), each exporting a `setup(params, system)` function that returns a list of resources.
 
 The smallest useful project is a single machine applying a single plan:
 
@@ -75,26 +59,26 @@ setup: (params, system) =>
 
 See the [examples](./examples/) for configs that use `params`, dependency ordering, and the `system` object (hostname, OS, current user).
 
-> ⚠️ Don't put secret values in `lusid.toml`'s `params`. The CLI forwards them to `lusid-apply --params <json>`, where they land in `argv[]` and are visible via `ps` / `/proc/<pid>/cmdline` to any UID on the target. Use [`@resource/secret`](./secrets/README.md) for sensitive material.
+> ⓘ Use [`@resource/secret`](./secrets/README.md) for sensitive material.
 
 ### Apply a plan
 
 There are three ways to run a plan, depending on where the target machine is:
 
-**Local** — apply to the host you're sitting at. lusid picks the machine config whose `hostname` matches `$(hostname)`.
+**Local** - apply to the host you're sitting at. lusid picks the machine config whose `hostname` matches `$(hostname)`.
 
 ```sh
 lusid --config ./lusid.toml local apply
 ```
 
-**Dev VM** — boot a local QEMU VM matching the machine's spec (OS, arch) and apply inside it. Great for iterating on a plan without touching your real machine:
+**Dev VM** - boot a local QEMU VM matching the machine's spec (OS, arch) and apply inside it. Great for iterating on a plan without touching your real machine:
 
 ```sh
 lusid --config ./lusid.toml dev apply --machine my-server
 lusid --config ./lusid.toml dev ssh   --machine my-server   # shell inside the VM
 ```
 
-**Remote** — apply to a real machine you reach over SSH. Add a `remote = { host = "..." }` block to the machine entry, then:
+**Remote** - apply to a real machine you reach over SSH. Add a `remote = { host = "..." }` block to the machine entry, then:
 
 ```sh
 lusid --config ./lusid.toml remote apply --machine my-server
@@ -103,7 +87,7 @@ lusid --config ./lusid.toml remote ssh   --machine my-server   # shell on the ta
 
 `remote` accepts `host` (required), `port` (default `22`), `user` (default `"root"`), and `ssh_key` (default `~/.ssh/id_ed25519`). When `user` is not `root`, lusid wraps the remote `lusid-apply` invocation in `sudo -n …`, so the SSH user must have passwordless sudo configured.
 
-Host-key verification is trust-on-first-use against `~/.ssh/known_hosts`: the first connection pins whatever key the server presents (matching OpenSSH's `StrictHostKeyChecking=accept-new`), and subsequent connections refuse mismatches. **The first apply assumes the network path between you and the target is clean** — if there's any doubt (apply across the public internet, captive Wi-Fi, fresh cloud VM), verify the target's `/etc/ssh/ssh_host_ed25519_key.pub` out-of-band and seed `~/.ssh/known_hosts` yourself before the first run.
+> ⓘ Host-key verification is trust-on-first-use against `~/.ssh/known_hosts`: the first connection pins whatever key the server presents (matching OpenSSH's `StrictHostKeyChecking=accept-new`), and subsequent connections refuse mismatches. **The first apply assumes the network path between you and the target is clean** - if there's any doubt (apply across the public internet, captive Wi-Fi, fresh cloud VM), verify the target's `/etc/ssh/ssh_host_ed25519_key.pub` out-of-band and seed `~/.ssh/known_hosts` yourself before the first run.
 
 Applying the same plan twice is always safe: lusid reads the current state of every resource and only runs the operations needed to close the gap. A no-op apply after a successful apply prints "no changes" and exits.
 
@@ -144,17 +128,21 @@ setup: (params, system) =>
       - "install-curl"
 ```
 
-A plan has metadata (`name`, `version`), declared `params`, and a `setup` function returning a list of items. Each item is either another plan (called recursively) or a core resource (`@resource/*`). Items can declare `requires` / `required_by` to order them.
+A plan has metadata (`name`, `version`), declared `params`, and a `setup` function returning a list of items.
+
+- Each item is either another plan (called recursively) or a core resource (`@resource/*`).
+- Items can declare `requires` / `required_by` to order them.
+- Items can declare `on_change` to specify an operation that should run when the item is changed.
 
 On apply, lusid expands plans into atomic resources, diffs each against the live system, computes a dependency-ordered set of operations, merges duplicates, and runs them in epochs.
 
 ### Resource
 
-A resource is the intended state of a thing on your computer — a package, a file, a service. Each resource type defines its user-facing params, how to observe current state, how to compute a change, and how to lower that change into operations.
+A resource is the intended state of a thing on your computer - a package, a file, a service. Each resource type defines its user-facing params, how to observe current state, how to compute a change, and how to lower that change into operations.
 
 ### Operation
 
-An operation is an action that actually runs on your computer — installing a package, writing a file, reloading a service. Each operation type defines how to merge same-typed operations within an epoch, and how to apply one.
+An operation is an action that actually runs on your computer - installing a package, writing a file, reloading a service. Each operation type defines how to merge same-typed operations within an epoch, and how to apply one.
 
 ### Built-in types
 
@@ -162,16 +150,19 @@ An operation is an action that actually runs on your computer — installing a p
 | --- | --- | --- |
 | `apt` | [resource](./resource/src/resources/apt.rs) | [operation](./operation/src/operations/apt.rs) |
 | `apt-repo` | [resource](./resource/src/resources/apt_repo.rs) | [operation](./operation/src/operations/apt_repo.rs) |
+| `aur` | [resource](./resource/src/resources/aur.rs) | [operation](./operation/src/operations/aur.rs) |
 | `command` | [resource](./resource/src/resources/command.rs) | [operation](./operation/src/operations/command.rs) |
 | `directory` | [resource](./resource/src/resources/directory.rs) | [operation](./operation/src/operations/directory.rs) |
 | `file` | [resource](./resource/src/resources/file.rs) | [operation](./operation/src/operations/file.rs) |
+| `flatpak` | [resource](./resource/src/resources/flatpak.rs.rs) | [operation](./operation/src/operations/flatpak.rs) |
+| `flatpak-remote` | [resource](./resource/src/resources/flatpak_remote.rs.rs) | [operation](./operation/src/operations/flatpak_remote.rs) |
 | `git` | [resource](./resource/src/resources/git.rs) | [operation](./operation/src/operations/git.rs) |
 | `group` | [resource](./resource/src/resources/group.rs) | [operation](./operation/src/operations/group.rs) |
 | `pacman` | [resource](./resource/src/resources/pacman.rs) | [operation](./operation/src/operations/pacman.rs) |
 | `podman` | [resource](./resource/src/resources/podman.rs) | [operation](./operation/src/operations/podman.rs) |
+| `secret` | [resource](./resource/src/resources/secret.rs) | [operation](./operation/src/operations/secret.rs) |
 | `systemd` | [resource](./resource/src/resources/systemd.rs) | [operation](./operation/src/operations/systemd.rs) |
 | `user` | [resource](./resource/src/resources/user.rs) | [operation](./operation/src/operations/user.rs) |
-| `flatpak` | [#32](https://github.com/ahdinosaur/lusid/issues/32) | — |
 
 ## Glossary
 
@@ -185,11 +176,29 @@ An operation is an action that actually runs on your computer — installing a p
 ## Roadmap
 
 - [ ] Implement my complete personal "SnugOS" config
-- [ ] Add system (i.e. Salt Stack "grains"): https://github.com/ahdinosaur/lusid/issues/9
-- [ ] Add secrets management: https://github.com/ahdinosaur/lusid/issues/7
 - [ ] Add Nix-like immutable package builder: https://github.com/ahdinosaur/lusid/issues/1
 - [ ] Add unit testing framework for plans: https://github.com/ahdinosaur/lusid/issues/11
-- [x] Add install hooks: https://github.com/ahdinosaur/lusid/issues/31
+
+## Development
+
+**Prerequisites.** Rust stable, [`just`](https://github.com/casey/just), and the aarch64 cross-compile toolchain (the worker builds for both x86-64 and aarch64 even on a single-arch host):
+
+- Debian/Ubuntu: `sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross`
+- Arch: `sudo pacman -S aarch64-linux-gnu-gcc aarch64-linux-gnu-glibc`
+- All: `rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu`
+
+The aarch64 linker is wired up in `.cargo/config.toml`. CI builds each arch on a native runner, so this isn't needed in `release.yml`.
+
+```sh
+git clone https://github.com/ahdinosaur/lusid
+cd lusid
+just build-lusid-apply           # builds lusid-apply, stages under ./embed/
+cargo build -p lusid --release   # picks up ./embed/ by default
+```
+
+The example recipes (e.g. `just nginx-cluster-apply-a`) chain both steps.
+
+You get one binary at `./target/release/lusid`. The worker is extracted to `~/.cache/lusid/lusid-apply/<version>/<arch>/` on first `local apply`, and streamed over SFTP for `dev apply` / `remote apply`.
 
 ## Related projects
 

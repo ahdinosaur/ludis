@@ -18,7 +18,7 @@ pub use self::text::*;
 
 /// The central view type. Sum of the four primitive shapes; every `Render`
 /// implementation produces one of these. `Display` recurses into the chosen
-/// variant — the text content is preserved, but the styling metadata on
+/// variant - the text content is preserved, but the styling metadata on
 /// [`Span`]/[`Line`]/[`Paragraph`] is only visible to callers that inspect
 /// the structure directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,5 +1,5 @@
 //! `@operation/<id>` is the imperative-action namespace. Operations live only
-//! inside an `on_change` block on a `@resource/*` plan item — they're the
+//! inside an `on_change` block on a `@resource/*` plan item - they're the
 //! actions to run when the resource has a non-empty state diff.
 //!
 //! This module mirrors [`crate::resource`] for that surface: it routes an
@@ -17,7 +17,7 @@ use crate::PlanItemToResourceError;
 
 /// Operations exposed in the `@operation/<id>` namespace for v1.
 ///
-/// Single source of truth — the dispatcher in [`operation_module`] matches
+/// Single source of truth - the dispatcher in [`operation_module`] matches
 /// against these, and the [`PlanItemToResourceError::UnsupportedOperationModuleId`]
 /// error message reads from here so the two never drift.
 pub const AVAILABLE_OPERATION_MODULES: &[&str] = &["command", "systemd"];

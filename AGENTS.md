@@ -51,10 +51,10 @@ If you add new path-like types, follow this pattern and be explicit about absolu
 
 `@resource/file` and `@resource/directory` both expose two ways to materialise a host-path source on the target:
 
-- **`state: "sourced"`** — byte-copy of the file, or recursive `cp -r` of the directory tree, into `path`. Accepts optional `mode`/`user`/`group`. Edits to `source` only propagate on the next apply. Use this when the bytes need to live on the target independently of the operator's filesystem (system configs, deployed artifacts, dev/remote apply).
-- **`state: "linked"`** — atomic symlink at `path` pointing to `source`. Refuses `mode`/`user`/`group` at the parser level (Linux symlinks have no meaningful mode of their own, and chmod/chown via the link silently mutates the target file in the operator's repo — declined). Edits to `source` show up at `path` immediately. Use this for dotfiles-style ergonomics.
+- **`state: "sourced"`** - byte-copy of the file, or recursive `cp -r` of the directory tree, into `path`. Accepts optional `mode`/`user`/`group`. Edits to `source` only propagate on the next apply. Use this when the bytes need to live on the target independently of the operator's filesystem (system configs, deployed artifacts, dev/remote apply).
+- **`state: "linked"`** - atomic symlink at `path` pointing to `source`. Refuses `mode`/`user`/`group` at the parser level (Linux symlinks have no meaningful mode of their own, and chmod/chown via the link silently mutates the target file in the operator's repo - declined). Edits to `source` show up at `path` immediately. Use this for dotfiles-style ergonomics.
 
-Both states validate at plan-load time (post-`plan()`, pre-resources expansion) that `source` exists and has the expected type — regular file for `@resource/file`, directory for `@resource/directory`. See `ResourceParams::validate_host_paths` in `resource/src/lib.rs`.
+Both states validate at plan-load time (post-`plan()`, pre-resources expansion) that `source` exists and has the expected type - regular file for `@resource/file`, directory for `@resource/directory`. See `ResourceParams::validate_host_paths` in `resource/src/lib.rs`.
 
 Implementation notes:
 - The Linked state probe is *lexical*: `readlink(2)` against the source string. We deliberately don't canonicalise; otherwise drift between a plan declaring `./foo` and an existing link declaring something else is invisible.
@@ -71,14 +71,14 @@ The `lusid` TUI expects this exact protocol. Avoid printing human text to stdout
 
 Plans declare two kinds of items, in two namespaces:
 
-- A **resource** (`@resource/<id>`) describes *desired state* — "nginx should be enabled and active". Lusid probes current state, computes a diff, and converges. Idempotent across re-applies.
-- An **operation** (`@operation/<id>`) describes an *imperative action* — "reload nginx", "run this command". Operations are not state-checked; they run when triggered.
+- A **resource** (`@resource/<id>`) describes *desired state* - "nginx should be enabled and active". Lusid probes current state, computes a diff, and converges. Idempotent across re-applies.
+- An **operation** (`@operation/<id>`) describes an *imperative action* - "reload nginx", "run this command". Operations are not state-checked; they run when triggered.
 
 Resources live at the top level of `setup`. Operations live only inside an `on_change` block.
 
 #### `on_change` hooks
 
-A resource may declare a list of operations to run when it changes. Hooks fire on any change (new contents, different mode, owner change, etc.) and run in a strictly-later epoch than the resource's own operations. Identical hooks in the same epoch coalesce — ten resources each declaring `on_change: reload nginx` collapse to one reload.
+A resource may declare a list of operations to run when it changes. Hooks fire on any change (new contents, different mode, owner change, etc.) and run in a strictly-later epoch than the resource's own operations. Identical hooks in the same epoch coalesce - ten resources each declaring `on_change: reload nginx` collapse to one reload.
 
 ```rimu
 - module: "@resource/file"
@@ -92,12 +92,12 @@ A plan item's `id` registers its hooks too: a `requires: [<id>]` dependent waits
 
 #### v1 limitations
 
-- Hooks are inline only — no by-reference (`on_change: ["handler-id"]`).
+- Hooks are inline only - no by-reference (`on_change: ["handler-id"]`).
 - Inline operations cannot declare `id`, `requires`, or `required_by`.
-- Triggered on any change — no add/modify/remove distinction.
+- Triggered on any change - no add/modify/remove distinction.
 - **Cross-epoch coalescing not handled.** If resource A reloads nginx, resource B also reloads nginx, and B `requires: ["A"]` (so they're in different epochs), nginx reloads twice. Workaround: factor the reload into a single dedicated `@resource/command` downstream, or accept the duplicate (nginx reload is idempotent).
 - **Hook failure leaves you stuck.** If a hook fails, apply aborts. The resource is now in its target state, so re-applying will NOT re-trigger the hook. Recovery: either run the operation manually (e.g. `sudo systemctl reload nginx`), or briefly toggle a field on the resource (e.g. change `mode` on a `@resource/file`, or `enabled` on a `@resource/systemd`) and re-apply, then revert.
-- **`@operation/command` covers a lot.** Although only `command` and `systemd` are exposed as operations in v1, `@operation/command` shells out — logrotate signals, cron reloads, cache invalidation, etc. all fit under it.
+- **`@operation/command` covers a lot.** Although only `command` and `systemd` are exposed as operations in v1, `@operation/command` shells out - logrotate signals, cron reloads, cache invalidation, etc. all fit under it.
 
 #### Implementation: the `inject_handlers` post-pass
 
@@ -150,7 +150,7 @@ This project runs privileged operations (`sudo apt-get`, `sudo pacman`, filesyst
 ## Testing
 
 - Don't assume the current code is correct.
-- Never change a test just to make it pass — fix the cause.
+- Never change a test just to make it pass - fix the cause.
 - Add tests for specific edge cases, not for the sake of count.
 - Remove redundant tests.
 

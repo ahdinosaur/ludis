@@ -10,7 +10,7 @@ use std::fmt::Display;
 use serde::{Deserialize, Serialize};
 
 /// Adding a new variant: also update `lusid/build.rs::ARCHES` (the build-time
-/// embed list — separate from this enum because `build.rs` can't depend on
+/// embed list - separate from this enum because `build.rs` can't depend on
 /// `lusid-system` without a slow build-dep), and the match in
 /// `lusid/src/embedded.rs::embedded_lusid_apply` (exhaustive over `Arch`, so
 /// the compiler flags missing arms).

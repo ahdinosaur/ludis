@@ -23,7 +23,7 @@ Install Debian/Ubuntu packages.
 | Field | Type | Required | What |
 | --- | --- | --- | --- |
 | `package` | string | one-of | A single package name. |
-| `packages` | list of string | one-of | Multiple packages — expands to one atom per package. |
+| `packages` | list of string | one-of | Multiple packages - expands to one atom per package. |
 
 Same-epoch atoms merge into a single `apt-get install ...` invocation.
 
@@ -75,7 +75,7 @@ Install Arch User Repository packages (requires an AUR helper on the target).
 
 ## `@resource/command`
 
-Run a shell command idempotently — gated by an `is_installed` probe.
+Run a shell command idempotently - gated by an `is_installed` probe.
 
 ```yaml
 - module: "@resource/command"
@@ -92,7 +92,7 @@ Run a shell command idempotently — gated by an `is_installed` probe.
 | `is_installed` | string | optional | Shell command; non-zero exit means "not installed, run `install`". |
 | `uninstall` | string | when `status = "uninstall"` | Shell command to run when installed. |
 
-Without `is_installed`, the `install` command runs on every apply — use it only for genuinely idempotent operations.
+Without `is_installed`, the `install` command runs on every apply - use it only for genuinely idempotent operations.
 
 ---
 
@@ -364,4 +364,4 @@ Manage a Unix user.
 
 `append_groups` is append-only: missing groups are added, existing memberships are left alone, and groups not listed here are **not** removed.
 
-The plan does not set passwords. Combine with `@resource/command` shelling out to `chpasswd` for that — see the [arch-desktop example](../../examples/arch-desktop/).
+The plan does not set passwords. Combine with `@resource/command` shelling out to `chpasswd` for that - see the [arch-desktop example](../../examples/arch-desktop/).

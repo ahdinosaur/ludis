@@ -15,7 +15,7 @@ default:
 #   Debian/Ubuntu:  gcc-aarch64-linux-gnu  libc6-dev-arm64-cross
 #   Arch:           aarch64-linux-gnu-gcc  aarch64-linux-gnu-glibc
 # plus `rustup target add aarch64-unknown-linux-gnu`. The linker is
-# wired up in `.cargo/config.toml`. (The reverse — aarch64 → x86-64 —
+# wired up in `.cargo/config.toml`. (The reverse - aarch64 → x86-64 -
 # needs the mirror set of packages and works the same way.) CI builds
 # each arch on a native runner instead; see `.github/workflows/release.yml`.
 build-lusid-apply:

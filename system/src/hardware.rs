@@ -1,5 +1,5 @@
 //! Simple hardware primitives (CPU count, memory size, disk size) used by the
-//! `vm` crate. Kept deliberately minimal — just typed newtypes around `u16` /
+//! `vm` crate. Kept deliberately minimal - just typed newtypes around `u16` /
 //! `u64`.
 
 use std::fmt::Display;

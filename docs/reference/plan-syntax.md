@@ -102,7 +102,7 @@ params:
       type: "number"
 
   config_dir:
-    type: "host-path"   # e.g. "./configs/" — resolved relative to this plan file
+    type: "host-path"   # e.g. "./configs/" - resolved relative to this plan file
 
   install_path:
     type: "target-path" # must be absolute, e.g. "/etc/myapp"
@@ -110,7 +110,7 @@ params:
 
 ### Union schemas
 
-Instead of a single struct, `params:` can be a list — a union of structs, tried in declaration order:
+Instead of a single struct, `params:` can be a list - a union of structs, tried in declaration order:
 
 ```yaml
 params:
@@ -138,5 +138,5 @@ See the [Rimu docs](https://rimu.dev) for the full language.
 
 ## See also
 
-- [Plans concept](../concepts/plans.md) — narrative introduction.
-- [Resources reference](./resources.md) — params for every `@resource/*`.
+- [Plans concept](../concepts/plans.md) - narrative introduction.
+- [Resources reference](./resources.md) - params for every `@resource/*`.

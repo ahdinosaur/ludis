@@ -17,7 +17,7 @@ const STAGE_SUBDIR: &str = "apt-repo";
 
 #[derive(Debug, Clone)]
 pub enum AptRepoOperation {
-    /// Create `/etc/apt/keyrings` (mode 0755) on the target. Idempotent —
+    /// Create `/etc/apt/keyrings` (mode 0755) on the target. Idempotent -
     /// `install -d` is a no-op when the directory already exists.
     EnsureKeyringsDir { path: FilePath },
 
@@ -78,7 +78,7 @@ pub enum AptRepoApplyError {
 #[derive(Debug, Clone)]
 pub struct AptRepo;
 
-// Note(cc): `merge()` is a no-op for v1 — see the parallel comment in
+// Note(cc): `merge()` is a no-op for v1 - see the parallel comment in
 // `git.rs`. Two apt-repo resources in one epoch will both emit
 // `EnsureKeyringsDir { path: /etc/apt/keyrings }`, but `install -d` is
 // already idempotent so the duplicate is just a wasted sudo round-trip.
@@ -138,7 +138,7 @@ impl OperationType for AptRepo {
                     Box::pin(async move {
                         let result = output.status.await;
                         // Best-effort cleanup of the cache stage even if the
-                        // sudo install failed — the stage is in a user-owned
+                        // sudo install failed - the stage is in a user-owned
                         // XDG dir and never references state another op needs.
                         let _ = tokio::fs::remove_file(&cleanup_path).await;
                         result?;

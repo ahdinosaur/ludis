@@ -3,8 +3,8 @@
 //! An identity file contains a single key. Comments (`#`) and blank lines at
 //! the top are skipped; the first non-comment line determines the format:
 //!
-//! - `AGE-SECRET-KEY-1...` (one line)     — x25519 age identity.
-//! - `-----BEGIN OPENSSH PRIVATE KEY-----` — multi-line OpenSSH ed25519 or RSA
+//! - `AGE-SECRET-KEY-1...` (one line)     - x25519 age identity.
+//! - `-----BEGIN OPENSSH PRIVATE KEY-----` - multi-line OpenSSH ed25519 or RSA
 //!   private key. The whole BEGIN..END block (plus any trailing newline) is
 //!   handed to [`age::ssh::Identity::from_buffer`].
 //!
@@ -40,7 +40,7 @@ enum IdentityInner {
 
 impl std::fmt::Debug for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Never leak key material via Debug — just report the kind.
+        // Never leak key material via Debug - just report the kind.
         let kind = match &self.inner {
             IdentityInner::X25519(_) => "x25519",
             IdentityInner::Ssh(_) => "ssh",
@@ -102,7 +102,7 @@ fn parse(text: &str, path: Option<&Path>) -> Result<Identity, IdentityError> {
             inner: IdentityInner::X25519(inner),
         })
     } else if first.starts_with(OPENSSH_BEGIN) {
-        // Pass from the BEGIN line onward — comments have been skipped but
+        // Pass from the BEGIN line onward - comments have been skipped but
         // blank/content lines inside the block are preserved.
         let begin = text
             .find(OPENSSH_BEGIN)

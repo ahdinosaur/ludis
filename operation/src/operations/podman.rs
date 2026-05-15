@@ -13,13 +13,13 @@ use crate::OperationType;
 /// resource layer's `config_hash` of the declared spec, used by drift
 /// detection on the next plan to tell "still matches" from "needs recreate".
 /// Kept in this crate so the create command and the resource-side reader
-/// can't disagree — change the key in one place.
+/// can't disagree - change the key in one place.
 pub const CONFIG_HASH_LABEL: &str = "lusid.config-hash";
 
 #[derive(Debug, Clone)]
 pub enum PodmanOperation {
     /// Create a container from `image` under `name`. `--pull=missing` is used
-    /// so the image is fetched inline when it isn't already present locally —
+    /// so the image is fetched inline when it isn't already present locally -
     /// keeps the operation set small without exposing a separate Pull op.
     /// `config_hash` is written as the [`CONFIG_HASH_LABEL`] label so the
     /// next state observation can detect drift without re-deriving fields
@@ -76,7 +76,7 @@ impl OperationType for Podman {
     type Operation = PodmanOperation;
 
     // Note(cc): merge is a no-op. Each op targets a single named container and
-    // ordering matters (create before start, remove before recreate) — that
+    // ordering matters (create before start, remove before recreate) - that
     // ordering is already expressed in the causality tree, so merging would
     // have to respect it. Not worth the complexity for the typical "handful of
     // containers per plan" case.

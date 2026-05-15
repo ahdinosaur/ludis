@@ -23,7 +23,7 @@ pub enum FileApplyError {
     Fs(#[from] FsError),
 
     // Twin of `lusid_resource::resources::file::FileStateError::MissingSecret`
-    // — the state-side fires when a file already exists (contents diffed
+    // - the state-side fires when a file already exists (contents diffed
     // against the bundle); this apply-side variant is the backstop for
     // new-file writes, where state short-circuited on the missing path
     // without consulting the bundle.
@@ -192,7 +192,7 @@ impl_display_render!(FileOperation);
 /// - `Bytes` covers inline plan-supplied contents.
 /// - `SecretBytes` covers decrypted-secret plaintext. Treated separately
 ///   so the atomic-write helper can pin mode `0o600` on the temp file
-///   from the moment it's `open(2)`'d — closing the umask-window between
+///   from the moment it's `open(2)`'d - closing the umask-window between
 ///   write and the followup `ChangeMode` op.
 /// - `Copy` covers a path-sourced copy.
 ///

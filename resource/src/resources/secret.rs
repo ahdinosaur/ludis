@@ -1,5 +1,5 @@
 //! `@resource/secret`: materialise an age-decrypted plaintext onto the target
-//! filesystem, referenced by name (agenix-style — the plan names the secret,
+//! filesystem, referenced by name (agenix-style - the plan names the secret,
 //! the plaintext is resolved at apply time against the decrypted secrets
 //! bundle on [`Context`]).
 //!
@@ -11,12 +11,12 @@
 //!   when omitted. `@resource/file` leaves mode to the umask.
 //!
 //! Under the hood this delegates to `@resource/file`'s state/change/operation
-//! machinery — the atoms produced are ordinary [`FileResource::Secret`]
+//! machinery - the atoms produced are ordinary [`FileResource::Secret`]
 //! variants, so downstream scheduling and application are identical.
 //!
 //! `path` is required and must be an absolute path on the target. Prefer
 //! a `/run/...` (tmpfs) location when the consumer doesn't need the
-//! plaintext to survive reboots — that keeps plaintext out of backups
+//! plaintext to survive reboots - that keeps plaintext out of backups
 //! and off persistent disk.
 
 use std::fmt::{self, Display};

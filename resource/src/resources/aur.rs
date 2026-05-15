@@ -88,7 +88,7 @@ pub enum AurStateError {
     ParseStatus { output: String },
 }
 
-// TODO(cc): add an `Uninstall` variant — mirror image of the apt resource. A declared
+// TODO(cc): add an `Uninstall` variant - mirror image of the apt resource. A declared
 // package cannot currently be retracted.
 #[derive(Debug, Clone)]
 pub enum AurChange {
@@ -139,7 +139,7 @@ impl ResourceType for Aur {
         // AUR-installed packages register in the local pacman database
         // (the AUR helper builds via makepkg, then hands the resulting
         // package off to pacman -U), so `pacman -Q` is the canonical
-        // idempotency probe — no need to invoke the AUR helper just to
+        // idempotency probe - no need to invoke the AUR helper just to
         // ask "is this package present?".
         Command::new("pacman")
             .args(["-Q", &resource.package])
@@ -178,7 +178,7 @@ impl ResourceType for Aur {
 
     fn operations(change: Self::Change) -> Vec<CausalityTree<Operation>> {
         // Note(cc): unlike `@resource/pacman` we do not emit a system-upgrade
-        // step before the install — paru's `-S` already runs `pacman -Sy`
+        // step before the install - paru's `-S` already runs `pacman -Sy`
         // internally to refresh the package db before any build, and a
         // sibling `@resource/pacman` resource (if present in the same plan)
         // is responsible for the `-Syu` itself. Emitting one here would
@@ -190,7 +190,7 @@ impl ResourceType for Aur {
         // `lusid-apply/src/lib.rs`), so there's no `db.lck` contention.
         // But `Operation::merge` chains families in a fixed order
         // (`Apt → AptRepo → Aur → Pacman → …`), which means a shared
-        // epoch consistently runs `paru -S` *before* `pacman -Syu` — the
+        // epoch consistently runs `paru -S` *before* `pacman -Syu` - the
         // wrong way round for ABI safety: an AUR package can end up
         // linked against a library version that `-Syu` then replaces,
         // requiring a rebuild. Operators who care should flip the order

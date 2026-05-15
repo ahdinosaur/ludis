@@ -41,7 +41,7 @@ Boot a local QEMU VM matching the machine spec, copy the plan in, apply over SSH
 lusid --config ./lusid.toml dev apply --machine my-server
 ```
 
-The VM persists between runs — re-applying with the same `--machine` reuses the same VM. Cloud images are cached under `~/.cache/lusid/vm/images/`.
+The VM persists between runs - re-applying with the same `--machine` reuses the same VM. Cloud images are cached under `~/.cache/lusid/vm/images/`.
 
 ## `dev ssh --machine <id>`
 

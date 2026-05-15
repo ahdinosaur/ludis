@@ -1,7 +1,7 @@
 //! Raw age encryption / decryption primitives, plus a small header scanner
 //! used by `rekey` to decide whether a re-encrypt is a no-op.
 //!
-//! Everything in this module operates on in-memory byte slices — file I/O
+//! Everything in this module operates on in-memory byte slices - file I/O
 //! lives in the caller.
 
 use std::io::{Read, Write};
@@ -58,7 +58,7 @@ pub(crate) fn decrypt_bytes(
 /// Encrypt `plaintext` to `recipients`, returning the age ciphertext as a
 /// byte vector.
 ///
-/// `path` is only used for error labelling. `recipients` must be non-empty —
+/// `path` is only used for error labelling. `recipients` must be non-empty -
 /// age rejects an empty recipient set.
 pub(crate) fn encrypt_bytes(
     recipients: &[Box<dyn Recipient + Send>],
@@ -94,7 +94,7 @@ pub(crate) fn encrypt_bytes(
 /// Read just the recipient stanzas from an age v1 ciphertext header.
 ///
 /// We only need the stanzas' tags and first argument to compare against the
-/// intended recipient list — body and MAC are ignored. Returns the stanzas
+/// intended recipient list - body and MAC are ignored. Returns the stanzas
 /// in file order. Does not authenticate the header.
 pub(crate) fn read_header_stanzas(ciphertext: &[u8]) -> Result<Vec<Stanza>, HeaderError> {
     if !ciphertext.starts_with(AGE_V1_MAGIC) {

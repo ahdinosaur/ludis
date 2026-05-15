@@ -10,6 +10,6 @@ A thin wrapper around `reqwest` with:
   completion, so interrupted runs never leave a half-written file that looks
   whole.
 
-Intentionally minimal — no retry, resume, or content verification. Callers that
+Intentionally minimal - no retry, resume, or content verification. Callers that
 need those (e.g. content-addressed fetching) should handle them at a higher
 layer.

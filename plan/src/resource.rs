@@ -13,7 +13,7 @@ use rimu::{Spanned, Value};
 use crate::PlanItemToResourceError;
 
 /// Returns the resource id (e.g. `"apt"`) if `module` uses the `@resource/<id>`
-/// prefix, otherwise `None` — meaning the module should be resolved as a nested
+/// prefix, otherwise `None` - meaning the module should be resolved as a nested
 /// plan (or, if it uses `@operation/`, rejected as a top-level item elsewhere).
 pub fn is_resource_module(module: &Spanned<String>) -> Option<&str> {
     module.inner().strip_prefix("@resource/")

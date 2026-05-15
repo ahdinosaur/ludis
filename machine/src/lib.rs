@@ -1,4 +1,4 @@
-//! Declarative description of a lusid *target* machine — distinct from [`lusid_system::System`],
+//! Declarative description of a lusid *target* machine - distinct from [`lusid_system::System`],
 //! which describes the machine lusid is currently running on.
 //!
 //! A `Machine` names the intended hostname/arch/OS (and, if it should be materialized as
@@ -39,7 +39,7 @@ pub struct MachineVmOptions {
 
 /// SSH connection details for `lusid remote apply` / `lusid remote ssh`.
 ///
-/// `host` is the SSH-reachable address (DNS or IP) — distinct from
+/// `host` is the SSH-reachable address (DNS or IP) - distinct from
 /// [`Machine::hostname`], which is the target's *self-name* (matched against
 /// `$(hostname)` for `local apply` and seeded into VM cloud-init). The two
 /// fields play different roles even though they often hold the same string.
@@ -55,7 +55,7 @@ pub struct MachineVmOptions {
 /// `cmd_remote_apply`) and implicitly in the operator's `[machines]`
 /// recipient setup. Targets with only `ssh-rsa` host keys silently won't
 /// decrypt. If we ever care about that, add a `host_key: Option<PathBuf>`
-/// field here — making it optional from day one avoids a breaking config
+/// field here - making it optional from day one avoids a breaking config
 /// change later.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,7 +66,7 @@ pub struct Remote {
     /// Path to the operator's SSH **private** key, used to authenticate the
     /// SSH session. Tilde-expanded at use site (CLI), not at parse. Defaults
     /// to `~/.ssh/id_ed25519`. Deliberately distinct from the `--identity`
-    /// (age) flag elsewhere — these are unrelated identities.
+    /// (age) flag elsewhere - these are unrelated identities.
     pub ssh_key: Option<PathBuf>,
 }
 

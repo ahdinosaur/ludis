@@ -19,14 +19,14 @@ const DEFAULT_REMOTE: &str = "flathub";
 
 /// Plan-level parameters for the `@core/flatpak` resource.
 ///
-/// Tagged by `state: "present" | "absent"`. Apps only in v1 — `--app` is
+/// Tagged by `state: "present" | "absent"`. Apps only in v1 - `--app` is
 /// passed to flatpak so a runtime ref will surface a clear "no matching app"
 /// error instead of half-succeeding. Adding `kind: "app" | "runtime"` is the
 /// natural extension point.
 ///
 /// Note(cc): cross-scope dupes. Declaring `org.x` as `--user` when the same
 /// app is already installed `--system` (or vice versa) does NOT trigger a
-/// re-install — we probe the declared scope only. Operators who want a
+/// re-install - we probe the declared scope only. Operators who want a
 /// single-scope guarantee should declare `state: "absent"` for the
 /// off-scope copy alongside the desired `state: "present"`.
 ///
@@ -37,7 +37,7 @@ const DEFAULT_REMOTE: &str = "flathub";
 ///
 /// Note(cc): bare names without reverse-DNS dotting (`firefox` instead of
 /// `org.mozilla.firefox`) confuse `flatpak install` under `-y` (multiple
-/// refs match; flatpak errors). We don't validate the shape — flatpak's
+/// refs match; flatpak errors). We don't validate the shape - flatpak's
 /// error message is clear enough.
 #[derive(Debug, Clone)]
 pub enum FlatpakParams {
@@ -225,14 +225,14 @@ impl ResourceType for Flatpak {
     type StateError = FlatpakStateError;
 
     /// Probe via `flatpak info [--user|--system] <name>`:
-    /// - exit 0: stdout has metadata — package is installed.
+    /// - exit 0: stdout has metadata - package is installed.
     /// - exit non-zero + stderr contains `"not installed"`: package is absent.
     /// - exit non-zero + other stderr: surface as `CommandError::Failure`.
     ///
     /// Note(cc): `flatpak info` has no `--app` filter (unlike `flatpak
     /// install`), so a runtime ref declared in `@core/flatpak` reads as
     /// `Installed` if the runtime happens to be installed. We treat that as
-    /// a configuration error to surface at install time — the install op
+    /// a configuration error to surface at install time - the install op
     /// passes `--app`, so flatpak refuses to install a runtime ref and
     /// emits a clear error.
     async fn state(

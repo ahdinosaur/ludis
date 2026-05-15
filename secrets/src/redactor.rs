@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn skips_short_secrets() {
-        // Below REDACT_MIN_LEN (8) — skipped entirely to avoid false
+        // Below REDACT_MIN_LEN (8) - skipped entirely to avoid false
         // positives on common short substrings.
         let secrets = secrets_from(&[("pin", "12345")]);
         let redactor = secrets.redactor();

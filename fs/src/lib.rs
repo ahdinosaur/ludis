@@ -1,7 +1,7 @@
 //! Async filesystem helpers used by lusid operations and resources.
 //!
 //! Every function wraps a `tokio::fs` / `nix` / `filetime` call with a contextual
-//! [`FsError`] variant — errors always include the offending path(s), so diagnostics
+//! [`FsError`] variant - errors always include the offending path(s), so diagnostics
 //! don't require parsing raw `io::Error` messages.
 //!
 //! Highlights:
@@ -238,16 +238,16 @@ pub async fn create_dir<P: AsRef<Path>>(path: P) -> Result<(), FsError> {
 
 /// Recursively copy a directory tree.
 ///
-/// Note(cc): shells out to `cp --recursive`, which is GNU coreutils — BSD `cp` on
+/// Note(cc): shells out to `cp --recursive`, which is GNU coreutils - BSD `cp` on
 /// macOS uses `-R` instead, and Windows has no `cp` at all. If we ever care about
 /// non-Linux targets, swap to a Rust-native walker (e.g. the `walkdir` + manual copy
 /// pattern, or the `fs_extra` crate).
 ///
 /// Note(cc): callers must ensure `to` does not exist. GNU `cp -r src dst` when
 /// `dst` already exists creates `dst/<basename of src>` (a nested copy) instead
-/// of replacing `dst`'s contents. The current sole caller —
+/// of replacing `dst`'s contents. The current sole caller -
 /// `DirectoryOperation::CopyTree` from `@resource/directory state: "sourced"` in
-/// guest mode — short-circuits via the directory-resource state probe (which
+/// guest mode - short-circuits via the directory-resource state probe (which
 /// reports `Sourced` weakly when `path` exists), so this footgun is masked in
 /// the happy path. A future caller that bypasses that probe will need to
 /// rmdir `to` first or this helper should grow a "remove destination first"
@@ -495,7 +495,7 @@ pub async fn write_file<P: AsRef<Path>>(path: P, data: &[u8]) -> Result<(), FsEr
 /// Atomically write `data` to `path`.
 ///
 /// Strategy: write to a sibling temp file, copy existing destination metadata onto the
-/// temp file (permissions, owner, times — so users don't see a file whose mode changed
+/// temp file (permissions, owner, times - so users don't see a file whose mode changed
 /// when it shouldn't have), then rename. Readers never observe a partial write.
 pub async fn write_file_atomic<P: AsRef<Path>>(path: P, data: &[u8]) -> Result<(), FsError> {
     write_file_atomic_with_initial_mode(path, data, None).await
@@ -511,7 +511,7 @@ pub async fn write_file_atomic<P: AsRef<Path>>(path: P, data: &[u8]) -> Result<(
 /// local UID could `read(2)` the bytes.
 ///
 /// When `initial_mode` is `Some(_)`, the destination's existing
-/// metadata is NOT copied — the caller's explicit mode wins. Otherwise,
+/// metadata is NOT copied - the caller's explicit mode wins. Otherwise,
 /// the destination's metadata (mode/owner/times) is preserved across
 /// the write so users don't see surprising mode changes.
 pub async fn write_file_atomic_with_initial_mode<P: AsRef<Path>>(
@@ -540,7 +540,7 @@ pub async fn write_file_atomic_with_initial_mode<P: AsRef<Path>>(
     // Preserve destination metadata only when the caller hasn't asked
     // for a specific mode. For pinned-mode (secrets), copy_metadata
     // would overwrite our explicit 0o600 with whatever permissions the
-    // destination had — defeating the whole point.
+    // destination had - defeating the whole point.
     if initial_mode.is_none() && path_exists(dest_path).await? {
         copy_metadata(dest_path, &temp_path).await?;
     }
@@ -712,10 +712,10 @@ pub async fn remove_file<P: AsRef<Path>>(path: P) -> Result<(), FsError> {
 /// Strategy: create the symlink at a sibling temp path, then `rename(2)` it
 /// over the destination. POSIX `rename` is path-level and atomic across
 /// regular files and symlinks, so any concurrent reader of `to` sees either
-/// the old entry or the new one — never an absent or half-created link.
+/// the old entry or the new one - never an absent or half-created link.
 ///
 /// Replaces an existing regular file or symlink at `to`. Fails (with
-/// `ENOTEMPTY`/`EISDIR`) if `to` is a non-empty directory — convert via an
+/// `ENOTEMPTY`/`EISDIR`) if `to` is a non-empty directory - convert via an
 /// explicit `state: "absent"` first.
 ///
 /// Note(cc): `from` is not stat-checked here. `lusid-resource`'s
@@ -752,7 +752,7 @@ pub async fn create_symlink_atomic<F: AsRef<Path>, T: AsRef<Path>>(
 /// exist at all.
 ///
 /// Combines `lstat` + `readlink` so a TOCTOU swap between the two only
-/// widens the window for a stale answer — never produces a confusing
+/// widens the window for a stale answer - never produces a confusing
 /// "Cannot read symlink" error for something that lstat'd as a symlink and
 /// then got replaced before the readlink. We translate `EINVAL` from
 /// `readlink` (path is no longer a symlink) into `NotASymlink` for that
@@ -785,7 +785,7 @@ pub async fn probe_symlink<P: AsRef<Path>>(path: P) -> Result<SymlinkTarget, FsE
     }
 }
 
-/// Outcome of [`probe_symlink`]. Lexical — `Symlink(target)` is whatever
+/// Outcome of [`probe_symlink`]. Lexical - `Symlink(target)` is whatever
 /// `readlink(2)` returned, not a canonicalised path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SymlinkTarget {

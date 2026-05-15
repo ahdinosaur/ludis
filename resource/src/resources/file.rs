@@ -21,7 +21,7 @@ pub enum FileParams {
     /// Byte-copy from `source` (a host-path) into `path` (a target-path),
     /// atomically. Edits to `source` only propagate on the next apply. Use
     /// this for files whose contents are an artifact of the plan and whose
-    /// bytes must live on the target — including dev/remote apply, where the
+    /// bytes must live on the target - including dev/remote apply, where the
     /// operator's filesystem isn't reachable.
     Sourced {
         source: FilePath,
@@ -35,14 +35,14 @@ pub enum FileParams {
     },
 
     /// Materialise `path` as a symlink to `source` (a host-path on the
-    /// machine running apply). Edits to `source` propagate immediately —
-    /// nothing to re-apply — which is the dotfiles ergonomic. Symlinks have
+    /// machine running apply). Edits to `source` propagate immediately -
+    /// nothing to re-apply - which is the dotfiles ergonomic. Symlinks have
     /// no meaningful `mode`/`user`/`group` of their own on Linux (chmod
     /// follows the link, lchmod doesn't exist), and we don't want
     /// chmod/chown silently mutating the operator's source file via the
     /// link, so the parser refuses those fields here.
     ///
-    /// Note(cc): `source` arrives here as an *absolute* host-path — the
+    /// Note(cc): `source` arrives here as an *absolute* host-path - the
     /// `host-path` param-type coercion resolves relative strings against
     /// the plan's source dir before this point. The created symlink target
     /// is therefore absolute, so moving the source repo breaks every link.
@@ -92,7 +92,7 @@ impl ParseParams for FileParams {
                 }
             }
             "linked" => {
-                // No `mode`/`user`/`group` here — see the variant docs. Any
+                // No `mode`/`user`/`group` here - see the variant docs. Any
                 // such field will be left in `fields` and rejected by
                 // `fields.finish()` below as an unknown key.
                 let (source_path, source_span) =
@@ -615,10 +615,10 @@ impl ResourceType for File {
 ///
 /// Comparison is *lexical*: `target` is whatever `readlink(2)` returned,
 /// compared as a `PathBuf` against the source path string. We deliberately
-/// don't canonicalise — `source` arrives as the absolute resolved host-path
+/// don't canonicalise - `source` arrives as the absolute resolved host-path
 /// (see `params::ParamType::HostPath` coercion), and any pre-existing symlink
-/// that `readlink`s to a different string — even one that resolves to the
-/// same inode — should re-create. Otherwise the operator can never see drift
+/// that `readlink`s to a different string - even one that resolves to the
+/// same inode - should re-create. Otherwise the operator can never see drift
 /// between a plan declaring `./foo` and an existing link with a different
 /// declaration.
 async fn probe_linked_state(
@@ -627,7 +627,7 @@ async fn probe_linked_state(
 ) -> Result<FileState, FileStateError> {
     match fs::probe_symlink(path.as_path()).await? {
         fs::SymlinkTarget::Symlink(target) if target == source.as_path() => Ok(FileState::Linked),
-        // Wrong-target symlink, regular file, or missing path — all mean
+        // Wrong-target symlink, regular file, or missing path - all mean
         // "(re)create the symlink".
         _ => Ok(FileState::NotLinked),
     }

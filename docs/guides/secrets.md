@@ -12,7 +12,7 @@ This page is a practical guide. For the full threat model, schema rules, and CLI
 lusid secrets keygen
 ```
 
-This writes an x25519 private key to `$XDG_CONFIG_HOME/lusid/identity` (typically `~/.config/lusid/identity`). It refuses to overwrite an existing one — treat this file like an SSH private key.
+This writes an x25519 private key to `$XDG_CONFIG_HOME/lusid/identity` (typically `~/.config/lusid/identity`). It refuses to overwrite an existing one - treat this file like an SSH private key.
 
 A public key is printed to stdout, looking like `age1...`. Copy it.
 
@@ -47,7 +47,7 @@ web-a = "ssh-ed25519 AAAA..."   # /etc/ssh/ssh_host_ed25519_key.pub on the targe
 
 Get the pubkey from the target: `cat /etc/ssh/ssh_host_ed25519_key.pub`.
 
-On apply, lusid reads the matching **private** key at `/etc/ssh/ssh_host_ed25519_key` on the target to decrypt. That file is root-only, so `remote apply` with a non-root SSH user needs passwordless sudo — see [apply modes](./apply-modes.md#remote).
+On apply, lusid reads the matching **private** key at `/etc/ssh/ssh_host_ed25519_key` on the target to decrypt. That file is root-only, so `remote apply` with a non-root SSH user needs passwordless sudo - see [apply modes](./apply-modes.md#remote).
 
 ### 4. Create a secret
 
@@ -55,7 +55,7 @@ On apply, lusid reads the matching **private** key at `/etc/ssh/ssh_host_ed25519
 lusid secrets edit api_token
 ```
 
-Opens `$EDITOR` on a mode-`0600` tmpfile in `$XDG_RUNTIME_DIR`. Save and quit — lusid re-encrypts and writes `secrets/api_token.age`. The tmpfile is scrubbed even if your editor crashes.
+Opens `$EDITOR` on a mode-`0600` tmpfile in `$XDG_RUNTIME_DIR`. Save and quit - lusid re-encrypts and writes `secrets/api_token.age`. The tmpfile is scrubbed even if your editor crashes.
 
 You also need a `[files]` entry naming the recipients:
 
@@ -64,7 +64,7 @@ You also need a `[files]` entry naming the recipients:
 "api_token" = { recipients = ["web-a"] }
 ```
 
-You (operator `mikey`) are an implicit recipient on every file. The `recipients` list is for *additional* recipients — machines that should be able to decrypt this on apply.
+You (operator `mikey`) are an implicit recipient on every file. The `recipients` list is for *additional* recipients - machines that should be able to decrypt this on apply.
 
 ## Use in a plan
 
@@ -88,7 +88,7 @@ That's it. On apply, lusid decrypts `secrets/api_token.age`, writes the plaintex
 - **On the target:** at the `path` you declared, with the mode you set (default `0o600`).
 - **In RAM during apply:** wrapped in a zeroising container, lifespan = one atomic write.
 
-Prefer a `/run/...` path when the consumer doesn't need plaintext to survive reboots — `/run` is tmpfs on every distro lusid targets, so the bytes never touch disk and never end up in backups.
+Prefer a `/run/...` path when the consumer doesn't need plaintext to survive reboots - `/run` is tmpfs on every distro lusid targets, so the bytes never touch disk and never end up in backups.
 
 ## CLI reference
 
@@ -98,9 +98,9 @@ See [`secrets <subcommand>`](../reference/cli.md#secrets-subcommand) in the CLI 
 
 When the recipient set changes (you add an operator, replace a machine's SSH key, etc.), existing `*.age` files don't update themselves. `lusid secrets check` flags every file that drifts; `rekey` rewrites them.
 
-**Removing an operator doesn't revoke their access to existing ciphertexts** — their key material is still in the header. Always `rekey` after removing someone you actually want to lock out.
+**Removing an operator doesn't revoke their access to existing ciphertexts** - their key material is still in the header. Always `rekey` after removing someone you actually want to lock out.
 
-## Threat model — short version
+## Threat model - short version
 
 `@resource/secret` defends against:
 
@@ -113,10 +113,10 @@ It does **not** defend against:
 - Root on the target.
 - Stolen disks / removed SD cards (use full-disk encryption, or write to a tmpfs path).
 - Backups copying plaintext (exclude the path, or use tmpfs).
-- Your operator identity leaking — treat it like an SSH private key.
+- Your operator identity leaking - treat it like an SSH private key.
 
 See the [secrets crate README](../../secrets/README.md) for the full threat model and invariants.
 
 ## ⚠️ Don't put secrets in `params`
 
-CLI `--params` JSON ends up in `/proc/<pid>/cmdline` of `lusid-apply`, visible to any UID on the target via `ps`. **Don't put secret values in `lusid.toml`'s `params`** — only in `secrets/*.age`, referenced by name from `@resource/secret`.
+CLI `--params` JSON ends up in `/proc/<pid>/cmdline` of `lusid-apply`, visible to any UID on the target via `ps`. **Don't put secret values in `lusid.toml`'s `params`** - only in `secrets/*.age`, referenced by name from `@resource/secret`.

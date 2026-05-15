@@ -37,7 +37,7 @@ This says: install nginx first, then write the config, then enable + start the s
 
 ## Epochs
 
-When lusid schedules operations, it groups them into **epochs** — layers of the dependency graph. Within an epoch every operation is independent; across epochs there's a "must happen before" relationship.
+When lusid schedules operations, it groups them into **epochs** - layers of the dependency graph. Within an epoch every operation is independent; across epochs there's a "must happen before" relationship.
 
 ```text
 Epoch 1: apt install nginx
@@ -45,13 +45,13 @@ Epoch 2: write /etc/nginx/nginx.conf
 Epoch 3: systemctl enable nginx; systemctl start nginx
 ```
 
-Operations within an epoch run in parallel where possible. Some families merge: ten `apt install` ops in one epoch collapse into a single `apt install <pkg1> <pkg2> …` call (same for `pacman`, `aur`, `flatpak`). Side-effecting families (file writes, git pulls) don't merge — order matters.
+Operations within an epoch run in parallel where possible. Some families merge: ten `apt install` ops in one epoch collapse into a single `apt install <pkg1> <pkg2> …` call (same for `pacman`, `aur`, `flatpak`). Side-effecting families (file writes, git pulls) don't merge - order matters.
 
 A plan with no `requires` edges runs as one big epoch (modulo intra-resource ordering).
 
 ## Depending on a nested plan
 
-When a `requires:` references the id of a nested plan (a `module: "./other.lusid"` branch), it depends on every resource inside that plan — the whole subtree must complete before the dependent runs.
+When a `requires:` references the id of a nested plan (a `module: "./other.lusid"` branch), it depends on every resource inside that plan - the whole subtree must complete before the dependent runs.
 
 ```yaml
 - module: "./web-stack.lusid"
@@ -77,11 +77,11 @@ A resource can declare operations to run when it changes. The classic case: edit
       params: { name: "nginx", action: "reload" }
 ```
 
-Hooks fire when the resource has *any* non-empty change — new contents, different mode, different owner. They run in a strictly-later epoch than the resource's own operations.
+Hooks fire when the resource has *any* non-empty change - new contents, different mode, different owner. They run in a strictly-later epoch than the resource's own operations.
 
 ### Identical hooks coalesce
 
-If ten resources in the same epoch each `on_change: reload nginx`, the hooks land in a single later epoch and merge into **one** reload — not ten.
+If ten resources in the same epoch each `on_change: reload nginx`, the hooks land in a single later epoch and merge into **one** reload - not ten.
 
 ### Hooks register under the resource's id
 
@@ -105,9 +105,9 @@ A `requires: [resource-id]` waits for both the resource's own operations *and* i
 
 ### Limitations (v1)
 
-- **Hooks are inline only** — you can't reference a named handler defined elsewhere.
-- **Inline operations can't declare `id`, `requires`, or `required_by`** — they inherit ordering from the resource that owns them.
-- **Triggered on any change** — no add/modify/remove distinction.
+- **Hooks are inline only** - you can't reference a named handler defined elsewhere.
+- **Inline operations can't declare `id`, `requires`, or `required_by`** - they inherit ordering from the resource that owns them.
+- **Triggered on any change** - no add/modify/remove distinction.
 - **Cross-epoch coalescing isn't handled.** If resource A reloads nginx, B also reloads nginx, and B `requires: ["A"]` (so they're in different epochs), nginx reloads twice. Workaround: pull the reload into a single downstream `@resource/command`, or accept the duplicate (most reloads are idempotent).
 - **Hook failure leaves you stuck.** If a hook fails, apply aborts. The resource is now in its target state, so a plain re-apply won't re-trigger the hook. Recovery: run the operation manually (`sudo systemctl reload nginx`), or briefly toggle a field on the resource (e.g. change `mode`) and re-apply, then revert.
 

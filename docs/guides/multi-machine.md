@@ -31,7 +31,7 @@ lusid --config ./lusid.toml dev apply --machine web-a
 lusid --config ./lusid.toml dev apply --machine web-b
 ```
 
-You can run these in two terminals in parallel — they're independent VMs.
+You can run these in two terminals in parallel - they're independent VMs.
 
 See the [`nginx-cluster` example](../../examples/nginx-cluster/) for a complete working version.
 
@@ -49,7 +49,7 @@ hostname = "db"
 plan = "./plans/db.lusid"
 ```
 
-You can still share components — `web.lusid` and `db.lusid` can both `module: "./shared/common.lusid"` to pull in monitoring, base packages, whatever's common.
+You can still share components - `web.lusid` and `db.lusid` can both `module: "./shared/common.lusid"` to pull in monitoring, base packages, whatever's common.
 
 ## Listing machines
 
@@ -61,6 +61,6 @@ Prints a table of every configured machine.
 
 ## ⚠️ Don't put secrets in `params`
 
-The `params` block in `lusid.toml` is forwarded to `lusid-apply --params <json>`. That puts the values into the process's `argv[]` — visible via `ps` and `/proc/<pid>/cmdline` to any UID on the target.
+The `params` block in `lusid.toml` is forwarded to `lusid-apply --params <json>`. That puts the values into the process's `argv[]` - visible via `ps` and `/proc/<pid>/cmdline` to any UID on the target.
 
-For actual secrets, use [`@resource/secret`](./secrets.md). The `params` block is fine for things like hostnames, ports, group names, packages — anything that isn't sensitive.
+For actual secrets, use [`@resource/secret`](./secrets.md). The `params` block is fine for things like hostnames, ports, group names, packages - anything that isn't sensitive.

@@ -22,14 +22,14 @@ impl Secrets {
     ///
     /// Behaviour matrix on `(identity_path, guest_mode)`:
     ///
-    /// - `(None, false)` — no identity, not in guest mode: returns an empty
+    /// - `(None, false)` - no identity, not in guest mode: returns an empty
     ///   bundle. Plans that reference `@resource/secret` will fail later at apply
     ///   with a missing-secret error.
-    /// - `(None, true)` — guest mode without an identity: [`LoadError::GuestModeWithoutIdentity`].
-    /// - `(Some(_), false)` — host mode: reads `lusid-secrets.toml` from
+    /// - `(None, true)` - guest mode without an identity: [`LoadError::GuestModeWithoutIdentity`].
+    /// - `(Some(_), false)` - host mode: reads `lusid-secrets.toml` from
     ///   `secrets_dir`, matches the identity to an alias, and decrypts the
     ///   subset of `*.age` files declared for that alias.
-    /// - `(Some(_), true)` — guest mode: skips `lusid-secrets.toml` and
+    /// - `(Some(_), true)` - guest mode: skips `lusid-secrets.toml` and
     ///   decrypts every `*.age` under `secrets_dir` with the single supplied
     ///   identity. Intended for `dev apply` / `remote apply` targets where
     ///   the host has already filtered ciphertexts to exactly the set this
@@ -145,7 +145,7 @@ mod tests {
     }
 
     /// Operators are implicit recipients on every `[files]` entry, so a
-    /// host-mode load with the operator identity decrypts every file —
+    /// host-mode load with the operator identity decrypts every file -
     /// including ones whose `recipients` list doesn't name an operator
     /// (which it can't, under the current schema).
     #[tokio::test]

@@ -35,7 +35,7 @@ pub struct Store {
     local_file_store: LocalFileStore,
 }
 
-/// Tagged identifier for a store item — picks which backend handles the read.
+/// Tagged identifier for a store item - picks which backend handles the read.
 #[derive(Debug, Clone)]
 pub enum StoreItemId {
     LocalFile(PathBuf),

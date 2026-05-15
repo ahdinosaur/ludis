@@ -26,7 +26,7 @@ pub enum EvalError {
 /// Call the plan's `setup` function with `(params, system)` and parse its returned list
 /// into [`PlanItem`]s.
 ///
-/// `params_value` is `None` when the caller provided no params — in that case the first
+/// `params_value` is `None` when the caller provided no params - in that case the first
 /// arg is `Null` (rather than e.g. an empty object, to match what a plan's `setup` sees
 /// for "no params given"). When provided, the value is passed through as-is.
 ///
@@ -34,7 +34,7 @@ pub enum EvalError {
 /// [`lusid_params::validate`] first, which both checks the shape *and* coerces
 /// string-shaped paths into the typed Rimu variants. So `setup` sees a
 /// `Value::HostPath` for a `host-path` param, and forwarding such a param to a
-/// sub-plan is just a typed pass-through — the sub-plan's `validate` doesn't
+/// sub-plan is just a typed pass-through - the sub-plan's `validate` doesn't
 /// need to re-resolve anything.
 pub(crate) fn evaluate(
     setup: Spanned<SetupFunction>,

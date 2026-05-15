@@ -16,7 +16,7 @@ lusid is a Cargo workspace. The crates split by responsibility:
 | [`params`](../params/) | Param schema + the typed parser used at the resource boundary. |
 | [`resource`](../resource/) | Resource types: params → atoms → state → change → operations. |
 | [`operation`](../operation/) | Concrete mutations that run on the target. |
-| [`causality`](../causality/) | Dependency ordering — `compute_epochs` flattens a tree into topological layers (Kahn). |
+| [`causality`](../causality/) | Dependency ordering - `compute_epochs` flattens a tree into topological layers (Kahn). |
 | [`tree`](../tree/) | Generic `Tree` and arena-backed `FlatTree` types. |
 | [`lusid-apply`](../lusid-apply/) | Pipeline orchestrator. Loads a plan, runs the pipeline, streams JSON `AppUpdate`s on stdout. |
 
@@ -56,11 +56,11 @@ Each crate has its own README with a fuller orientation.
 
 For someone new to the codebase, [`AGENTS.md`](../AGENTS.md) at the repo root has a "Reading order" section pointing at the most useful files. Briefly:
 
-1. `lusid-apply/src/lib.rs` — pipeline overview.
-2. `plan/src/lib.rs` — how a `.lusid` becomes a tree.
-3. `params/src/lib.rs` — schema and validation.
-4. `causality/src/epoch.rs` — Kahn's algorithm in lusid form.
-5. `lusid/src/tui.rs` — TUI rendering.
+1. `lusid-apply/src/lib.rs` - pipeline overview.
+2. `plan/src/lib.rs` - how a `.lusid` becomes a tree.
+3. `params/src/lib.rs` - schema and validation.
+4. `causality/src/epoch.rs` - Kahn's algorithm in lusid form.
+5. `lusid/src/tui.rs` - TUI rendering.
 
 ## Pipeline summary
 
@@ -77,22 +77,22 @@ lusid-apply
   │ 6. compute_epochs()                         → Vec<Vec<Operation>>
   │ 7. per epoch: merge + apply (stream output)
   ▼
-TUI (ratatui)        — folds AppUpdate JSON into a live view
+TUI (ratatui)        - folds AppUpdate JSON into a live view
 ```
 
 Each phase emits start / per-node / complete events as newline-delimited JSON on stdout. The TUI deserializes them and renders.
 
 ## Project conventions
 
-(Cribbed from [`AGENTS.md`](../AGENTS.md) — read it for the full set.)
+(Cribbed from [`AGENTS.md`](../AGENTS.md) - read it for the full set.)
 
 ### Coding style
 
 - Error handling: `thiserror` + rich enums, no `anyhow`-style catchalls.
-- Many crates use `displaydoc::Display` — follow that pattern.
+- Many crates use `displaydoc::Display` - follow that pattern.
 - Blank line between error enum variants.
 - Prefer small pure functions.
-- Keep public APIs conservative — add new types/functions before changing signatures.
+- Keep public APIs conservative - add new types/functions before changing signatures.
 - Import order: std, external crates, internal `lusid_*` crates, within crate (`crate::` / `self::` / `super::`), blank line between groups.
 
 ### Spans are load-bearing
@@ -112,12 +112,12 @@ Most errors carry a `Spanned<T>` or embed a `Span` so diagnostics can point at t
 
 ### Privileged operations
 
-Anything that needs root wraps its command in `Command::sudo()`. Only escalate when the underlying tool actually needs it (`apt`, `pacman` — yes; `git`, `command` — no, unless the user asks).
+Anything that needs root wraps its command in `Command::sudo()`. Only escalate when the underlying tool actually needs it (`apt`, `pacman` - yes; `git`, `command` - no, unless the user asks).
 
 ### Comments
 
 - Default to no comments. Add one only when the WHY is non-obvious.
-- Don't reference time-bound context ("added for X", "the old way was Y") — that rots.
+- Don't reference time-bound context ("added for X", "the old way was Y") - that rots.
 - `Note(cc): xxx` for observations preserved without an action.
 - `TODO(cc): xxx` for things we should change later.
 
@@ -141,7 +141,7 @@ cargo clippy --workspace -- -D warnings
 cargo fmt --all
 ```
 
-The `justfile` has shortcuts for the examples — e.g. `just nginx-cluster-apply-a` chains the worker build, CLI build, and apply.
+The `justfile` has shortcuts for the examples - e.g. `just nginx-cluster-apply-a` chains the worker build, CLI build, and apply.
 
 ## Before submitting changes
 

@@ -1,6 +1,6 @@
 # Operations
 
-An **operation** is an imperative action that runs on the target — install this package, reload this service, run this command.
+An **operation** is an imperative action that runs on the target - install this package, reload this service, run this command.
 
 Operations live in the `@operation/<id>` namespace.
 
@@ -11,7 +11,7 @@ Operations live in the `@operation/<id>` namespace.
     action: "reload"
 ```
 
-Operations are *not* idempotent in the resource sense. They have no notion of "current state" — they just run when triggered.
+Operations are *not* idempotent in the resource sense. They have no notion of "current state" - they just run when triggered.
 
 ## Where operations live
 
@@ -30,7 +30,7 @@ Operations can only appear inside an [`on_change` block](./dependencies.md#on_ch
 
 Operations *cannot* be top-level items in `setup`. Putting one there is a hard error. The principle: top-level plan items should be idempotent declarations; imperative actions only run when prompted by a state change.
 
-If you want an idempotent imperative action at the top level — e.g. a shell command that's a no-op once a marker file exists — use `@resource/command` instead.
+If you want an idempotent imperative action at the top level - e.g. a shell command that's a no-op once a marker file exists - use `@resource/command` instead.
 
 ## Built-in operation types (v1)
 
@@ -41,7 +41,7 @@ Two operation modules are exposed in v1:
 | `@operation/command` | Run a shell command. |
 | `@operation/systemd` | `start` / `stop` / `restart` / `reload` a systemd unit. |
 
-`@operation/command` is intentionally broad — it covers logrotate signals, cron reloads, cache invalidation, anything you'd reach for `sh -c` to do.
+`@operation/command` is intentionally broad - it covers logrotate signals, cron reloads, cache invalidation, anything you'd reach for `sh -c` to do.
 
 More operation modules exist internally (the apt, file, git, etc. families) but they're produced *by resources*, not authored directly by plans.
 
@@ -51,6 +51,6 @@ A common pattern is "edit a config file, then reload the service that uses it". 
 
 ## See also
 
-- [Resources](./resources.md) — the declarative counterpart.
+- [Resources](./resources.md) - the declarative counterpart.
 - [Dependencies and hooks](./dependencies.md).
 - The [nginx-cluster example](../../examples/nginx-cluster/) shows operations triggered from `on_change`.

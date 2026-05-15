@@ -26,7 +26,7 @@ setup: (params, system) =>
   #
   #    `on_change` fires only when this resource's `is_installed` probe fails
   #    (i.e. the greeting actually changed). Re-running with the same greeting
-  #    is a no-op — no rewrite, no reload.
+  #    is a no-op - no rewrite, no reload.
   - module: "@resource/command"
     id: "publish-index"
     requires:
@@ -43,7 +43,7 @@ setup: (params, system) =>
 
   # 3. Make sure nginx is enabled at boot and currently running. The reload-
   #    on-change is handled by `publish-index`'s `on_change` above, so this
-  #    resource only needs to depend on `install-nginx` — the previous extra
+  #    resource only needs to depend on `install-nginx` - the previous extra
   #    `requires: ["publish-index"]` is no longer necessary.
   - module: "@resource/systemd"
     requires:

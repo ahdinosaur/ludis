@@ -80,7 +80,7 @@ remote = { host = "10.0.0.5", user = "deploy", port = 2222, ssh_key = "~/.ssh/wo
 | --- | --- | --- | --- |
 | `host` | string | required | Hostname or IP of the SSH target. |
 | `port` | integer | `22` | SSH port. |
-| `user` | string | `"root"` | SSH user. When not root, lusid wraps `lusid-apply` in `sudo -n` — user must have passwordless sudo. |
+| `user` | string | `"root"` | SSH user. When not root, lusid wraps `lusid-apply` in `sudo -n` - user must have passwordless sudo. |
 | `ssh_key` | string (path) | `~/.ssh/id_ed25519` | Private key to authenticate with. |
 
 ### `vm`
@@ -93,7 +93,7 @@ vm = { cpu_count = 4, memory_size = 4294967296, graphics = true }
 | --- | --- | --- | --- |
 | `cpu_count` | integer | backend default | Number of vCPUs. |
 | `memory_size` | integer (bytes) | backend default | RAM in bytes (e.g. `4294967296` = 4 GiB). |
-| `disk_size` | integer (bytes) | backend default | Virtual size of the guest root disk overlay. Raise this when the plan installs a lot of software — cloud images ship with a small partition. |
+| `disk_size` | integer (bytes) | backend default | Virtual size of the guest root disk overlay. Raise this when the plan installs a lot of software - cloud images ship with a small partition. |
 | `graphics` | bool | `false` | Open a QEMU display window. Set true for desktop-environment plans. |
 
 ## ⚠️ Don't put secrets in `params`
@@ -104,5 +104,5 @@ Use [`@resource/secret`](../guides/secrets.md) for sensitive values.
 
 ## See also
 
-- [Apply modes guide](../guides/apply-modes.md) — when `remote`, `vm`, and `params` matter.
-- [`lusid` crate README](../../lusid/README.md) — the CLI's view of the config.
+- [Apply modes guide](../guides/apply-modes.md) - when `remote`, `vm`, and `params` matter.
+- [`lusid` crate README](../../lusid/README.md) - the CLI's view of the config.

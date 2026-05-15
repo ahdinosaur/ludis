@@ -2,7 +2,7 @@
 
 Runtime detection of the host machine.
 
-`System` bundles hostname, CPU arch, OS (with distro + version on Linux), and current user — the same struct plans receive as the `system` argument to `setup(params, system)` (serialized through [`rimu-interop`](../rimu-interop)).
+`System` bundles hostname, CPU arch, OS (with distro + version on Linux), and current user - the same struct plans receive as the `system` argument to `setup(params, system)` (serialized through [`rimu-interop`](../rimu-interop)).
 
 Contrast with [`lusid-machine`](../machine): `System` describes the *current* host; `Machine` describes the *target*.
 

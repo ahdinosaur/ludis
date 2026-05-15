@@ -1,6 +1,6 @@
 # `on_change` hooks
 
-When a resource changes, you often want something else to happen — reload a service, regenerate a derived file, signal a process. `on_change` is how a plan declares those follow-up actions.
+When a resource changes, you often want something else to happen - reload a service, regenerate a derived file, signal a process. `on_change` is how a plan declares those follow-up actions.
 
 ## The pattern
 
@@ -21,7 +21,7 @@ If you re-apply and the file already matches, the hook doesn't fire. Hooks run o
 
 ## What fires a hook
 
-Any non-empty change to the resource — new bytes, different mode, different owner, anything that makes the resource emit at least one operation. There's no per-field granularity in v1; it's "the resource changed" vs. "the resource didn't change".
+Any non-empty change to the resource - new bytes, different mode, different owner, anything that makes the resource emit at least one operation. There's no per-field granularity in v1; it's "the resource changed" vs. "the resource didn't change".
 
 ## What can go inside `on_change`
 

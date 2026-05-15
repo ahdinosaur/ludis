@@ -79,7 +79,7 @@ impl OperationType for Systemd {
     // (the canonical case: ten config files all reloading nginx → one reload).
     // Safe because enable/disable/start/stop/restart/reload are all idempotent
     // for a given unit within a single apply. Cross-epoch dedup is deliberately
-    // not handled here — see AGENTS.md "Install hooks" limitations.
+    // not handled here - see AGENTS.md "Install hooks" limitations.
     fn merge(operations: Vec<Self::Operation>) -> Vec<Self::Operation> {
         let mut seen = HashSet::new();
         let mut out = Vec::with_capacity(operations.len());
@@ -122,7 +122,7 @@ impl OperationType for Systemd {
         cmd.arg("--no-ask-password").arg(verb).arg(name);
 
         // User-instance commands talk to `$XDG_RUNTIME_DIR/systemd/private` as the
-        // invoking user — wrapping in `sudo` would target root's user instance (or
+        // invoking user - wrapping in `sudo` would target root's user instance (or
         // fail entirely without a session bus), which is the opposite of what we want.
         if !user {
             cmd = cmd.sudo();
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn merge_distinguishes_user_scope() {
-        // Same name+verb but different `user` flag must NOT be deduped — they
+        // Same name+verb but different `user` flag must NOT be deduped - they
         // target different systemd buses.
         let system = SystemdOperation::Start {
             name: "foo".to_string(),

@@ -13,9 +13,9 @@
 //!
 //! For each binary found, copies it into `OUT_DIR` and exports:
 //!
-//! - `cargo:rustc-env=LUSID_APPLY_OUT_<ARCH>=<absolute-path>` — pointed at by
+//! - `cargo:rustc-env=LUSID_APPLY_OUT_<ARCH>=<absolute-path>` - pointed at by
 //!   `include_bytes!` in `src/embedded.rs`.
-//! - `cargo:rustc-cfg=embedded_apply_<arch>` — gates the `include_bytes!`
+//! - `cargo:rustc-cfg=embedded_apply_<arch>` - gates the `include_bytes!`
 //!   call so a lenient-mode build with no binaries staged still compiles.
 
 use std::env;
@@ -83,7 +83,7 @@ fn main() {
             }
             println!(
                 "cargo:warning=lusid-apply for {arch_display} not embedded: \
-                 {} is missing — run `just build-lusid-apply`",
+                 {} is missing - run `just build-lusid-apply`",
                 source.display()
             );
             continue;

@@ -31,7 +31,7 @@ pub enum EpochError<NodeId> {
 ///
 /// - Branch-level `requires` / `required_by` / `id` flow down to every descendant leaf.
 /// - Leaves wrapped in `None` are carried through the dependency graph (for their id
-///   references) but dropped from the output — useful as pure "marker" nodes.
+///   references) but dropped from the output - useful as pure "marker" nodes.
 /// - Returns an empty epoch-free output if the input tree has no leaves.
 ///
 /// # Errors
@@ -243,6 +243,6 @@ where
     Ok(epochs)
 }
 
-// Note(cc): branch-level `requires` inflates the edge count — a branch with k leaves
+// Note(cc): branch-level `requires` inflates the edge count - a branch with k leaves
 // whose `requires: [X]` resolves to m leaves produces k * m edges. Fine in practice for
 // plan-sized inputs, but worth knowing before scaling this to huge trees.

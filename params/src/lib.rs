@@ -23,15 +23,15 @@ use thiserror::Error;
 /// Coercion context for [`validate`].
 ///
 /// Carries the **fallback root path** used to resolve relative `host-path` strings
-/// whose value span doesn't point at a real source file — e.g. CLI-supplied
+/// whose value span doesn't point at a real source file - e.g. CLI-supplied
 /// `--params` JSON, where the `SourceId` is empty. Strings whose span carries a
 /// real `.lusid` source resolve against that file's parent directory instead,
 /// so a literal `"./rel"` written in a plan resolves the way the plan author
-/// wrote it — independent of which plan's `validate` happens to run.
+/// wrote it - independent of which plan's `validate` happens to run.
 ///
 /// Sub-plans share their parent's `ParamsContext`. By the time forwarded values
-/// reach a sub-plan they're already typed (`Value::HostPath`) — `validate`
-/// rewrote them at the parent boundary — so the root path is only consulted for
+/// reach a sub-plan they're already typed (`Value::HostPath`) - `validate`
+/// rewrote them at the parent boundary - so the root path is only consulted for
 /// literal strings that arrive at the sub-plan boundary. That makes parent →
 /// child forwarding behave consistently regardless of how deep the recursion
 /// runs.
@@ -77,7 +77,7 @@ impl ParamsContext {
 
 /// Schema node: the allowed shape of a single value.
 ///
-/// - `List` / `Object` are homogeneous containers — every element/value
+/// - `List` / `Object` are homogeneous containers - every element/value
 ///   matches the inner type.
 /// - `HostPath` / `TargetPath` carry stricter semantics than `String` (see
 ///   the module-level docs).
@@ -128,7 +128,7 @@ impl ParamField {
     }
 }
 
-/// Ordered map of field name → field schema. `IndexMap` is deliberate — we
+/// Ordered map of field name → field schema. `IndexMap` is deliberate - we
 /// preserve declaration order for stable diagnostics and rendering.
 pub type ParamsStruct = IndexMap<String, Spanned<ParamField>>;
 
@@ -281,8 +281,8 @@ impl FromRimu for ParamTypes {
     type Error = ParamTypesFromRimuError;
 
     /// Parse a schema declaration in the plan:
-    /// - An **object** defines a [`ParamTypes::Struct`] — the map of fields.
-    /// - A **list** defines a [`ParamTypes::Union`] — each item is an object
+    /// - An **object** defines a [`ParamTypes::Struct`] - the map of fields.
+    /// - A **list** defines a [`ParamTypes::Union`] - each item is an object
     ///   defining one candidate case (first-match wins during validation).
     fn from_rimu(value: Value) -> Result<Self, Self::Error> {
         match value {
@@ -428,7 +428,7 @@ fn mismatch(typ: &Spanned<ParamType>, value: &Spanned<Value>) -> ValidateValueEr
 /// Pick a directory to resolve a relative path-typed string against.
 ///
 /// Prefer the value's own span source (the `.lusid` file the literal was
-/// written in) — that way a literal string keeps the same meaning whether the
+/// written in) - that way a literal string keeps the same meaning whether the
 /// parent or a sub-plan happens to validate it. Fall back to `ctx.root_path`
 /// when the span carries no real source (CLI-supplied `--params` have an empty
 /// `SourceId`) or when the source has no parent directory to anchor against.
@@ -484,7 +484,7 @@ fn coerce_type(
         }
 
         // TargetPath: typed → pass-through; absolute string → wrap as typed.
-        // No resolution needed — target paths live on the managed host.
+        // No resolution needed - target paths live on the managed host.
         (ParamType::TargetPath, val @ Value::TargetPath(_)) => Ok(Spanned::new(val, span)),
         (ParamType::TargetPath, Value::String(s)) => {
             if !Path::new(&s).is_absolute() {
@@ -598,7 +598,7 @@ fn coerce_struct(
 /// - `Union` schemas try cases in order and return the first that validates;
 ///   if none match, all per-case errors are returned together.
 ///
-/// Resource params don't go through this — they parse straight to typed Rust
+/// Resource params don't go through this - they parse straight to typed Rust
 /// values via [`ParseParams`]. This function is plan-only: it catches user
 /// `--params` mistakes against the plan's declared schema before `setup`
 /// runs, *and* turns string-shaped paths into the typed Rimu variants so
@@ -637,7 +637,7 @@ pub fn validate(
             }
 
             // Try each case in declaration order. Each attempt consumes a
-            // clone of the values map — first match wins. We can't peek the
+            // clone of the values map - first match wins. We can't peek the
             // discriminant cheaply because cases share the same `ValueObject`
             // shape, so the cost is N clones for an N-case union. In
             // practice unions are short (the `file` resource has three
@@ -768,7 +768,7 @@ mod tests {
 
     #[test]
     fn rejects_absolute_string_for_host_path() {
-        // Forwarded host paths arrive typed as `Value::HostPath` — an
+        // Forwarded host paths arrive typed as `Value::HostPath` - an
         // absolute *string* for a `host-path` field is a bug
         // (no source-dir to anchor against, no path-typed sender to credit).
         let schema = struct_schema(vec![("path", ParamType::HostPath, false)]);
@@ -780,7 +780,7 @@ mod tests {
         let ParamsValidationError::Struct(boxed) = err else {
             panic!("expected Struct error");
         };
-        // Pin down the *cause* — `TypeMismatch` (absolute string failed
+        // Pin down the *cause* - `TypeMismatch` (absolute string failed
         // host-path coercion), not e.g. a structural `MissingParam`.
         match boxed.errors.first() {
             Some(ParamValidationError::InvalidParam { error, .. }) => {
@@ -822,7 +822,7 @@ mod tests {
     #[test]
     fn forbid_cli_relative_host_paths_allows_file_source_relative_string() {
         // A relative host-path written in a `.lusid` file has a real span
-        // source — the guard targets only CLI-supplied (empty-source)
+        // source - the guard targets only CLI-supplied (empty-source)
         // values, so plan-anchored host-paths must still coerce normally
         // even when the flag is set.
         let schema = struct_schema(vec![("path", ParamType::HostPath, false)]);

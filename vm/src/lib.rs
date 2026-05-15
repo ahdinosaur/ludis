@@ -7,18 +7,18 @@
 //!
 //! ## Lifecycle
 //!
-//! 1. **Setup** (first run only) — download + hash-validate the guest image
+//! 1. **Setup** (first run only) - download + hash-validate the guest image
 //!    ([`image`]), build a qcow2 overlay on top of it, convert OVMF UEFI vars to
 //!    qcow2, extract the kernel/initrd with `virt-get-kernel`, mint an ed25519
 //!    SSH keypair, and produce a cloud-init ISO seeding hostname + authorized
 //!    key + `openssh` package.
-//! 2. **Save** — serialize [`Vm`] to `<instance_dir>/state.json`.
-//! 3. **Start** — spawn `qemu-system-*` daemonized, with the overlay and
+//! 2. **Save** - serialize [`Vm`] to `<instance_dir>/state.json`.
+//! 3. **Start** - spawn `qemu-system-*` daemonized, with the overlay and
 //!    cloud-init ISO as virtio drives, UEFI pflash, a QMP socket, and a
 //!    user-mode NIC forwarding the guest's port 22 to a freshly-picked host
 //!    port (plus any caller-supplied [`VmPort`]s).
-//! 4. **Wait** — poll `127.0.0.1:<ssh_port>` until SSH answers.
-//! 5. **Stop** — `SIGKILL` the qemu pid stored in `<instance_dir>/qemu.pid`.
+//! 4. **Wait** - poll `127.0.0.1:<ssh_port>` until SSH answers.
+//! 5. **Stop** - `SIGKILL` the qemu pid stored in `<instance_dir>/qemu.pid`.
 //!
 //! Subsequent runs with the same `instance_id` skip setup and only re-`start`
 //! if qemu isn't already running.

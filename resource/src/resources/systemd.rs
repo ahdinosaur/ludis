@@ -114,7 +114,7 @@ pub enum SystemdStateError {
 
 /// Desired-state delta for a systemd unit. `enable` / `active` are `Some(desired)` if a
 /// transition is needed on that dimension, `None` if the current state already matches.
-/// At least one field is `Some` — otherwise [`Systemd::change`] returns `None`.
+/// At least one field is `Some` - otherwise [`Systemd::change`] returns `None`.
 #[derive(Debug, Clone)]
 pub struct SystemdChange {
     pub name: String,
@@ -179,9 +179,9 @@ impl ResourceType for Systemd {
         // `LoadState=not-found`, so we detect missing units from the output rather than
         // from exit status.
         //
-        // System and user instances are entirely separate — `systemctl show foo` on the
+        // System and user instances are entirely separate - `systemctl show foo` on the
         // system bus reports `not-found` for a unit that exists on the user bus, and
-        // vice versa — so we must probe whichever bus the resource targets. `--user`
+        // vice versa - so we must probe whichever bus the resource targets. `--user`
         // also routes the IPC over `$XDG_RUNTIME_DIR/systemd/private` so it requires
         // no privilege escalation.
         //
@@ -220,7 +220,7 @@ impl ResourceType for Systemd {
         let load_state =
             load_state.ok_or(SystemdStateError::MissingField { field: "LoadState" })?;
         if load_state == "not-found" {
-            // An absent unit file is a valid "nothing here yet" state, not an error —
+            // An absent unit file is a valid "nothing here yet" state, not an error -
             // the same shape as apt/pacman's `NotInstalled`. State probing runs once
             // up front before any operations, so a systemd resource whose unit file
             // will be provided by an earlier epoch (e.g. `@resource/pacman` installing
@@ -307,7 +307,7 @@ impl ResourceType for Systemd {
 ///
 /// Transitional states (`activating`, `reloading`) are treated as `active` to avoid
 /// thrashing a service mid-transition. `failed` maps to `inactive` so that a user who
-/// declared `active: true` still gets a `start` attempt — if the unit keeps failing,
+/// declared `active: true` still gets a `start` attempt - if the unit keeps failing,
 /// the apply surfaces systemctl's stderr.
 fn parse_active_state(state: &str) -> Result<bool, SystemdStateError> {
     match state {
@@ -322,7 +322,7 @@ fn parse_active_state(state: &str) -> Result<bool, SystemdStateError> {
 /// Map systemd's `UnitFileState` string to a boolean "is enabled at boot" view.
 ///
 /// `static`, `alias`, `indirect`, `linked*`, `generated`, and `transient` all report
-/// as enabled because their presence is authoritative — `systemctl enable` is a no-op
+/// as enabled because their presence is authoritative - `systemctl enable` is a no-op
 /// on these and `disable` refuses. `masked` reports as disabled (masking blocks
 /// activation entirely, which is stricter than disable). Empty `UnitFileState` is
 /// common for runtime-only units that have no install hook; treat as disabled.

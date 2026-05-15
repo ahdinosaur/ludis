@@ -170,7 +170,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Compare via canonical OpenSSH serialization — `PrivateKey` itself
+        // Compare via canonical OpenSSH serialization - `PrivateKey` itself
         // isn't `PartialEq`, and round-tripping the encoded form is the
         // contract callers depend on anyway.
         let saved_pem = saved

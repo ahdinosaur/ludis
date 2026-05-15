@@ -1,22 +1,22 @@
-//! `lusid secrets check` — read-only audit of `<secrets_dir>` against
+//! `lusid secrets check` - read-only audit of `<secrets_dir>` against
 //! `lusid-secrets.toml`. CI-friendly: exits non-zero on any finding.
 //!
 //! Findings collected:
 //!
-//! - **orphan** — a `*.age` file exists with no matching `[files]` entry.
+//! - **orphan** - a `*.age` file exists with no matching `[files]` entry.
 //!   These won't decrypt via the normal apply path (plans only see files
 //!   listed in `lusid-secrets.toml`) so they're either stale or mis-named.
-//! - **missing** — a `[files]` entry has no `*.age` file on disk.
-//! - **resolve** — a `[files]` entry references an unknown key alias or
+//! - **missing** - a `[files]` entry has no `*.age` file on disk.
+//! - **resolve** - a `[files]` entry references an unknown key alias or
 //!   group (surfaces the same errors `rekey` would hit).
-//! - **drift** — the ciphertext header's recipients don't match the
+//! - **drift** - the ciphertext header's recipients don't match the
 //!   current `lusid-secrets.toml` (needs a `rekey`).
 //!
 //! ## Drift precision
 //!
 //! SSH recipients are identified by a 4-byte tag in the stanza header, so
 //! swaps (e.g. old ed25519 key → new ed25519 key) are detected. **X25519
-//! stanzas are anonymous** — the header only contains an ephemeral pubkey,
+//! stanzas are anonymous** - the header only contains an ephemeral pubkey,
 //! not anything derived from the recipient. We therefore only compare
 //! x25519 stanza *counts*. Add/remove of operators is caught; a swap between
 //! two x25519 keys (same count) is not.
@@ -98,7 +98,7 @@ pub enum CheckError {
 }
 
 /// Walk `secrets_dir` and cross-check against `recipients`. Does not
-/// decrypt — everything here is either a file existence / stanza count
+/// decrypt - everything here is either a file existence / stanza count
 /// check or a header stanza read.
 pub(crate) async fn check(
     secrets_dir: &Path,
@@ -191,7 +191,7 @@ pub(crate) async fn check(
 ///
 /// Precise for SSH recipients (stanza `args[0]` is a deterministic 4-byte
 /// tag derived from the pubkey), count-only for X25519 (stanzas are
-/// anonymous — the header only carries an ephemeral pubkey). Returns `None`
+/// anonymous - the header only carries an ephemeral pubkey). Returns `None`
 /// when the header matches the resolved recipients; `Some(reason)` describes
 /// the first mismatch found.
 pub(crate) fn compare_stanzas(
@@ -251,11 +251,11 @@ pub(crate) fn compare_stanzas(
 }
 
 /// Return the deterministic 4-byte tag age uses to identify an SSH
-/// recipient in a ciphertext header. `None` for X25519 keys — those
+/// recipient in a ciphertext header. `None` for X25519 keys - those
 /// stanzas are anonymous (only an ephemeral pubkey, nothing recipient-
 /// derived).
 ///
-/// The tag is the first arg of an `ssh-ed25519` / `ssh-rsa` stanza —
+/// The tag is the first arg of an `ssh-ed25519` / `ssh-rsa` stanza -
 /// derived from the SHA-256 of the SSH wire-format pubkey. We round-trip
 /// through a one-byte encrypt to extract it without depending on `age`'s
 /// internals.

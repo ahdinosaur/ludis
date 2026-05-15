@@ -13,7 +13,7 @@ use crate::secrets::{Secret, Secrets};
 
 /// Decrypt the named `*.age` files under `secrets_dir` with `identity`.
 ///
-/// `file_stems` is the subset of secrets the caller wants to read — typically
+/// `file_stems` is the subset of secrets the caller wants to read - typically
 /// the result of [`crate::Recipients::files_for_alias`] for the alias matching
 /// the host identity. Files outside this list are not opened. Each stem maps
 /// to `<secrets_dir>/<stem>.age`; a missing file or a decrypt failure is fatal

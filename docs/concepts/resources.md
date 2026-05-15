@@ -1,6 +1,6 @@
 # Resources
 
-A **resource** is the intended state of one thing on your computer — a package, a file, a service, a user. Resources are declarative: you say what you want, lusid figures out how to make it true.
+A **resource** is the intended state of one thing on your computer - a package, a file, a service, a user. Resources are declarative: you say what you want, lusid figures out how to make it true.
 
 Resources live in the `@resource/<id>` namespace.
 
@@ -16,11 +16,11 @@ This says "nginx should be installed via apt". If nginx is already installed, th
 
 For every resource in a plan, lusid runs the same five-step pipeline:
 
-1. **Params** — what you wrote in the plan.
-2. **Resource atoms** — the params expand into one or more indivisible pieces. `apt { packages: [a, b] }` becomes two atoms, one per package.
-3. **State** — lusid probes the machine to find each atom's current state (`Installed` / `NotInstalled`, file mode bits, service active/enabled).
-4. **Change** — the diff from observed state to desired state. `None` means "already correct".
-5. **Operations** — concrete actions that close the diff (`apt install`, write file, `systemctl enable`).
+1. **Params** - what you wrote in the plan.
+2. **Resource atoms** - the params expand into one or more indivisible pieces. `apt { packages: [a, b] }` becomes two atoms, one per package.
+3. **State** - lusid probes the machine to find each atom's current state (`Installed` / `NotInstalled`, file mode bits, service active/enabled).
+4. **Change** - the diff from observed state to desired state. `None` means "already correct".
+5. **Operations** - concrete actions that close the diff (`apt install`, write file, `systemctl enable`).
 
 The five-step shape is uniform across every resource type. Different resources probe different things and emit different operations, but the flow is the same.
 
@@ -48,7 +48,7 @@ The full param schema for each lives in the [resource reference](../reference/re
 
 ## Resources are idempotent
 
-Every resource type observes current state before doing anything. A re-apply after a successful apply is a no-op for that resource — it sees no diff, emits no operations.
+Every resource type observes current state before doing anything. A re-apply after a successful apply is a no-op for that resource - it sees no diff, emits no operations.
 
 This is the core difference from the imperative side: resources are *what should be true*; [operations](./operations.md) are *what to do right now*.
 
@@ -59,10 +59,10 @@ A single resource declaration can expand into multiple atoms with their own inte
 - write the file's bytes, then
 - set the mode.
 
-These are linked by a small internal dependency tree so the mode is applied after the write, never before. As a plan author you don't see this — you just write one `@resource/file` item.
+These are linked by a small internal dependency tree so the mode is applied after the write, never before. As a plan author you don't see this - you just write one `@resource/file` item.
 
 ## See also
 
-- [Operations](./operations.md) — the imperative counterpart.
-- [Dependencies](./dependencies.md) — ordering across resources, not within.
+- [Operations](./operations.md) - the imperative counterpart.
+- [Dependencies](./dependencies.md) - ordering across resources, not within.
 - [Reference: built-in resource params](../reference/resources.md).

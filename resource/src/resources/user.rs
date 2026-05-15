@@ -30,7 +30,7 @@ pub enum UserParams {
         group: Option<String>,
         /// Supplementary groups the user must belong to. Missing groups are
         /// added; groups the user is already in are left alone, and groups not
-        /// listed here are *not* removed — this is append-only, not an exact
+        /// listed here are *not* removed - this is append-only, not an exact
         /// list. `None` or an empty list means "don't touch supplementary group
         /// membership".
         append_groups: Option<Vec<String>>,
@@ -295,7 +295,7 @@ impl ResourceType for User {
         };
 
         // Note(cc): A user without a resolvable primary group shouldn't happen on a
-        // well-formed system, but we don't want to block on it — return an empty group
+        // well-formed system, but we don't want to block on it - return an empty group
         // name and let the change() logic treat it as a mismatch against whatever the
         // plan declares.
         let primary_group = get_group_name_for_gid(passwd_entry.gid)
@@ -399,8 +399,8 @@ impl ResourceType for User {
                 });
 
                 // Note(cc): raw string equality on GECOS. If something outside lusid
-                // (e.g. `chfn`) has populated the sub-fields past the comment — the field
-                // is `full_name,room,work_phone,home_phone` — we'll see "Alice,,,,5551234"
+                // (e.g. `chfn`) has populated the sub-fields past the comment - the field
+                // is `full_name,room,work_phone,home_phone` - we'll see "Alice,,,,5551234"
                 // against a declared "Alice" and emit a spurious Modify. We assume the
                 // plan owns the comment fully, so this is acceptable.
                 let comment_change = comment

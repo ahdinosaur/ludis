@@ -11,7 +11,7 @@ pub type CausalityTree<Node, NodeId = String> = Tree<Node, CausalityMeta<NodeId>
 /// - `required_by`: ids that depend on this node (those run after this one).
 ///
 /// When set on a branch, the dependency applies transitively to every descendant leaf,
-/// and the branch id acts as a group reference — requiring a branch id means requiring
+/// and the branch id acts as a group reference - requiring a branch id means requiring
 /// all leaves within it.
 #[derive(Debug, Clone)]
 pub struct CausalityMeta<NodeId> {

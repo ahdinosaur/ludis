@@ -9,7 +9,7 @@ Entry point: `plan()` in `src/lib.rs`.
 For each `.lusid` source:
 
 1. **Read** bytes from the [`Store`](../store).
-2. **Load** — parse + evaluate Rimu, project into a [`Plan`](src/model.rs) (name, version, params schema, setup function).
+2. **Load** - parse + evaluate Rimu, project into a [`Plan`](src/model.rs) (name, version, params schema, setup function).
 3. **Validate** user params against the plan's schema (via [`lusid-params`](../params)).
 4. **Evaluate** `setup(params, system)` to get a list of [`PlanItem`](src/model.rs)s.
 5. **Convert** each item:
@@ -22,10 +22,10 @@ The returned [`PlanTree<ResourceParams>`] preserves `id` / `requires` / `require
 
 Three kinds of [`PlanNodeId`]:
 
-- **`Plan`** — the root of a plan.
-- **`PlanItem { plan_id, item_id }`** — user-authored `id:`, scoped by its plan.
-- **`SubItem { scope_id, item_id }`** — minted *inside* a resource's expansion (e.g. ordering `chmod` after the initial write). Each `map_plan_subitems` call mints a fresh `scope_id`, so inner ids can never collide.
+- **`Plan`** - the root of a plan.
+- **`PlanItem { plan_id, item_id }`** - user-authored `id:`, scoped by its plan.
+- **`SubItem { scope_id, item_id }`** - minted *inside* a resource's expansion (e.g. ordering `chmod` after the initial write). Each `map_plan_subitems` call mints a fresh `scope_id`, so inner ids can never collide.
 
 ## Resource modules
 
-`src/resource.rs` is the dispatch table — adding a resource means an arm here plus the pieces in [`lusid-resource`](../resource).
+`src/resource.rs` is the dispatch table - adding a resource means an arm here plus the pieces in [`lusid-resource`](../resource).

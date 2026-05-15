@@ -13,7 +13,7 @@ use crate::recipients::Recipients;
 /// material out of the `age` crate.
 ///
 /// Cost is `O(N)` encryptions plus one decryption per table entry until a
-/// match is found — `age::Identity` doesn't expose a public-key accessor
+/// match is found - `age::Identity` doesn't expose a public-key accessor
 /// that's uniform across x25519 and SSH, so the probe is the pragmatic
 /// option. Fine for typical team / fleet sizes; worth revisiting if
 /// `lusid-secrets.toml` ever grows to hundreds of entries.

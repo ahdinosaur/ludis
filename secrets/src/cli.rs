@@ -97,7 +97,7 @@ async fn cmd_ls(env: &CliEnv) -> Result<(), CliError> {
         return Ok(());
     }
     for stem in recipients.files.keys() {
-        // resolve() can't fail — we just iterated the keys, so the stem
+        // resolve() can't fail - we just iterated the keys, so the stem
         // is in [files] by construction. Validation at load time pinned
         // every reference.
         let resolved = recipients
@@ -144,7 +144,7 @@ fn print_check_report(report: &CheckReport) {
         println!("resolve {err}");
     }
     for drifted in &report.drifted {
-        println!("drift   {} — {}", drifted.stem, drifted.reason);
+        println!("drift   {} - {}", drifted.stem, drifted.reason);
     }
     for read_err in &report.read_errors {
         println!("unread  {}: {}", read_err.path.display(), read_err.source);
@@ -276,7 +276,7 @@ async fn cmd_keygen(output: Option<&Path>) -> Result<(), CliError> {
 
     // Wrap the file body in `Zeroizing<String>` so the bytes are scrubbed
     // when the function returns. Without this, the plain `String`
-    // holding the private-key block would just be deallocated on drop —
+    // holding the private-key block would just be deallocated on drop -
     // contents potentially lingering in freed heap until reused.
     let mut contents: Zeroizing<String> = Zeroizing::new(String::new());
     contents.push_str(&format!("# created at unix:{}\n", now_unix_secs()));
@@ -284,7 +284,7 @@ async fn cmd_keygen(output: Option<&Path>) -> Result<(), CliError> {
     contents.push_str(privkey.expose_secret());
     contents.push('\n');
 
-    // 0600 — this is the long-lived decryption key.
+    // 0600 - this is the long-lived decryption key.
     let mut opts = std::fs::OpenOptions::new();
     opts.create_new(true).write(true).mode(0o600);
     let mut file = opts.open(&dest).map_err(|source| CliError::WriteIdentity {
@@ -369,7 +369,7 @@ fn write_private_tmpfile(path: &Path, contents: &[u8]) -> Result<(), CliError> {
 
 async fn run_editor(path: &Path) -> Result<(), CliError> {
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    // Editors expect an interactive TTY — inherit std{in,out,err}.
+    // Editors expect an interactive TTY - inherit std{in,out,err}.
     let status = Command::new(&editor)
         .arg(path)
         .stdin(Stdio::inherit())

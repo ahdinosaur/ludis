@@ -206,7 +206,7 @@ impl Vm {
 
     /// Kill the qemu process via `SIGKILL` on the pid stored in `qemu.pid`.
     ///
-    /// Note(cc): this is an unconditional hard kill — no `SIGTERM` grace
+    /// Note(cc): this is an unconditional hard kill - no `SIGTERM` grace
     /// period, no QMP `system_powerdown`. Fine for the dev workflow (overlay
     /// disk absorbs the damage), but worth revisiting if guests ever carry
     /// state worth flushing.

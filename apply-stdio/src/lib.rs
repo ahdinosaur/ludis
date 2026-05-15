@@ -3,7 +3,7 @@
 //! `lusid-apply` emits newline-delimited JSON [`AppUpdate`]s on stdout as the
 //! pipeline progresses (params → resources → states → changes → operations →
 //! apply). The TUI deserializes each update and folds it into an [`AppView`]
-//! — a phase-tagged state machine that accumulates one [`FlatViewTree`] per
+//! - a phase-tagged state machine that accumulates one [`FlatViewTree`] per
 //! pipeline stage, plus a `Vec<Vec<OperationView>>` for the per-epoch
 //! streaming stdout/stderr during apply.
 //!
@@ -20,7 +20,7 @@
 //!   old children before writing the new.
 //!
 //! [`FlatViewTree::template`] strips leaves back to [`ViewNode::NotStarted`]
-//! while preserving the structure — each pipeline phase builds from the
+//! while preserving the structure - each pipeline phase builds from the
 //! previous phase's template, so the TUI shows the eventual shape up-front
 //! and fills leaves in as work completes.
 //!
@@ -363,7 +363,7 @@ impl OperationView {
 }
 
 /// TUI state. Each variant carries everything from the prior phases plus the
-/// newly-started one. `Done` is the terminal phase — data is frozen and the
+/// newly-started one. `Done` is the terminal phase - data is frozen and the
 /// TUI waits for user exit.
 ///
 /// Note(cc): variants duplicate a growing list of fields rather than
@@ -778,7 +778,7 @@ impl AppView {
                     .get_mut(o)
                     .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))?;
                 op.stderr.push_str(&stderr);
-                // TODO(cc): this pushes '\n' to stdout, not stderr — almost
+                // TODO(cc): this pushes '\n' to stdout, not stderr - almost
                 // certainly a copy-paste bug (see the matching stdout arm
                 // above). Effect: stderr has no line breaks, stdout gains
                 // spurious blank lines whenever stderr arrives.

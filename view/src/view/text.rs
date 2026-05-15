@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Horizontal alignment hint for a [`Line`](crate::Line) or
-/// [`Paragraph`](crate::Paragraph). Advisory — see those types' docs.
+/// [`Paragraph`](crate::Paragraph). Advisory - see those types' docs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Alignment {
     Left,

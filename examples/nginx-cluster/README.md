@@ -12,9 +12,9 @@ The point of this example is to show:
 
 ## Files
 
-- [`lusid.toml`](./lusid.toml) — declares the two machines (`web-a`, `web-b`)
+- [`lusid.toml`](./lusid.toml) - declares the two machines (`web-a`, `web-b`)
   and passes each a different `greeting` string.
-- [`web-server.lusid`](./web-server.lusid) — the plan both machines apply.
+- [`web-server.lusid`](./web-server.lusid) - the plan both machines apply.
   Installs nginx, writes a custom `/var/www/html/index.html`, then enables
   and starts the nginx service.
 
@@ -55,7 +55,7 @@ browser. (Adding host→guest port forwarding is on the roadmap.)
 
 ## Try it (on a real machine)
 
-The same plan works on any Debian 13 host you can reach — no VM required.
+The same plan works on any Debian 13 host you can reach - no VM required.
 The intended flow is:
 
 1. SSH into the target machine.
@@ -69,10 +69,10 @@ re-running the plan after a success is fast and makes no changes.
 
 ## Things to try next
 
-- Add a third machine entry with its own greeting — no plan changes required.
+- Add a third machine entry with its own greeting - no plan changes required.
 - Change a greeting in `lusid.toml` and re-apply: the `publish-index` command
   should re-run because the `grep` check now misses; nginx will reload its
   file on the next request.
 - Comment out the `@resource/systemd` item (Rimu supports `#` line comments)
-  and re-apply: nginx is installed but not running — a useful state for
+  and re-apply: nginx is installed but not running - a useful state for
   staging.

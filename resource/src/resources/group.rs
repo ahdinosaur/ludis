@@ -25,9 +25,9 @@ pub enum GroupParams {
         system: Option<bool>,
         /// Users that must belong to this group as supplementary members. Missing
         /// users are added; users already in the group are left alone, and users
-        /// not listed here are *not* removed — this is append-only, not an exact
+        /// not listed here are *not* removed - this is append-only, not an exact
         /// list. `None` or an empty list means "don't touch membership". Users
-        /// whose *primary* group is this one are unaffected — primary membership
+        /// whose *primary* group is this one are unaffected - primary membership
         /// is set on the `user` resource, not here.
         append_users: Option<Vec<String>>,
     },

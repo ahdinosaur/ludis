@@ -24,7 +24,7 @@ pub enum ContextError {
     Http(#[from] HttpError),
 }
 
-/// Runtime context for a lusid invocation — plan root, XDG paths, HTTP client,
+/// Runtime context for a lusid invocation - plan root, XDG paths, HTTP client,
 /// decrypted secrets bundle.
 #[derive(Debug, Clone)]
 pub struct Context {

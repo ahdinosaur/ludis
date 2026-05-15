@@ -14,7 +14,7 @@
 //! also accept plain [`Value::String`]s for plans that pre-date typed paths:
 //!
 //! - [`parse_host_path`] resolves a relative string against the source
-//!   span's parent directory. Absolute strings are rejected — they have no
+//!   span's parent directory. Absolute strings are rejected - they have no
 //!   anchoring source dir to credit, and forwarded host paths arrive
 //!   typed.
 //! - [`parse_target_path`] requires absolute strings.
@@ -26,7 +26,7 @@
 //! New scalar types: write a `parse_<name>(value: Spanned<Value>) -> Result<T, _>`
 //! function. New container types compose via [`parse_list`].
 //! The convenience `required_*` / `optional_*` methods on [`StructFields`]
-//! are sugar — anything they don't cover is one [`StructFields::required`]
+//! are sugar - anything they don't cover is one [`StructFields::required`]
 //! / [`StructFields::optional`] call away with a custom parser closure.
 //!
 //! # Span propagation
@@ -93,7 +93,7 @@ pub enum ParseError {
 /// Parse a typed Rust value from a Rimu [`Spanned<Value>`].
 ///
 /// Implementors decide how to read their shape out of the dynamic Rimu value.
-/// This is the resource-boundary trait — every `@resource/<id>` resource impls it
+/// This is the resource-boundary trait - every `@resource/<id>` resource impls it
 /// for its `Params` type.
 pub trait ParseParams: Sized {
     fn parse_params(value: Spanned<Value>) -> Result<Self, Spanned<ParseError>>;
@@ -106,7 +106,7 @@ pub trait ParseParams: Sized {
 /// each declared field, then [`StructFields::finish`] to assert no unknown
 /// fields remain.
 ///
-/// `finish` must be called even on the optional path — otherwise extra keys
+/// `finish` must be called even on the optional path - otherwise extra keys
 /// the user passed go undetected.
 pub struct StructFields {
     map: IndexMap<String, Spanned<Value>>,
@@ -192,7 +192,7 @@ impl StructFields {
     /// can dispatch on it.
     ///
     /// On a mismatch, emits [`ParseError::UnknownDiscriminator`] listing the
-    /// allowed tags — better than a generic literal-mismatch when the user
+    /// allowed tags - better than a generic literal-mismatch when the user
     /// typo'd a tag name.
     pub fn take_discriminator(
         &mut self,
@@ -309,7 +309,7 @@ impl StructFields {
     /// Fails fast on the first unknown key (unlike the historic
     /// `validate_struct` which collected all of them). Multi-error reporting
     /// would let plan authors see every typo at once, but means the rest of
-    /// the parse must keep going after a hard failure — not worth the
+    /// the parse must keep going after a hard failure - not worth the
     /// complexity for the resource boundary, where the immediate first
     /// unknown is usually enough to point at.
     pub fn finish(self) -> Result<(), Spanned<ParseError>> {
@@ -387,7 +387,7 @@ pub fn parse_u32(value: Spanned<Value>) -> Result<u32, Spanned<ParseError>> {
 /// - a [`Value::HostPath`] produced by Rimu's `host_path("./rel")` stdlib
 ///   (already resolved against its source dir at construction time), or
 /// - a [`Value::String`] holding a *relative* path, which is resolved here
-///   against the source span's parent directory — preserving behaviour for
+///   against the source span's parent directory - preserving behaviour for
 ///   plans that wrote `source: "./gitconfig"` rather than
 ///   `source: host_path("./gitconfig")`.
 ///
@@ -401,7 +401,7 @@ pub fn parse_host_path(value: Spanned<Value>) -> Result<PathBuf, Spanned<ParseEr
         Value::HostPath(path) => Ok(path),
         Value::String(s) => {
             let value_path = PathBuf::from(&s);
-            // Forwarded host paths arrive typed as `Value::HostPath` —
+            // Forwarded host paths arrive typed as `Value::HostPath` -
             // an absolute *string* for a `host-path` field is
             // a bug at the call site (no source-dir to anchor against, no
             // path-typed sender to credit). Reject up front.
@@ -436,7 +436,7 @@ pub fn parse_host_path(value: Spanned<Value>) -> Result<PathBuf, Spanned<ParseEr
 /// Parse a target-path field into an absolute path string on the managed host.
 ///
 /// Accepts a [`Value::TargetPath`] directly, or a [`Value::String`] that
-/// already starts with `/`. Relative strings are rejected — target paths must
+/// already starts with `/`. Relative strings are rejected - target paths must
 /// be absolute on the target machine.
 pub fn parse_target_path(value: Spanned<Value>) -> Result<String, Spanned<ParseError>> {
     let (value, span) = value.take();
@@ -537,7 +537,7 @@ mod tests {
 
     /// Empty span source means the value has no anchoring file (CLI params,
     /// synthesised values). Surface a dedicated error that points at the fix
-    /// — declaring the field as `host-path` in the plan's schema.
+    /// - declaring the field as `host-path` in the plan's schema.
     #[test]
     fn parse_host_path_empty_source_returns_no_source_dir_error() {
         let value = Spanned::new(Value::String("bar".into()), empty_span());

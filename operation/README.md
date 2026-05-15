@@ -1,13 +1,13 @@
 # lusid-operation
 
-Concrete mutations that run on the target machine — `apt install`, `write file`, `git clone`. Operations are the leaves of the per-epoch causality tree applied by `lusid-apply`.
+Concrete mutations that run on the target machine - `apt install`, `write file`, `git clone`. Operations are the leaves of the per-epoch causality tree applied by `lusid-apply`.
 
 ## `OperationType` trait
 
 Every operation family implements [`OperationType`]:
 
-- **`merge`** — coalesce same-family operations within an epoch. Package managers union their install sets; order-sensitive families (file, command, git) keep operations as-is.
-- **`apply`** — start the operation and return `(completion_future, stdout_stream, stderr_stream)`. The caller drives all three concurrently so output streams live to the TUI.
+- **`merge`** - coalesce same-family operations within an epoch. Package managers union their install sets; order-sensitive families (file, command, git) keep operations as-is.
+- **`apply`** - start the operation and return `(completion_future, stdout_stream, stderr_stream)`. The caller drives all three concurrently so output streams live to the TUI.
 
 ## Privileged operations
 

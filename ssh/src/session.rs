@@ -34,7 +34,7 @@ pub enum HostKeyVerification {
     /// Skip verification entirely.
     ///
     /// Only safe for ephemeral targets whose host key is locally generated
-    /// and not reused — e.g. a dev VM we just booted with a fresh keypair,
+    /// and not reused - e.g. a dev VM we just booted with a fresh keypair,
     /// or a CI sandbox. **Never** use against real remote infrastructure;
     /// the connection becomes trivially MITM-able.
     Disabled,
@@ -86,7 +86,7 @@ impl Handler for HostKeyHandler {
         {
             // Known host with matching key.
             Ok(true) => Ok(true),
-            // Host not in `known_hosts` — trust on first use and record it.
+            // Host not in `known_hosts` - trust on first use and record it.
             //
             // Note(cc): `learn_known_hosts_path` opens with `append + create`
             // and does *not* take a file lock, so two `lusid remote apply`
@@ -110,14 +110,14 @@ impl Handler for HostKeyHandler {
                 );
                 Ok(true)
             }
-            // Known host but key differs — refuse and surface loudly.
+            // Known host but key differs - refuse and surface loudly.
             Err(err @ russh::keys::Error::KeyChanged { line }) => {
                 tracing::error!(
                     host = %host,
                     port = port,
                     line = line,
                     known_hosts = %known_hosts_path.display(),
-                    "REMOTE HOST IDENTIFICATION HAS CHANGED — possible MITM, \
+                    "REMOTE HOST IDENTIFICATION HAS CHANGED - possible MITM, \
                      or the host key was rotated; remove the offending line \
                      from `known_hosts` if the change is expected"
                 );

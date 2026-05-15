@@ -73,7 +73,7 @@ pub enum PlanError {
 /// callers always get a tree (never a bare list).
 ///
 /// `ctx` carries the fallback root path used to resolve relative `host-path`
-/// strings — typically the project root. The same `ctx` is shared across the
+/// strings - typically the project root. The same `ctx` is shared across the
 /// whole plan tree: each plan's `validate` rewrites string-shaped paths into
 /// the typed Rimu variants before forwarding, so a sub-plan only ever sees a
 /// `Value::String` for a `host-path` field if a literal one was written
@@ -125,7 +125,7 @@ async fn plan_recursive(
     // `validate` returns the coerced params value: relative `host-path`
     // strings have been rewritten into `Value::HostPath`, etc. Feeding the
     // coerced value into `evaluate` is what makes parent → sub-plan
-    // forwarding work — by the time a forwarded value reaches a sub-plan's
+    // forwarding work - by the time a forwarded value reaches a sub-plan's
     // `validate`, it's already typed and just passes through.
     let coerced_params = validate(param_types.as_ref(), params_value, ctx)?;
 
@@ -154,7 +154,7 @@ pub enum PlanItemToResourceError {
     /// unknown @resource/ module: \"{id}\"
     UnsupportedResourceModuleId { id: String },
 
-    /// operations cannot appear at the top level — `@operation/{id}` is only valid inside `on_change`. To run an action when a resource changes, attach it via `on_change` on the relevant `@resource/*`. For idempotent imperative actions at the top level, see `@resource/command`.
+    /// operations cannot appear at the top level - `@operation/{id}` is only valid inside `on_change`. To run an action when a resource changes, attach it via `on_change` on the relevant `@resource/*`. For idempotent imperative actions at the top level, see `@resource/command`.
     OperationModuleAsTopLevel { id: String, span: Span },
 
     /// `on_change` is only valid on `@resource/*` plan items, got `{module}`

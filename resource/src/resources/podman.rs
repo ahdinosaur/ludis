@@ -22,12 +22,12 @@ use crate::ResourceType;
 /// Plan-level parameters for the `@resource/podman` resource.
 ///
 /// Tagged by `state: "present" | "absent"`. Mirrors the shape of Ansible's
-/// `containers.podman.podman_container` at a conservative subset — enough to
+/// `containers.podman.podman_container` at a conservative subset - enough to
 /// declare a long-running container without wrapping every podman flag.
 ///
 /// Drift is decided by the *declared* spec, not the resolved image digest.
 /// An upstream change to a floating tag (e.g. `nginx:latest` republished)
-/// will not trigger a recreate — pin with `@sha256:...` for digest-level
+/// will not trigger a recreate - pin with `@sha256:...` for digest-level
 /// control.
 #[derive(Debug, Clone)]
 pub enum PodmanParams {
@@ -124,7 +124,7 @@ impl_display_render!(PodmanResource);
 pub enum PodmanState {
     Absent,
     Present {
-        /// Image reference reported by `podman inspect`. Informational only —
+        /// Image reference reported by `podman inspect`. Informational only -
         /// drift detection uses [`config_hash`] below.
         image: String,
         running: bool,
@@ -167,7 +167,7 @@ pub enum PodmanStateError {
 /// avoid pulling fields that podman normalises in version-dependent ways
 /// (`.Config.Env` mixes user values with image defaults, `.HostConfig.Binds`
 /// can rewrite SELinux flags, `.HostConfig.PortBindings` is a different
-/// shape than the user's port strings) — drift over those fields is detected
+/// shape than the user's port strings) - drift over those fields is detected
 /// via the [`CONFIG_HASH_LABEL`] instead.
 #[derive(Debug, Clone, Deserialize)]
 struct InspectContainer {
@@ -195,7 +195,7 @@ struct InspectState {
 
 #[derive(Debug, Clone)]
 pub enum PodmanChange {
-    /// Container doesn't exist — create and optionally start.
+    /// Container doesn't exist - create and optionally start.
     Create {
         name: String,
         image: String,
@@ -540,7 +540,7 @@ fn create_ops(
 ///
 /// Inputs are taken in canonical form so that logically-equivalent
 /// declarations (e.g. `nginx:latest` vs `docker.io/library/nginx:latest`)
-/// produce the same hash. Field order is preserved within each list — for
+/// produce the same hash. Field order is preserved within each list - for
 /// `env` in particular, `KEY=a` then `KEY=b` is meaningfully different from
 /// the reverse (last-write-wins under `podman create -e`), so reordering
 /// should be drift.
@@ -557,7 +557,7 @@ fn config_hash(
 ) -> String {
     /// Stable, declaration-ordered serialisation target for hashing. Adding,
     /// removing, or reordering a field changes the hash for every existing
-    /// container — that is, every container will be recreated once on the
+    /// container - that is, every container will be recreated once on the
     /// next apply. Treat this as a versioned wire format.
     #[derive(Serialize)]
     struct ConfigForHash<'a> {
@@ -683,7 +683,7 @@ mod tests {
         }
     }
 
-    /// Build a state matching `spec`'s declared config — i.e. the label hash
+    /// Build a state matching `spec`'s declared config - i.e. the label hash
     /// is computed from the same inputs. Use this for "no drift" tests.
     fn state_matching(spec: &ResourceSpec) -> PodmanState {
         PodmanState::Present {
@@ -835,7 +835,7 @@ mod tests {
     #[test]
     fn change_start_when_only_running_differs() {
         let spec = ResourceSpec::default();
-        // Hash matches, only `running` flips — should be Start, not Recreate.
+        // Hash matches, only `running` flips - should be Start, not Recreate.
         let current = match state_matching(&spec) {
             PodmanState::Present {
                 image, config_hash, ..
@@ -906,7 +906,7 @@ mod tests {
         );
 
         // Each variation should produce a distinct hash. We don't assert exact
-        // values — just that no two collide and none equals the base.
+        // values - just that no two collide and none equals the base.
         let variants: Vec<String> = vec![
             config_hash(
                 "nginx:1.25",

@@ -60,7 +60,7 @@ pub trait ResourceType {
 
     /// User-facing params struct, parsed directly from the plan's Rimu value
     /// via [`ParseParams`]. Each variant of the struct/enum corresponds to an
-    /// allowed shape — the parser does shape validation and typed extraction
+    /// allowed shape - the parser does shape validation and typed extraction
     /// in one pass.
     type Params: Render + ParseParams;
 
@@ -100,7 +100,7 @@ pub trait ResourceType {
 /// Note(cc): `Secret` is a thin specialisation of `File` (stricter default
 /// permissions, single-case schema) that reuses File's `Resource`/`State`/
 /// `Change`/`Operation` machinery. It therefore does not get its own
-/// variant in `Resource`/`ResourceState`/`ResourceChange` — the atoms it
+/// variant in `Resource`/`ResourceState`/`ResourceChange` - the atoms it
 /// produces are ordinary `Resource::File` atoms. The provenance ("this
 /// file was written for a @resource/secret plan item") is preserved only at
 /// this `ResourceParams` layer.
@@ -233,7 +233,7 @@ impl Render for Resource {
 
 /// Dispatcher over every resource's observed `State`.
 ///
-/// Invariant: the variant always matches the originating `Resource` variant — see
+/// Invariant: the variant always matches the originating `Resource` variant - see
 /// [`Resource::change`] for the enforcement point.
 #[derive(Debug, Clone)]
 pub enum ResourceState {
@@ -557,7 +557,7 @@ impl Resource {
 
     /// Diff this atom against its observed state. `None` means "already correct".
     ///
-    /// Panics if the state variant does not match the resource variant — this is a
+    /// Panics if the state variant does not match the resource variant - this is a
     /// programmer error since [`Self::state`] always returns the matching variant.
     pub fn change(&self, state: &ResourceState) -> Option<ResourceChange> {
         fn typed<R: ResourceType>(
@@ -616,7 +616,7 @@ impl Resource {
     }
 }
 
-/// Errors from [`ResourceParams::validate_host_paths`] — pre-apply checks that a
+/// Errors from [`ResourceParams::validate_host_paths`] - pre-apply checks that a
 /// `host-path` source actually exists on the operator's machine and has the
 /// expected type.
 ///
@@ -624,7 +624,7 @@ impl Resource {
 /// confusing apply-time symlink/copy failures.
 ///
 /// Variants attributable to a specific plan value carry the source's
-/// [`Span`] so diagnostics can point back at the offending `.lusid` line —
+/// [`Span`] so diagnostics can point back at the offending `.lusid` line -
 /// see AGENTS.md "spans are load-bearing". The [`Self::Fs`] variant is a
 /// low-level filesystem failure with no plan attribution, so it has no span.
 #[derive(Debug, Error)]
@@ -662,7 +662,7 @@ impl ResourceParams {
     ///
     /// Plan-attributable variants of [`HostPathValidationError`] carry the
     /// source field's span so callers can surface a diagnostic that points
-    /// at the offending `.lusid` line — see AGENTS.md "spans are
+    /// at the offending `.lusid` line - see AGENTS.md "spans are
     /// load-bearing".
     pub async fn validate_host_paths(&self) -> Result<(), HostPathValidationError> {
         match self {
@@ -710,7 +710,7 @@ async fn resolved_metadata(path: &std::path::Path) -> Result<Option<std::fs::Met
     if !metadata.file_type().is_symlink() {
         return Ok(Some(metadata));
     }
-    // Symlink — `tokio::fs::metadata` is `stat(2)`, which walks the full
+    // Symlink - `tokio::fs::metadata` is `stat(2)`, which walks the full
     // chain. Dangling anywhere along the chain reads as NotFound; surface
     // as None so the caller's `Missing` diagnostic fires (the link is
     // useless either way).
@@ -1045,7 +1045,7 @@ mod tests {
     }
 
     /// A dangling symlink as source surfaces as `*Missing`, not the lower-
-    /// level `FsError::Metadata` — the operator's mental model is "the
+    /// level `FsError::Metadata` - the operator's mental model is "the
     /// source isn't there", and where exactly the chain breaks isn't useful
     /// at the diagnostic layer.
     #[tokio::test]

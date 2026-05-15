@@ -24,7 +24,7 @@ pub enum GroupOperation {
     ///
     /// Uses `gpasswd -a`, which appends without touching other members. Users
     /// whose *primary* group is this one (set via `/etc/passwd`) are unaffected
-    /// — `gpasswd` only edits `/etc/group`.
+    /// - `gpasswd` only edits `/etc/group`.
     AddUser {
         name: String,
         user: String,

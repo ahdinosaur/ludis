@@ -206,7 +206,7 @@ impl ResourceType for FlatpakRemote {
     ///
     /// `--columns=name,url` keeps the output stable across flatpak versions
     /// (default columns include localised headers and richer formatting that
-    /// can shift). We do not need `LANG=C` — `--columns` produces
+    /// can shift). We do not need `LANG=C` - `--columns` produces
     /// machine-friendly output independent of locale.
     ///
     /// We deliberately do not call `flatpak remote-info`: that contacts the
@@ -230,7 +230,7 @@ impl ResourceType for FlatpakRemote {
 
         // Defensive parsing: skip blank lines and lines without a tab. The
         // current `flatpak remotes --columns=name,url` invocation in pipe
-        // mode emits no header, but older or future builds might — we'd
+        // mode emits no header, but older or future builds might - we'd
         // rather treat an unexpected header line as "doesn't match my name"
         // than crash the probe.
         for line in stdout.lines() {
@@ -276,7 +276,7 @@ impl ResourceType for FlatpakRemote {
                     return None;
                 }
                 // `.flatpakrepo` URLs get normalised to the canonical repo
-                // URL on first add — declared URL will never match stored
+                // URL on first add - declared URL will never match stored
                 // URL, so suppress the (otherwise spurious) `Modify`.
                 if declared_url_is_flatpakrepo(url) {
                     return None;
@@ -307,7 +307,7 @@ impl ResourceType for FlatpakRemote {
 }
 
 /// Split a `flatpak remotes --columns=name,url` line into `(name, url)`.
-/// flatpak emits tab-separated output. Lines without a tab yield `None` —
+/// flatpak emits tab-separated output. Lines without a tab yield `None` -
 /// callers (currently only [`FlatpakRemote::state`]) skip those rather than
 /// erroring, so a stray header or banner doesn't crash the probe.
 fn parse_remotes_line(line: &str) -> Option<(&str, &str)> {

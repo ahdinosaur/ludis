@@ -13,8 +13,8 @@ The point of this example:
 
 ## Files
 
-- [`lusid.toml`](./lusid.toml) — declares one machine (`desktop`) targeting Arch Linux x86-64, plus the username/password the plan seeds.
-- [`desktop.lusid`](./desktop.lusid) — installs X + XFCE + LightDM, creates a login user with a password, then enables and starts `lightdm.service`.
+- [`lusid.toml`](./lusid.toml) - declares one machine (`desktop`) targeting Arch Linux x86-64, plus the username/password the plan seeds.
+- [`desktop.lusid`](./desktop.lusid) - installs X + XFCE + LightDM, creates a login user with a password, then enables and starts `lightdm.service`.
 
 ## What the plan does
 
@@ -28,7 +28,7 @@ user create <username> ──► command chpasswd <username>:<password> ──�
 
 1. `@resource/pacman` installs `xorg-server`, `xorg-xinit`, `xfce4`, `lightdm`, `lightdm-gtk-greeter` in a single transaction.
 2. `@resource/user` creates the login account named by `params.username`. The cloud image's default `arch` user has a locked password and can't sign in at the greeter, so the plan adds a real account.
-3. `@resource/command` sets the password with `chpasswd`. An `is_installed` check against `passwd -S` keeps it idempotent — once the account has a password, re-applies skip this step.
+3. `@resource/command` sets the password with `chpasswd`. An `is_installed` check against `passwd -S` keeps it idempotent - once the account has a password, re-applies skip this step.
 4. `@resource/systemd` enables and starts `lightdm.service` after the user is in place. A QEMU window shows the LightDM greeter a few seconds after apply finishes.
 
 ## Try it (local dev VM)
@@ -42,7 +42,7 @@ and takes a few minutes; later runs reuse it.
 just arch-desktop-apply
 
 # After apply, the QEMU window will show the LightDM login greeter. Log in
-# with the credentials from `lusid.toml` — by default that's `me` / `me`.
+# with the credentials from `lusid.toml` - by default that's `me` / `me`.
 # If you need a shell instead (as the cloud image's default `arch` user,
 # key-authenticated):
 just arch-desktop-ssh
@@ -53,13 +53,13 @@ just arch-desktop-ssh
 Same plan, no VM. Copy `desktop.lusid` and `lusid.toml` onto the target
 Arch host (making sure the `hostname` in `lusid.toml` matches the host's
 own hostname, and picking a real `username` / `password` in the `params`
-block — the defaults are demo-grade). Then run:
+block - the defaults are demo-grade). Then run:
 
 ```sh
 lusid local apply --config ./lusid.toml
 ```
 
-You'll need `sudo` on the target — `pacman -S`, `useradd`, `chpasswd`, and
+You'll need `sudo` on the target - `pacman -S`, `useradd`, `chpasswd`, and
 `systemctl enable/start` all use it. Once the plan completes, reboot (or
 just log out of the console) to reach the LightDM greeter and sign in as
 the user the plan created.

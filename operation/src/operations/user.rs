@@ -76,7 +76,7 @@ impl OperationType for User {
 
     // Note(cc): user operations mutate a single named account per call. Merging across
     // operations would require reasoning about ordering of add/modify/delete for the same
-    // name — not worth the complexity, so leave each operation standalone.
+    // name - not worth the complexity, so leave each operation standalone.
     fn merge(operations: Vec<Self::Operation>) -> Vec<Self::Operation> {
         operations
     }
@@ -168,7 +168,7 @@ impl OperationType for User {
                 }
                 if let Some(home) = home {
                     // Note(cc): we set the home path in /etc/passwd but don't pass `-m` to
-                    // move the existing home contents — that would touch user data, which is
+                    // move the existing home contents - that would touch user data, which is
                     // out of scope for a declarative "this is the home dir" statement.
                     cmd.arg("-d").arg(home.as_path());
                 }

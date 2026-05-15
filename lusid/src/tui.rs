@@ -355,7 +355,7 @@ impl OperationsApplyState {
 }
 
 /// Top-level TUI state. Per-stage `TreeState`s track which nodes the user
-/// has collapsed and which row is selected — kept separate so switching
+/// has collapsed and which row is selected - kept separate so switching
 /// stages preserves per-stage navigation.
 ///
 /// `follow_pipeline` auto-advances the visible stage as new phases arrive;

@@ -46,7 +46,7 @@ impl Paths {
         let cache_dirs: PathBuf = Self::var("XDG_CACHE_HOME")
             .or_else(|_| Self::var("HOME").map(|home| format!("{home}/.cache")))
             .map(From::from)?;
-        // TODO(cc): `UID` is a shell variable — it's set in bash/zsh but not usually
+        // TODO(cc): `UID` is a shell variable - it's set in bash/zsh but not usually
         // exported, so this fallback often fails. Prefer `nix::unistd::getuid()` (already
         // a workspace dep) to look up the real uid.
         let runtime_dirs: PathBuf = Self::var("XDG_RUNTIME_DIR")

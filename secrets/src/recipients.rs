@@ -1,4 +1,4 @@
-//! `<secrets_dir>/lusid-secrets.toml` — the project-level table mapping each
+//! `<secrets_dir>/lusid-secrets.toml` - the project-level table mapping each
 //! `*.age` file to the recipients that can decrypt it.
 //!
 //! Shape:
@@ -20,7 +20,7 @@
 //!
 //! Operators are implicit recipients on every `[files]` entry. `@name`
 //! references expand via `[groups]`; bare names look up in `[machines]`.
-//! `[groups]` and `[files].recipients` may NOT reference operator aliases —
+//! `[groups]` and `[files].recipients` may NOT reference operator aliases -
 //! that's the whole point of the implicit rule. Expansion is shallow
 //! (groups cannot reference groups).
 //!
@@ -149,7 +149,7 @@ impl Recipients {
         // Duplicate key *value* across operators + machines. Compare by the
         // canonical Display form: a stable string identity that's uniform
         // across X25519 and SSH variants without exposing inner pubkey
-        // bytes. O(N²) — fine for the expected handful of recipients.
+        // bytes. O(N²) - fine for the expected handful of recipients.
         let labelled: Vec<(&String, AliasKind, String)> = operators
             .iter()
             .map(|(a, k)| (a, AliasKind::Operator, k.to_string()))
@@ -341,7 +341,7 @@ pub(crate) struct ResolvedRecipient {
 }
 
 /// Convert a resolved recipient list into the boxed form `age` expects for
-/// encryption. Cheap clones — both [`Key`] variants wrap small recipient
+/// encryption. Cheap clones - both [`Key`] variants wrap small recipient
 /// types (a public point or an SSH pubkey).
 pub(crate) fn to_boxed_recipients(
     resolved: &[ResolvedRecipient],
@@ -499,14 +499,14 @@ prod = ["rpi"]
 
     #[test]
     fn resolve_operator_only_file() {
-        // `local_only` has empty recipients — only operators should remain.
+        // `local_only` has empty recipients - only operators should remain.
         let r = parse();
         assert_eq!(resolved_aliases(&r, "local_only"), vec!["mikey"]);
     }
 
     #[test]
     fn resolve_dedups_machine_via_direct_and_group() {
-        // `rpi` is mentioned both directly and via `@prod` — should appear
+        // `rpi` is mentioned both directly and via `@prod` - should appear
         // once, in first-mention position (direct).
         let r = parse_toml(&format!(
             r#"
@@ -550,7 +550,7 @@ prod = ["rpi"]
 
     #[test]
     fn files_for_alias_machine_filters() {
-        // Both machines parameterised as x25519 — `Key` allows either
+        // Both machines parameterised as x25519 - `Key` allows either
         // variant in `[machines]`, and using two fresh x25519 keys
         // sidesteps needing a second SSH keypair just for this fixture.
         let (op, m1) = two_pubkeys();

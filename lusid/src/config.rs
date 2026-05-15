@@ -112,7 +112,7 @@ impl Config {
     }
 
     /// Look up the machine whose hostname matches the host we're running on.
-    /// Used by `local apply` — the user doesn't specify which machine to
+    /// Used by `local apply` - the user doesn't specify which machine to
     /// apply, we infer it. Errors if no configured machine matches.
     pub fn local_machine(&self) -> Result<MachineConfig, ConfigError> {
         let hostname = Hostname::get().map_err(ConfigError::GetHostname)?;
@@ -146,7 +146,7 @@ impl Config {
             } = machine;
             let remote_cell = match remote {
                 Some(r) => format!("{}@{}:{}", r.user(), r.host, r.port()),
-                None => "—".to_string(),
+                None => "-".to_string(),
             };
             table.add_row(vec![
                 machine_id,
