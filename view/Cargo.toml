@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 serde.workspace = true
-termtree = "0.5.1"
+termtree = "1.0.0"
