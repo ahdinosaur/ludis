@@ -54,7 +54,7 @@ use rimu_interop::{ToRimuError, to_rimu};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 /// Inputs for [`apply`]. `root_path` is the lusid working-dir root passed to
 /// [`Context::create`]; `plan_id` selects a plan; `params_json` is an

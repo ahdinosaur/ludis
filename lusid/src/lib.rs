@@ -50,7 +50,6 @@ use lusid_system::Arch;
 use lusid_vm::{Vm, VmError, VmOptions};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
-use tracing::error;
 
 use crate::config::{Config, ConfigError, MachineConfig};
 use crate::embedded::EmbeddedError;

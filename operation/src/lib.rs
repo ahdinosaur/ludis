@@ -25,7 +25,7 @@ use pin_project::pin_project;
 use std::{
     fmt::{Debug, Display},
     future::Future,
-    pin::{Pin, pin},
+    pin::Pin,
     task::Poll,
 };
 use thiserror::Error;
