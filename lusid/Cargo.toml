@@ -17,9 +17,9 @@ lusid-view = { path = "../view", version = "0.1" }
 lusid-vm = { path = "../vm", version = "0.1" }
 comfy-table = "7.2.2"
 clap.workspace = true
-crossterm = "0.27"
+crossterm = "0.29"
 displaydoc.workspace = true
-ratatui = "0.29"
+ratatui = "0.30"
 rimu.workspace = true
 rimu-interop = { path = "../rimu-interop", version = "0.1" }
 serde.workspace = true
