@@ -12,7 +12,7 @@ lusid-params = { path = "../params", version = "0.1" }
 lusid-operation = { path = "../operation", version = "0.1" }
 lusid-view = { path = "../view", version = "0.1" }
 async-trait.workspace = true
-futures-util = "0.3.31"
+futures-util = "0.3.32"
 indexmap.workspace = true
 rimu.workspace = true
 secrecy.workspace = true
