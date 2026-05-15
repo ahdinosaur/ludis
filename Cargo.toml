@@ -30,7 +30,7 @@ async-trait = "0.1.89"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 displaydoc = "0.2.5"
 indexmap = "2.14.0"
-nix = { version = "0.30.1", features = ["signal", "user"] }
+nix = { version = "0.31.3", features = ["signal", "user"] }
 rimu = { version = "0.2.0", git = "https://github.com/ahdinosaur/rimu" }
 russh = "0.60"
 secrecy = { version = "0.10.3", features = ["serde"] }

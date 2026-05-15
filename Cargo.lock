@@ -2469,7 +2469,7 @@ name = "lusid-fs"
 version = "0.1.0"
 dependencies = [
  "filetime",
- "nix 0.30.1",
+ "nix",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2633,7 +2633,7 @@ version = "0.1.0"
 dependencies = [
  "etc-os-release",
  "hostname",
- "nix 0.30.1",
+ "nix",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2666,7 +2666,7 @@ dependencies = [
  "lusid-machine",
  "lusid-ssh",
  "lusid-system",
- "nix 0.30.1",
+ "nix",
  "russh",
  "serde",
  "serde-saphyr",
@@ -2768,18 +2768,6 @@ dependencies = [
  "ctutils",
  "hybrid-array",
  "num-traits",
-]
-
-[[package]]
-name = "nix"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
-dependencies = [
- "bitflags",
- "cfg-if",
- "cfg_aliases",
- "libc",
 ]
 
 [[package]]
@@ -3885,7 +3873,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36140e8a20297bc2e8338807c3d9ca911f7fa49d7539cbcd6d48d3befd70efd8"
 dependencies = [
  "log",
- "nix 0.31.3",
+ "nix",
  "ssh-encoding",
  "windows-sys 0.61.2",
 ]
