@@ -15,8 +15,8 @@ thiserror.workspace = true
 termion = "4.0.6"
 tokio.workspace = true
 tracing.workspace = true
-signal-hook = "0.3.18"
-signal-hook-tokio = { version = "0.3.1", features = ["futures-v0_3"] }
+signal-hook = "0.4.4"
+signal-hook-tokio = { version = "0.4.0", features = ["futures-v0_3"] }
 
 [dev-dependencies]
 tempfile = "3"
