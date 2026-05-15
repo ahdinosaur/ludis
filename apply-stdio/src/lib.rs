@@ -1,36 +1,40 @@
 //! Wire protocol between `lusid-apply` (producer) and the `lusid` TUI (consumer).
 //!
 //! `lusid-apply` emits newline-delimited JSON [`AppUpdate`]s on stdout as the
-//! pipeline progresses (params → resources → states → changes → operations →
-//! apply). The TUI deserializes each update and folds it into an [`AppView`]
-//! - a phase-tagged state machine that accumulates one [`FlatViewTree`] per
-//! pipeline stage, plus a `Vec<Vec<OperationView>>` for the per-epoch
-//! streaming stdout/stderr during apply.
+//! pipeline progresses. The TUI deserializes each update and folds it into an
+//! [`AppView`] - a flat collection of optional per-stage [`FlatViewTree`]s
+//! that fill in over time, plus a per-epoch operations apply pane.
+//!
+//! ## Pipeline shape
+//!
+//! 1. Plan source -> [`AppUpdate::ResourceParams`] (full tree, one event).
+//! 2. Resource expansion -> `Resources*` events (the atoms tree, including
+//!    `on_change` handler leaves grafted in by `inject_handlers`).
+//! 3. Per resource epoch (in causality order):
+//!    - state probe events for atoms in this epoch,
+//!    - change events,
+//!    - operations sub-tree events,
+//!    - per-internal-operation-epoch [`AppUpdate::OperationsApplyEpochAdded`]
+//!      with its merged ops, then per-op apply events.
+//! 4. [`AppUpdate::ApplyComplete`].
+//!
+//! Events from the per-epoch loop interleave: state events for atoms in
+//! epoch 1 arrive after apply events for epoch 0's ops. The TUI tolerates this
+//! - each event mutates only its own field.
 //!
 //! ## FlatViewTree
 //!
 //! Mirrors [`lusid_tree::FlatTree`](lusid_tree::FlatTree) but storing
 //! [`lusid_view::View`]s instead of domain nodes, so the TUI never needs to
-//! understand lusid's domain types:
-//!
-//! - Root is always index `0`.
-//! - Arena is `Vec<Option<Node>>`; missing children / out-of-bounds indices
-//!   are tolerated (lenient rendering).
-//! - Subtrees are appended; "replace subtree at index" recursively clears the
-//!   old children before writing the new.
+//! understand lusid's domain types. Arena is `Vec<Option<Node>>`; missing
+//! children / out-of-bounds indices are tolerated (lenient rendering).
+//! Subtrees are appended; "replace subtree at index" recursively clears the
+//! old children before writing the new.
 //!
 //! [`FlatViewTree::template`] strips leaves back to [`ViewNode::NotStarted`]
 //! while preserving the structure - each pipeline phase builds from the
-//! previous phase's template, so the TUI shows the eventual shape up-front
-//! and fills leaves in as work completes.
-//!
-//! ## AppView as a state machine
-//!
-//! [`AppView::update`] takes `(self, AppUpdate) -> Result<Self, AppViewError>`.
-//! Invalid transitions return [`AppViewError::InvalidTransition`] so bad
-//! input from the pipe can't silently corrupt UI state. Accessors
-//! ([`AppView::resources`] etc.) return `None` before that phase has been
-//! reached, so the TUI can render partial progress.
+//! resources template, so the TUI shows the eventual shape up-front and fills
+//! leaves in as work completes.
 
 use lusid_view::{Fragment, Render, View, ViewTree};
 use serde::{Deserialize, Serialize};
@@ -275,15 +279,23 @@ fn replace_view_tree_nodes(
     }
 }
 
-/// Protocol message from `lusid-apply` to the TUI. Each phase has a
-/// `*Start` / per-node / `*Complete` triple. The `Operations*` cluster at
-/// the end carries per-operation stdout/stderr streamed as work executes.
+/// Protocol message from `lusid-apply` to the TUI.
+///
+/// The protocol is permissive: events from per-epoch processing arrive
+/// interleaved (state events for atoms in epoch N can arrive after apply
+/// events for ops in epoch N-1). The TUI applies each event to its own
+/// field without enforcing a global phase order.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AppUpdate {
+    /// Full resource-params tree, one event up front.
     ResourceParams {
         resource_params: ViewTree,
     },
 
+    /// Begin filling in the atoms tree (the post-`inject_handlers` resources
+    /// tree). `Resources` retains its name from the previous protocol; it now
+    /// includes any `on_change` handler leaves wrapped under their anchor
+    /// branches.
     ResourcesStart,
     ResourcesNode {
         index: usize,
@@ -291,7 +303,13 @@ pub enum AppUpdate {
     },
     ResourcesComplete,
 
-    ResourceStatesStart,
+    /// Tells the TUI we have N resource epochs scheduled.
+    ResourceEpochsStart {
+        count: usize,
+    },
+
+    /// Per-leaf state-probe lifecycle events. `Start` fires when the probe
+    /// future is dispatched; `Complete` fires when it resolves.
     ResourceStatesNodeStart {
         index: usize,
     },
@@ -299,27 +317,31 @@ pub enum AppUpdate {
         index: usize,
         node: View,
     },
-    ResourceStatesComplete,
 
-    ResourceChangesStart,
+    /// Per-leaf computed change. `node` is `None` when the diff is empty
+    /// (no-op); the TUI prunes the leaf in that case.
     ResourceChangesNode {
         index: usize,
         node: Option<View>,
     },
-    ResourceChangesComplete {
-        has_changes: bool,
-    },
 
-    OperationsStart,
+    /// Per-leaf operations subtree (one or more concrete operations to
+    /// execute). Replaces the leaf at `index` in the operations tree.
     OperationsNode {
         index: usize,
         operations: ViewTree,
     },
-    OperationsComplete,
 
-    OperationsApplyStart {
-        operations: Vec<Vec<View>>,
+    /// One internal operation epoch's merged op list, appended to the apply
+    /// pane. The TUI grows `operations_epochs` as these arrive.
+    OperationsApplyEpochAdded {
+        epoch_index: usize,
+        operations: Vec<View>,
     },
+
+    /// Per-operation lifecycle during apply. `index = (op_epoch_index, op_index)`,
+    /// where `op_epoch_index` is the running counter across all
+    /// `OperationsApplyEpochAdded` events.
     OperationApplyStart {
         index: (usize, usize),
     },
@@ -335,7 +357,12 @@ pub enum AppUpdate {
         index: (usize, usize),
         error: Option<String>,
     },
-    OperationsApplyComplete,
+
+    /// Final marker. Carries `had_changes` so the TUI can show the right
+    /// "complete" message ("No changes" vs "Apply complete").
+    ApplyComplete {
+        had_changes: bool,
+    },
 }
 
 /// One operation's live state during the apply phase. `stdout`/`stderr` are
@@ -362,610 +389,209 @@ impl OperationView {
     }
 }
 
-/// TUI state. Each variant carries everything from the prior phases plus the
-/// newly-started one. `Done` is the terminal phase - data is frozen and the
-/// TUI waits for user exit.
-///
-/// Note(cc): variants duplicate a growing list of fields rather than
-/// composing. Adding a new pipeline stage means touching every downstream
-/// arm. Acceptable while there are seven stages; worth revisiting if more
-/// are added.
+/// TUI state. Each per-stage tree is `Option<FlatViewTree>` so the UI can show
+/// partial progress as soon as data arrives, without enforcing a strict phase
+/// order. The pipeline emits events in causality order, but events for
+/// different stages interleave per resource epoch.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub enum AppView {
-    #[default]
-    Start,
-    ResourceParams {
-        resource_params: FlatViewTree,
-    },
-    Resources {
-        resource_params: FlatViewTree,
-        resources: FlatViewTree,
-    },
-    ResourceStates {
-        resource_params: FlatViewTree,
-        resources: FlatViewTree,
-        resource_states: FlatViewTree,
-    },
-    ResourceChanges {
-        resource_params: FlatViewTree,
-        resources: FlatViewTree,
-        resource_states: FlatViewTree,
-        resource_changes: FlatViewTree,
-        has_changes: Option<bool>,
-    },
-    Operations {
-        resource_params: FlatViewTree,
-        resources: FlatViewTree,
-        resource_states: FlatViewTree,
-        resource_changes: FlatViewTree,
-        has_changes: Option<bool>,
-        operations_tree: FlatViewTree,
-    },
-    OperationsApply {
-        resource_params: FlatViewTree,
-        resources: FlatViewTree,
-        resource_states: FlatViewTree,
-        resource_changes: FlatViewTree,
-        has_changes: Option<bool>,
-        operations_tree: FlatViewTree,
-        operations_epochs: Vec<Vec<OperationView>>,
-    },
-    Done {
-        resource_params: FlatViewTree,
-        resources: FlatViewTree,
-        resource_states: FlatViewTree,
-        resource_changes: FlatViewTree,
-        has_changes: Option<bool>,
-        operations_tree: FlatViewTree,
-        operations_epochs: Vec<Vec<OperationView>>,
-    },
+pub struct AppView {
+    pub resource_params: Option<FlatViewTree>,
+    /// The atoms tree (post-`inject_handlers`). Retains the legacy "resources"
+    /// name in the field for now.
+    pub resources: Option<FlatViewTree>,
+    pub resource_states: Option<FlatViewTree>,
+    pub resource_changes: Option<FlatViewTree>,
+    pub operations_tree: Option<FlatViewTree>,
+    pub operations_epochs: Vec<Vec<OperationView>>,
+    /// Number of resource epochs scheduled, once known.
+    pub resource_epochs_total: Option<usize>,
+    /// Set true the first time any `ResourceChangesNode` arrives with `Some`.
+    pub had_changes: bool,
+    /// True after `ApplyComplete`.
+    pub done: bool,
 }
 
 #[derive(Debug, Error)]
 pub enum AppViewError {
-    #[error("invalid transition: {from} -> {update}")]
-    InvalidTransition { from: String, update: String },
-
     #[error(transparent)]
     FlatTree(#[from] FlatViewTreeError),
 
     #[error("operation index out of bounds: epoch={0}, op={1}")]
     OperationIndexOutOfBounds(usize, usize),
+
+    /// `OperationsApplyEpochAdded` is the only event that grows
+    /// `operations_epochs`; the producer must emit them strictly in order
+    /// (epoch 0, then 1, then 2, ...). Anything else means the protocol
+    /// stream is corrupt or the producer has a bug.
+    #[error("operations-apply epoch index {got} arrived but expected {expected}")]
+    NonMonotonicEpochIndex { got: usize, expected: usize },
+
+    #[error("event {update:?} arrived before {expected_field} was initialised")]
+    MissingField {
+        expected_field: &'static str,
+        update: String,
+    },
 }
 
 impl AppView {
-    /// Fold one [`AppUpdate`] into the view. Consumes `self` to prevent
-    /// transient invalid states from being observed; any unexpected
-    /// (phase, update) combination returns [`AppViewError::InvalidTransition`]
-    /// and the caller can decide whether to abort or skip.
-    pub fn update(self, update: AppUpdate) -> Result<Self, AppViewError> {
+    /// Fold one [`AppUpdate`] into the view.
+    ///
+    /// Most events update exactly one field. Stage-template events
+    /// (`ResourcesComplete`, `ResourceEpochsStart`) populate the per-stage
+    /// trees as templates derived from the resources tree, so the TUI can
+    /// render the eventual shape up-front while leaves fill in.
+    pub fn update(mut self, update: AppUpdate) -> Result<Self, AppViewError> {
         use AppUpdate::*;
-        match (self, update) {
-            // Phase: Start -> ResourceParams
-            (AppView::Start, ResourceParams { resource_params }) => Ok(AppView::ResourceParams {
-                resource_params: FlatViewTree::from_view_tree_completed(resource_params),
-            }),
-
-            // Phase: ResourceParams -> Resources
-            (AppView::ResourceParams { resource_params }, ResourcesStart) => {
-                let resources = resource_params.template();
-                Ok(AppView::Resources {
-                    resource_params,
-                    resources,
-                })
+        match update {
+            ResourceParams { resource_params } => {
+                self.resource_params =
+                    Some(FlatViewTree::from_view_tree_completed(resource_params));
             }
 
-            // Phase: Resources
-            (
-                AppView::Resources {
-                    resource_params,
-                    mut resources,
-                },
-                ResourcesNode { index, tree },
-            ) => {
+            ResourcesStart => {
+                let template = self
+                    .resource_params
+                    .as_ref()
+                    .map(|t| t.template())
+                    .unwrap_or_default();
+                self.resources = Some(template);
+            }
+            ResourcesNode { index, tree } => {
+                let resources = self.resources.get_or_insert_with(FlatViewTree::default);
                 resources.replace_subtree_completed(index, tree);
-                Ok(AppView::Resources {
-                    resource_params,
-                    resources,
-                })
             }
-            (
-                AppView::Resources {
-                    resource_params,
-                    resources,
-                },
-                ResourcesComplete,
-            ) => Ok(AppView::Resources {
-                resource_params,
-                resources,
-            }),
-
-            // Phase: Resources -> ResourceStates
-            (
-                AppView::Resources {
-                    resource_params,
-                    resources,
-                },
-                ResourceStatesStart,
-            ) => {
-                let resource_states = resources.template();
-                Ok(AppView::ResourceStates {
-                    resource_params,
-                    resources,
-                    resource_states,
-                })
+            ResourcesComplete => {
+                let template = self.resources.as_ref().map(|t| t.template());
+                self.resource_states = template.clone();
+                self.resource_changes = template.clone();
+                self.operations_tree = template;
             }
 
-            // Phase: ResourceStates
-            (
-                AppView::ResourceStates {
-                    resource_params,
-                    resources,
-                    mut resource_states,
-                },
-                ResourceStatesNodeStart { index },
-            ) => {
-                resource_states.set_leaf_started(index)?;
-                Ok(AppView::ResourceStates {
-                    resource_params,
-                    resources,
-                    resource_states,
-                })
-            }
-            (
-                AppView::ResourceStates {
-                    resource_params,
-                    resources,
-                    mut resource_states,
-                },
-                ResourceStatesNodeComplete { index, node },
-            ) => {
-                resource_states.set_leaf_view(index, ViewNode::Complete(node))?;
-                Ok(AppView::ResourceStates {
-                    resource_params,
-                    resources,
-                    resource_states,
-                })
-            }
-            (
-                AppView::ResourceStates {
-                    resource_params,
-                    resources,
-                    resource_states,
-                },
-                ResourceStatesComplete,
-            ) => Ok(AppView::ResourceStates {
-                resource_params,
-                resources,
-                resource_states,
-            }),
-
-            // Phase: ResourceStates -> ResourceChanges
-            (
-                AppView::ResourceStates {
-                    resource_params,
-                    resources,
-                    resource_states,
-                },
-                ResourceChangesStart,
-            ) => {
-                let template = resource_states.template();
-                Ok(AppView::ResourceChanges {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes: template,
-                    has_changes: None,
-                })
+            ResourceEpochsStart { count } => {
+                self.resource_epochs_total = Some(count);
             }
 
-            // Phase: ResourceChanges
-            (
-                AppView::ResourceChanges {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    mut resource_changes,
-                    has_changes,
-                },
-                ResourceChangesNode { index, node },
-            ) => {
+            ResourceStatesNodeStart { index } => {
+                let states = self
+                    .resource_states
+                    .get_or_insert_with(FlatViewTree::default);
+                states.set_leaf_started(index)?;
+            }
+            ResourceStatesNodeComplete { index, node } => {
+                let states = self
+                    .resource_states
+                    .get_or_insert_with(FlatViewTree::default);
+                states.set_leaf_view(index, ViewNode::Complete(node))?;
+            }
+
+            ResourceChangesNode { index, node } => {
+                let changes = self
+                    .resource_changes
+                    .get_or_insert_with(FlatViewTree::default);
                 match node {
                     Some(view) => {
-                        resource_changes.set_leaf_view(index, ViewNode::Complete(view))?
+                        changes.set_leaf_view(index, ViewNode::Complete(view))?;
+                        self.had_changes = true;
                     }
-                    None => resource_changes.set_node_none(index),
+                    None => changes.set_node_none(index),
                 }
-                Ok(AppView::ResourceChanges {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                })
-            }
-            (
-                AppView::ResourceChanges {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes: _,
-                },
-                ResourceChangesComplete { has_changes },
-            ) => Ok(AppView::ResourceChanges {
-                resource_params,
-                resources,
-                resource_states,
-                resource_changes,
-                has_changes: Some(has_changes),
-            }),
-
-            // Phase: ResourceChanges -> Operations
-            (
-                AppView::ResourceChanges {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                },
-                OperationsStart,
-            ) => {
-                let template = resource_changes.template();
-                Ok(AppView::Operations {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree: template,
-                })
             }
 
-            // Phase: Operations
-            (
-                AppView::Operations {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    mut operations_tree,
-                },
-                OperationsNode { index, operations },
-            ) => {
-                operations_tree.replace_subtree_completed(index, operations);
-                Ok(AppView::Operations {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                })
-            }
-            (
-                AppView::Operations {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                },
-                OperationsComplete,
-            ) => Ok(AppView::Operations {
-                resource_params,
-                resources,
-                resource_states,
-                resource_changes,
-                has_changes,
-                operations_tree,
-            }),
-
-            // Phase: Operations -> OperationsApply
-            (
-                AppView::Operations {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                },
-                OperationsApplyStart { operations },
-            ) => {
-                let epochs = operations
-                    .into_iter()
-                    .map(|epoch| epoch.into_iter().map(OperationView::new).collect())
-                    .collect::<Vec<Vec<OperationView>>>();
-                Ok(AppView::OperationsApply {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                    operations_epochs: epochs,
-                })
+            OperationsNode { index, operations } => {
+                let ops = self
+                    .operations_tree
+                    .get_or_insert_with(FlatViewTree::default);
+                ops.replace_subtree_completed(index, operations);
             }
 
-            // Phase: OperationsApply (live IO)
-            (
-                AppView::OperationsApply {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                    mut operations_epochs,
-                },
-                OperationApplyStart { index: (e, o) },
-            ) => {
-                let epoch = operations_epochs
-                    .get_mut(e)
-                    .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))?;
-                let op = epoch
-                    .get_mut(o)
-                    .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))?;
+            OperationsApplyEpochAdded {
+                epoch_index,
+                operations,
+            } => {
+                if self.operations_epochs.len() != epoch_index {
+                    return Err(AppViewError::NonMonotonicEpochIndex {
+                        got: epoch_index,
+                        expected: self.operations_epochs.len(),
+                    });
+                }
+                self.operations_epochs
+                    .push(operations.into_iter().map(OperationView::new).collect());
+            }
+
+            OperationApplyStart { index: (e, o) } => {
+                let op = self.op_mut(e, o)?;
                 op.stdout.clear();
                 op.stderr.clear();
                 op.is_complete = false;
-                Ok(AppView::OperationsApply {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                    operations_epochs,
-                })
             }
-            (
-                AppView::OperationsApply {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                    mut operations_epochs,
-                },
-                OperationApplyStdout {
-                    index: (e, o),
-                    stdout,
-                },
-            ) => {
-                let epoch = operations_epochs
-                    .get_mut(e)
-                    .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))?;
-                let op = epoch
-                    .get_mut(o)
-                    .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))?;
+            OperationApplyStdout {
+                index: (e, o),
+                stdout,
+            } => {
+                let op = self.op_mut(e, o)?;
                 op.stdout.push_str(&stdout);
                 op.stdout.push('\n');
-                Ok(AppView::OperationsApply {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                    operations_epochs,
-                })
             }
-            (
-                AppView::OperationsApply {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                    mut operations_epochs,
-                },
-                OperationApplyStderr {
-                    index: (e, o),
-                    stderr,
-                },
-            ) => {
-                let epoch = operations_epochs
-                    .get_mut(e)
-                    .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))?;
-                let op = epoch
-                    .get_mut(o)
-                    .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))?;
+            OperationApplyStderr {
+                index: (e, o),
+                stderr,
+            } => {
+                let op = self.op_mut(e, o)?;
                 op.stderr.push_str(&stderr);
-                // TODO(cc): this pushes '\n' to stdout, not stderr - almost
-                // certainly a copy-paste bug (see the matching stdout arm
-                // above). Effect: stderr has no line breaks, stdout gains
-                // spurious blank lines whenever stderr arrives.
-                op.stdout.push('\n');
-                Ok(AppView::OperationsApply {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                    operations_epochs,
-                })
+                op.stderr.push('\n');
             }
-            (
-                AppView::OperationsApply {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                    mut operations_epochs,
-                },
-                OperationApplyComplete {
-                    index: (e, o),
-                    error,
-                },
-            ) => {
-                let epoch = operations_epochs
-                    .get_mut(e)
-                    .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))?;
-                let op = epoch
-                    .get_mut(o)
-                    .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))?;
+            OperationApplyComplete {
+                index: (e, o),
+                error,
+            } => {
+                let op = self.op_mut(e, o)?;
                 op.is_complete = true;
                 op.error = error;
-                Ok(AppView::OperationsApply {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                    operations_epochs,
-                })
             }
-            (
-                AppView::OperationsApply {
-                    resource_params,
-                    resources,
-                    resource_states,
-                    resource_changes,
-                    has_changes,
-                    operations_tree,
-                    operations_epochs,
-                },
-                OperationsApplyComplete,
-            ) => Ok(AppView::Done {
-                resource_params,
-                resources,
-                resource_states,
-                resource_changes,
-                has_changes,
-                operations_tree,
-                operations_epochs,
-            }),
 
-            (state, update) => Err(AppViewError::InvalidTransition {
-                from: format!("{state:?}"),
-                update: format!("{update:?}"),
-            }),
+            ApplyComplete { had_changes } => {
+                self.had_changes = self.had_changes || had_changes;
+                self.done = true;
+            }
         }
+        Ok(self)
+    }
+
+    fn op_mut(&mut self, e: usize, o: usize) -> Result<&mut OperationView, AppViewError> {
+        let epoch = self
+            .operations_epochs
+            .get_mut(e)
+            .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))?;
+        epoch
+            .get_mut(o)
+            .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))
     }
 
     pub fn resource_params(&self) -> Option<&FlatViewTree> {
-        match self {
-            Self::Start => None,
-            Self::ResourceParams { resource_params }
-            | Self::Resources {
-                resource_params, ..
-            }
-            | Self::ResourceStates {
-                resource_params, ..
-            }
-            | Self::ResourceChanges {
-                resource_params, ..
-            }
-            | Self::Operations {
-                resource_params, ..
-            }
-            | Self::OperationsApply {
-                resource_params, ..
-            }
-            | Self::Done {
-                resource_params, ..
-            } => Some(resource_params),
-        }
+        self.resource_params.as_ref()
     }
 
     pub fn resources(&self) -> Option<&FlatViewTree> {
-        match self {
-            Self::Start | Self::ResourceParams { .. } => None,
-            Self::Resources { resources, .. }
-            | Self::ResourceStates { resources, .. }
-            | Self::ResourceChanges { resources, .. }
-            | Self::Operations { resources, .. }
-            | Self::OperationsApply { resources, .. }
-            | Self::Done { resources, .. } => Some(resources),
-        }
+        self.resources.as_ref()
     }
 
     pub fn resource_states(&self) -> Option<&FlatViewTree> {
-        match self {
-            AppView::Start | AppView::ResourceParams { .. } | AppView::Resources { .. } => None,
-            AppView::ResourceStates {
-                resource_states, ..
-            }
-            | AppView::ResourceChanges {
-                resource_states, ..
-            }
-            | AppView::Operations {
-                resource_states, ..
-            }
-            | AppView::OperationsApply {
-                resource_states, ..
-            }
-            | AppView::Done {
-                resource_states, ..
-            } => Some(resource_states),
-        }
+        self.resource_states.as_ref()
     }
 
     pub fn resource_changes(&self) -> Option<&FlatViewTree> {
-        match self {
-            AppView::Start
-            | AppView::ResourceParams { .. }
-            | AppView::Resources { .. }
-            | AppView::ResourceStates { .. } => None,
-            AppView::ResourceChanges {
-                resource_changes, ..
-            }
-            | AppView::Operations {
-                resource_changes, ..
-            }
-            | AppView::OperationsApply {
-                resource_changes, ..
-            }
-            | AppView::Done {
-                resource_changes, ..
-            } => Some(resource_changes),
-        }
+        self.resource_changes.as_ref()
     }
 
     pub fn operations_tree(&self) -> Option<&FlatViewTree> {
-        match self {
-            AppView::Start
-            | AppView::ResourceParams { .. }
-            | AppView::Resources { .. }
-            | AppView::ResourceStates { .. }
-            | AppView::ResourceChanges { .. } => None,
-            AppView::Operations {
-                operations_tree, ..
-            }
-            | AppView::OperationsApply {
-                operations_tree, ..
-            }
-            | AppView::Done {
-                operations_tree, ..
-            } => Some(operations_tree),
-        }
+        self.operations_tree.as_ref()
     }
 
     pub fn operations_epochs(&self) -> Option<&Vec<Vec<OperationView>>> {
-        match self {
-            AppView::Start
-            | AppView::ResourceParams { .. }
-            | AppView::Resources { .. }
-            | AppView::ResourceStates { .. }
-            | AppView::ResourceChanges { .. }
-            | AppView::Operations { .. } => None,
-            AppView::OperationsApply {
-                operations_epochs, ..
-            } => Some(operations_epochs),
-            AppView::Done {
-                operations_epochs, ..
-            } => Some(operations_epochs),
+        if self.operations_epochs.is_empty() {
+            None
+        } else {
+            Some(&self.operations_epochs)
         }
     }
 }

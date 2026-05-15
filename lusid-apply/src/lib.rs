@@ -4,23 +4,24 @@
 //! Stdout is reserved for the newline-delimited [`AppUpdate`] protocol;
 //! human-facing output goes to stderr via `tracing`.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use lusid_apply_stdio::AppUpdate;
-use lusid_causality::{CausalityTree, EpochError, compute_epochs};
+use lusid_causality::{EpochError, compute_epochs};
 use lusid_ctx::{Context, ContextError};
 use lusid_operation::{Operation, OperationApplyError};
 use lusid_params::ParamsContext;
 use lusid_plan::{
-    self, PlanError, PlanId, PlanMeta, PlanNodeId, PlanTree, inject_handlers, map_plan_subitems,
-    plan, render_plan_tree,
+    self, AtomNode, PlanError, PlanId, PlanMeta, PlanNodeId, PlanTree, inject_handlers,
+    map_plan_subitems, plan, render_plan_tree,
 };
-use lusid_resource::{HostPathValidationError, Resource, ResourceState, ResourceStateError};
+use lusid_resource::{HostPathValidationError, Resource, ResourceStateError};
 use lusid_secrets::{LoadError, Redactor, Secrets};
 use lusid_store::Store;
 use lusid_system::{GetSystemError, System};
-use lusid_tree::FlatTree;
+use lusid_tree::{FlatTree, Tree};
 use lusid_view::Render;
 use rimu::SourceId;
 use rimu_interop::{ToRimuError, to_rimu};
@@ -101,8 +102,8 @@ pub enum ApplyError {
 }
 
 /// Run the full apply pipeline, streaming [`AppUpdate`]s to stdout as it
-/// goes. Returns `Ok(())` on success (including the "no changes" early
-/// return after phase 4) or the first fatal error. On operation failure,
+/// goes. Returns `Ok(())` on success (including the "no changes" case after
+/// every epoch is processed) or the first fatal error. On operation failure,
 /// an `OperationApplyComplete { error: Some(..) }` is emitted before the
 /// error propagates so the TUI can show which operation failed.
 pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
@@ -163,217 +164,350 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         ParamsContext::new(root_path.clone())
     };
 
-    // Parse/evaluate to tree of resource params.
+    // Phase 1: parse + evaluate to a tree of resource params.
     let resource_params = plan(plan_id, param_values, &params_ctx, &mut store, &system).await?;
     debug!("Resource params: {resource_params:?}");
     emit(AppUpdate::ResourceParams {
         resource_params: render_plan_tree(resource_params.clone()),
     })
     .await?;
-    let resource_params = FlatTree::from(resource_params);
+    let resource_params_flat = FlatTree::from(resource_params);
 
     // Validate `host-path` sources up front so a typo doesn't surface as a
     // confusing apply-time symlink/copy failure. Only `@resource/file` and
-    // `@resource/directory` "sourced" variants currently have a host-path source
-    // to validate; everything else is a no-op. The probes are independent
-    // `lstat`/`stat` calls, so we fan them out - on a network filesystem a
-    // serial walk would multiply round-trips by the leaf count.
-    let validations = resource_params
+    // `@resource/directory` "sourced" / "linked" variants currently have a
+    // host-path source to validate; everything else is a no-op. The probes
+    // are independent `lstat`/`stat` calls, so we fan them out - on a
+    // network filesystem a serial walk would multiply round-trips by the
+    // leaf count.
+    let validations = resource_params_flat
         .leaves()
         .map(|params| params.validate_host_paths());
     futures_util::future::try_join_all(validations).await?;
 
-    // Get tree of atomic resources.
-    emit(AppUpdate::ResourcesStart).await?;
-    let resources = resource_params
+    // Phase 2: expand each ResourceParams into a tree of Resource atoms.
+    // Synchronous (CPU-only); no point streaming a per-leaf event for a
+    // negligible-cost transform.
+    let resources = resource_params_flat
         .map_tree(
-            |node, meta| PlanTree::branch(meta, map_plan_subitems(node, |node| node.resources())),
-            |index, tree| {
-                emit(AppUpdate::ResourcesNode {
-                    index,
-                    tree: render_plan_tree(tree),
-                })
-            },
+            |node, meta| PlanTree::branch(meta, map_plan_subitems(node, |n| n.resources())),
+            |_index, _tree| async { Ok::<(), ApplyError>(()) },
         )
         .await?;
-    debug!(
-        "Resources: {:?}",
-        CausalityTree::from(resources.clone().map_meta(PlanMeta::to_causality))
-    );
+    let resources_nested: PlanTree<Resource> = resources.into();
+
+    // Phase 3: graft on_change handlers into the atom tree. Wraps each
+    // plan-item branch carrying handlers in an anchor branch + handler
+    // leaves, and stamps each Resource atom with the anchor ids it lives
+    // under (used in the per-epoch loop to decide whether each handler fires).
+    let atoms_nested: PlanTree<AtomNode> = inject_handlers(resources_nested);
+    debug!("Atoms tree: {atoms_nested:?}");
+
+    emit(AppUpdate::ResourcesStart).await?;
+    emit(AppUpdate::ResourcesNode {
+        index: 0,
+        tree: render_plan_tree(atoms_nested.clone()),
+    })
+    .await?;
     emit(AppUpdate::ResourcesComplete).await?;
 
-    // Get tree of (resource, resource state)
-    emit(AppUpdate::ResourceStatesStart).await?;
-    let resource_states = resources
-        .map_result_async(
-            |resource| {
-                let mut ctx = ctx.clone();
-                async move {
-                    let state = resource.state(&mut ctx).await?;
-                    Ok::<(Resource, ResourceState), ApplyError>((resource, state))
-                }
-            },
-            |index| emit(AppUpdate::ResourceStatesNodeStart { index }),
-            |index, (_resource, resource_state)| {
-                emit(AppUpdate::ResourceStatesNodeComplete {
-                    index,
-                    node: resource_state.render(),
-                })
-            },
-        )
-        .await?;
-    debug!(
-        "Resource states: {:?}",
-        CausalityTree::from(resource_states.clone().map_meta(PlanMeta::to_causality))
-            .map(|(_resource, state)| state)
-    );
-    emit(AppUpdate::ResourceStatesComplete).await?;
+    // Phase 4: assign each tree node a stable index matching the FlatTree
+    // arena layout. The TUI uses these indices in subsequent per-leaf
+    // events to update its mirror tree.
+    let indexed_atoms: PlanTree<(usize, AtomNode)> = enumerate_atoms(atoms_nested);
 
-    // Get tree of resource changes
-    emit(AppUpdate::ResourceChangesStart).await?;
-    let resource_changes = resource_states
-        .map(
-            |(resource, state)| resource.change(&state),
-            |index, node| {
-                emit(AppUpdate::ResourceChangesNode {
-                    index,
-                    node: node.map(|n| n.render()),
-                })
-            },
-        )
-        .await?;
-    debug!(
-        "Resource changes: {:?}",
-        CausalityTree::from(resource_changes.clone().map_meta(PlanMeta::to_causality))
-    );
-
-    let has_changes = resource_changes.leaves().any(|node| node.is_some());
-
-    emit(AppUpdate::ResourceChangesComplete { has_changes }).await?;
-
-    if !has_changes {
-        info!("No changes to apply!");
-        return Ok(());
-    };
-
-    // Get CausalityTree<Operations>
-    emit(AppUpdate::OperationsStart).await?;
-    let operations = resource_changes
-        .map_tree(
-            |node, meta| match node {
-                Some(node) => {
-                    let children = map_plan_subitems(node, |node| node.operations())
-                        .map(|tree| tree.map(Some));
-                    PlanTree::branch(meta, children)
-                }
-                None => PlanTree::leaf(meta, None),
-            },
-            |index, tree| {
-                emit(AppUpdate::OperationsNode {
-                    index,
-                    operations: render_plan_tree(tree),
-                })
-            },
-        )
-        .await?;
-    debug!(
-        "Operations tree: {:?}",
-        CausalityTree::from(operations.clone().map_meta(PlanMeta::to_causality))
-    );
-    emit(AppUpdate::OperationsComplete).await?;
-
-    // Branch-level post-pass: wherever a plan-item branch carries on_change
-    // handlers AND has any descendant change, wrap its children in an anchor
-    // sub-branch and append the handler leaves alongside.
-    let injected = inject_handlers(PlanTree::from(operations));
-    debug!("Operations with handlers injected: {injected:?}");
-
-    let operation_epochs = compute_epochs(injected.map_meta(PlanMeta::to_causality))?;
-    debug!("Operation epochs: {operation_epochs:?}");
-    emit(AppUpdate::OperationsApplyStart {
-        operations: operation_epochs
-            .iter()
-            .map(|epoch| epoch.iter().map(Render::render).collect())
-            .collect(),
+    // Phase 5: compute resource epochs over the augmented atom tree.
+    let atom_epochs = compute_epochs(indexed_atoms.map(Some).map_meta(PlanMeta::to_causality))?;
+    let epochs_count = atom_epochs.len();
+    info!(epochs = epochs_count, "scheduled resource epochs");
+    emit(AppUpdate::ResourceEpochsStart {
+        count: epochs_count,
     })
     .await?;
 
-    let epochs_count = operation_epochs.len();
-    for (epoch_index, operations) in operation_epochs.into_iter().enumerate() {
+    // Phase 6: process each resource epoch in causality order.
+    //
+    // For each epoch:
+    //   - probe state for Resource atoms in parallel (after prior epochs'
+    //     ops have already been applied, so probes see fresh-from-disk
+    //     state),
+    //   - compute change per atom; record any change in `anchors_changed`
+    //     against every anchor branch the atom lives under,
+    //   - decide each Handler atom's fate by checking whether its anchor
+    //     fired in this run,
+    //   - combine per-atom op subtrees + emitted handler ops into one
+    //     per-epoch op tree, compute INTERNAL operation epochs, and apply
+    //     each (with same-family merging) sequentially.
+    let mut anchors_changed: HashSet<PlanNodeId> = HashSet::new();
+    let mut had_changes = false;
+    let mut op_epoch_counter: usize = 0;
+
+    for (resource_epoch_idx, atoms) in atom_epochs.into_iter().enumerate() {
         info!(
-            epoch = epoch_index,
-            count = epochs_count,
-            "processing epoch"
+            epoch = resource_epoch_idx,
+            total = epochs_count,
+            "processing resource epoch"
         );
-        debug!("Operations: {operations:?}");
 
-        let operations = Operation::merge(operations);
-        debug!("Merged operations: {operations:?}");
+        // Partition atoms in this epoch by variant.
+        let mut resource_atoms: Vec<(usize, Resource, Vec<PlanNodeId>)> = Vec::new();
+        let mut handler_atoms: Vec<(usize, Operation, PlanNodeId)> = Vec::new();
+        for (idx, atom) in atoms {
+            match atom {
+                AtomNode::Resource {
+                    resource,
+                    anchor_ids,
+                } => resource_atoms.push((idx, resource, anchor_ids)),
+                AtomNode::Handler {
+                    operation,
+                    anchor_id,
+                } => handler_atoms.push((idx, operation, anchor_id)),
+            }
+        }
 
-        for (operation_index, operation) in operations.iter().enumerate() {
-            let index = (epoch_index, operation_index);
+        // 6a. Probe states for Resource atoms in parallel.
+        let probes = resource_atoms.iter().map(|(idx, resource, _)| {
+            let mut ctx = ctx.clone();
+            let resource = resource.clone();
+            let idx = *idx;
+            async move {
+                emit(AppUpdate::ResourceStatesNodeStart { index: idx }).await?;
+                let state = resource.state(&mut ctx).await?;
+                Ok::<_, ApplyError>((idx, state))
+            }
+        });
+        let states = futures_util::future::try_join_all(probes).await?;
 
-            let (output, stdout, stderr) = operation.apply(&mut ctx).await?;
+        // 6b. For each probed atom, emit state event, compute change,
+        // emit change + ops events, and collect op subtrees.
+        let mut atom_op_subtrees: Vec<PlanTree<Operation>> = Vec::new();
+        for ((idx, state), (_idx, resource, anchor_ids)) in states.iter().zip(&resource_atoms) {
+            emit(AppUpdate::ResourceStatesNodeComplete {
+                index: *idx,
+                node: state.render(),
+            })
+            .await?;
 
-            let output_task = async {
-                output.await?;
+            let change = resource.change(state);
 
-                Ok::<(), ApplyError>(())
-            };
-
-            let stdout_task = {
-                let mut lines = BufReader::new(stdout).lines();
-                let redactor = redactor.clone();
-                async move {
-                    while let Some(line) = lines
-                        .next_line()
-                        .await
-                        .map_err(ApplyError::ReadOperationStdio)?
-                    {
-                        emit(AppUpdate::OperationApplyStdout {
-                            index,
-                            stdout: redactor.redact(&line),
-                        })
-                        .await?;
-                    }
-                    Ok::<(), ApplyError>(())
+            if change.is_some() {
+                had_changes = true;
+                for anchor_id in anchor_ids {
+                    anchors_changed.insert(anchor_id.clone());
                 }
-            };
+            }
 
-            let stderr_task = {
-                let mut lines = BufReader::new(stderr).lines();
-                let redactor = redactor.clone();
-                async move {
-                    while let Some(line) = lines
-                        .next_line()
-                        .await
-                        .map_err(ApplyError::ReadOperationStdio)?
-                    {
-                        emit(AppUpdate::OperationApplyStderr {
-                            index,
-                            stderr: redactor.redact(&line),
-                        })
-                        .await?;
-                    }
-                    Ok::<(), ApplyError>(())
-                }
-            };
+            emit(AppUpdate::ResourceChangesNode {
+                index: *idx,
+                node: change.as_ref().map(Render::render),
+            })
+            .await?;
 
-            if let Err(error) = tokio::try_join!(output_task, stdout_task, stderr_task) {
-                emit(AppUpdate::OperationApplyComplete {
-                    index,
-                    error: Some(error.to_string()),
+            if let Some(change) = change {
+                let scoped: Vec<PlanTree<Operation>> =
+                    map_plan_subitems(change, |c| c.operations()).collect();
+
+                let display_subtree: PlanTree<Operation> = PlanTree::Branch {
+                    meta: PlanMeta::default(),
+                    children: scoped.clone(),
+                };
+                emit(AppUpdate::OperationsNode {
+                    index: *idx,
+                    operations: render_plan_tree(display_subtree),
                 })
                 .await?;
-                return Err(error);
-            } else {
-                emit(AppUpdate::OperationApplyComplete { index, error: None }).await?;
+
+                atom_op_subtrees.extend(scoped);
             }
+        }
+
+        // 6c. Decide each Handler atom's fate. Anchor changes are already
+        // recorded (handler atoms are in epochs strictly after their anchor's
+        // resource atoms, by inject_handlers' construction).
+        for (idx, operation, anchor_id) in handler_atoms {
+            let fires = anchors_changed.contains(&anchor_id);
+
+            // For the per-stage trees, mark the handler's progression. We
+            // emit Start before Complete to match the lifecycle of real
+            // probe events; the "state" string here is conceptually the
+            // anchor's change-flag rather than a probed system state.
+            emit(AppUpdate::ResourceStatesNodeStart { index: idx }).await?;
+            emit(AppUpdate::ResourceStatesNodeComplete {
+                index: idx,
+                node: if fires {
+                    "anchor changed".render()
+                } else {
+                    "anchor unchanged".render()
+                },
+            })
+            .await?;
+
+            emit(AppUpdate::ResourceChangesNode {
+                index: idx,
+                node: if fires {
+                    Some(operation.render())
+                } else {
+                    None
+                },
+            })
+            .await?;
+
+            if fires {
+                emit(AppUpdate::OperationsNode {
+                    index: idx,
+                    operations: lusid_view::ViewTree::Leaf {
+                        view: operation.render(),
+                    },
+                })
+                .await?;
+
+                atom_op_subtrees.push(PlanTree::Leaf {
+                    meta: PlanMeta::default(),
+                    node: operation,
+                });
+            }
+        }
+
+        if atom_op_subtrees.is_empty() {
+            continue;
+        }
+
+        // 6d. Combine and compute internal operation epochs.
+        let combined: PlanTree<Operation> = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: atom_op_subtrees,
+        };
+        let op_epochs = compute_epochs(combined.map(Some).map_meta(PlanMeta::to_causality))?;
+        debug!(
+            "Resource epoch {resource_epoch_idx} -> {} internal op epoch(s)",
+            op_epochs.len()
+        );
+
+        // 6e. Apply each internal op epoch (merge same-family, sequential
+        // execution within a merged batch). `Operation::merge` of a
+        // non-empty input always yields at least one op, so we don't guard
+        // for an empty `merged` - if `atom_op_subtrees` was empty we already
+        // continued above.
+        for ops_in_epoch in op_epochs {
+            let merged = Operation::merge(ops_in_epoch);
+
+            emit(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: op_epoch_counter,
+                operations: merged.iter().map(Render::render).collect(),
+            })
+            .await?;
+
+            for (op_idx, operation) in merged.iter().enumerate() {
+                let index = (op_epoch_counter, op_idx);
+                emit(AppUpdate::OperationApplyStart { index }).await?;
+
+                let (output, stdout, stderr) = operation.apply(&mut ctx).await?;
+
+                let output_task = async {
+                    output.await?;
+                    Ok::<(), ApplyError>(())
+                };
+
+                let stdout_task = {
+                    let mut lines = BufReader::new(stdout).lines();
+                    let redactor = redactor.clone();
+                    async move {
+                        while let Some(line) = lines
+                            .next_line()
+                            .await
+                            .map_err(ApplyError::ReadOperationStdio)?
+                        {
+                            emit(AppUpdate::OperationApplyStdout {
+                                index,
+                                stdout: redactor.redact(&line),
+                            })
+                            .await?;
+                        }
+                        Ok::<(), ApplyError>(())
+                    }
+                };
+
+                let stderr_task = {
+                    let mut lines = BufReader::new(stderr).lines();
+                    let redactor = redactor.clone();
+                    async move {
+                        while let Some(line) = lines
+                            .next_line()
+                            .await
+                            .map_err(ApplyError::ReadOperationStdio)?
+                        {
+                            emit(AppUpdate::OperationApplyStderr {
+                                index,
+                                stderr: redactor.redact(&line),
+                            })
+                            .await?;
+                        }
+                        Ok::<(), ApplyError>(())
+                    }
+                };
+
+                if let Err(error) = tokio::try_join!(output_task, stdout_task, stderr_task) {
+                    emit(AppUpdate::OperationApplyComplete {
+                        index,
+                        error: Some(error.to_string()),
+                    })
+                    .await?;
+                    return Err(error);
+                } else {
+                    emit(AppUpdate::OperationApplyComplete { index, error: None }).await?;
+                }
+            }
+
+            op_epoch_counter += 1;
         }
     }
 
-    info!("Apply completed");
+    if !had_changes {
+        info!("No changes to apply");
+    } else {
+        info!("Apply completed");
+    }
+    emit(AppUpdate::ApplyComplete { had_changes }).await?;
+
     Ok(())
+}
+
+/// Walk `tree` in pre-order, assigning each node (branch or leaf) a fresh
+/// arena-style index. The order matches `lusid_tree::FlatTree::from`'s
+/// `append_tree_nodes` traversal, so the indices on leaves correspond
+/// exactly to the indices the TUI's `FlatViewTree` will assign when
+/// consuming the equivalent `ResourcesNode { index: 0, tree }` event.
+///
+/// We walk and label here (rather than threading an arena index out of
+/// `compute_epochs`) so the per-epoch loop can carry `(arena_index, atom)`
+/// pairs and emit per-leaf events with a stable index.
+fn enumerate_atoms<T>(tree: PlanTree<T>) -> PlanTree<(usize, T)> {
+    let mut counter: usize = 0;
+    enumerate_atoms_inner(tree, &mut counter)
+}
+
+fn enumerate_atoms_inner<T>(tree: PlanTree<T>, counter: &mut usize) -> PlanTree<(usize, T)> {
+    match tree {
+        Tree::Leaf { meta, node } => {
+            let idx = *counter;
+            *counter += 1;
+            Tree::Leaf {
+                meta,
+                node: (idx, node),
+            }
+        }
+        Tree::Branch { meta, children } => {
+            *counter += 1;
+            let new_children: Vec<_> = children
+                .into_iter()
+                .map(|c| enumerate_atoms_inner(c, counter))
+                .collect();
+            Tree::Branch {
+                meta,
+                children: new_children,
+            }
+        }
+    }
 }
 
 /// Serializes access to stdout across the apply. Operation stdout/stderr are

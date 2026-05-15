@@ -11,9 +11,9 @@ Lusid takes a `.lusid` plan (written in the **Rimu** language), optionally a par
    - **Resource modules** (`@resource/*`) → typed `ResourceParams` (apt/file/pacman/…).
    - Or nested plans (module path) → recursively planned.
 3. Validates parameter schemas and values (with span/source error reporting).
-4. Builds a **causality tree** (nodes can have `id`, `requires`, `required_by`).
-5. Computes dependency **epochs** (topological layers via Kahn's algorithm).
-6. Applies operations epoch-by-epoch, streaming structured updates as JSON to stdout.
+4. Expands ResourceParams into a tree of resource **atoms**, then `inject_handlers` grafts `on_change` operations into the tree as conditionally-firing `Handler` leaves.
+5. Computes dependency **epochs** over the augmented atom tree (topological layers via Kahn's algorithm).
+6. For each epoch in order: probe state for atoms in that epoch, compute changes, expand operations, merge same-family ops within the epoch, apply. Streams structured updates as JSON to stdout.
 7. The `lusid` CLI renders a TUI from those updates.
 
 ## Principles
@@ -86,7 +86,7 @@ Resources live at the top level of `setup`. Operations live only inside an `on_c
 
 #### `on_change` hooks
 
-A resource may declare a list of operations to run when it changes. Hooks fire on any change (new contents, different mode, owner change, etc.) and run in a strictly-later epoch than the resource's own operations. Identical hooks in the same epoch coalesce - ten resources each declaring `on_change: reload nginx` collapse to one reload.
+A resource may declare a list of operations to run when it changes. Hooks fire on any change (new contents, different mode, owner change, etc.) and run in a strictly-later resource epoch than the resource's own atoms. Identical hooks landing in the same internal-operation epoch coalesce - ten resources each declaring `on_change: reload nginx`, when their anchors all live in the same resource epoch, collapse to one reload.
 
 ```rimu
 - module: "@resource/file"
@@ -103,13 +103,29 @@ A plan item's `id` registers its hooks too: a `requires: [<id>]` dependent waits
 - Hooks are inline only - no by-reference (`on_change: ["handler-id"]`).
 - Inline operations cannot declare `id`, `requires`, or `required_by`.
 - Triggered on any change - no add/modify/remove distinction.
-- **Cross-epoch coalescing not handled.** If resource A reloads nginx, resource B also reloads nginx, and B `requires: ["A"]` (so they're in different epochs), nginx reloads twice. Workaround: factor the reload into a single dedicated `@resource/command` downstream, or accept the duplicate (nginx reload is idempotent).
+- **Cross-epoch coalescing not handled.** If resource A reloads nginx, resource B also reloads nginx, and B `requires: ["A"]` (so they're in different resource epochs), nginx reloads twice. `Operation::merge` only coalesces within a single internal-operation epoch, which only contains ops emitted from one resource epoch. Workaround: factor the reload into a single dedicated `@resource/command` downstream, or accept the duplicate (nginx reload is idempotent).
 - **Hook failure leaves you stuck.** If a hook fails, apply aborts. The resource is now in its target state, so re-applying will NOT re-trigger the hook. Recovery: either run the operation manually (e.g. `sudo systemctl reload nginx`), or briefly toggle a field on the resource (e.g. change `mode` on a `@resource/file`, or `enabled` on a `@resource/systemd`) and re-apply, then revert.
 - **`@operation/command` covers a lot.** Although only `command` and `systemd` are exposed as operations in v1, `@operation/command` shells out - logrotate signals, cron reloads, cache invalidation, etc. all fit under it.
 
 #### Implementation: the `inject_handlers` post-pass
 
-Handlers are parsed alongside the rest of a plan item and stashed in `PlanMeta::handlers`. They flow through the resource → state → change → operations pipeline as inert passengers. After operations expansion, `inject_handlers` (in `lusid-plan`) walks the tree branch-by-branch and, wherever a branch's `meta.handlers` is non-empty AND its subtree contains a `Some(_)` leaf (i.e. the resource actually had a change), wraps the existing children in a synthetic anchor branch (`id = SubItem(fresh_scope, "@@handler-anchor")`) and appends one handler leaf per operation, each `requires`-ing the anchor. Per causality's branch-as-group semantics, the handlers wait for every resource-side op, and the outer branch's plan-item id transitively registers the handlers for dependents. The anchor's `scope_id` is freshly minted per `inject_handlers` call, so it can't collide with the resource's own atom ids (which live under a different scope from `map_plan_subitems`).
+Handlers are parsed alongside the rest of a plan item and stashed in `PlanMeta::handlers`. After ResourceParams expansion produces the atom tree (`PlanTree<Resource>`), `inject_handlers` (in `lusid-plan`) walks it branch-by-branch and wraps any branch whose `meta.handlers` is non-empty in this shape:
+
+```
+Branch (outer, plan-item id retained, handlers cleared) {
+  Branch (anchor, id = SubItem(fresh_scope, "@@handler-anchor")) {
+    <original Resource children, recursively transformed>
+  },
+  Leaf (AtomNode::Handler { operation, anchor_id }, requires = [anchor_id]),
+  ... (one leaf per handler op)
+}
+```
+
+The wrap is **unconditional** - we don't yet know which atoms will resolve to a change. The Resource leaves inside the anchor are converted to `AtomNode::Resource { resource, anchor_ids }`, where `anchor_ids` is the stack of all anchors the leaf lives under (so a Resource inside two nested anchors gets both ids).
+
+Per causality's branch-as-group semantics, the anchor branch's id covering its leaves means each handler leaf (which `requires` the anchor id) lands in a resource epoch strictly later than every Resource atom under the anchor. The outer branch's plan-item id covers both the anchor and the handler leaves, so any plan item with `requires: [<plan-item-id>]` correctly waits for both.
+
+**Conditional firing** happens in `lusid-apply::apply`: it maintains a `HashSet<PlanNodeId>` of anchors that fired during this run. As Resource atoms are probed and changed per-epoch, the set is updated for every anchor in their `anchor_ids` list. When a Handler atom's epoch arrives, the apply loop checks the set and emits the handler operation iff the anchor is present.
 
 
 ## Build / run / test (agent checklist)

@@ -256,16 +256,21 @@ impl PipelineStage {
         }
     }
 
+    /// Pick the most-advanced stage that has any data yet. Used by "follow"
+    /// mode to advance the visible stage as new data arrives.
     fn from_app_view(view: &AppView) -> PipelineStage {
-        match view {
-            AppView::Start => PipelineStage::ResourceParams,
-            AppView::ResourceParams { .. } => PipelineStage::ResourceParams,
-            AppView::Resources { .. } => PipelineStage::Resources,
-            AppView::ResourceStates { .. } => PipelineStage::ResourceStates,
-            AppView::ResourceChanges { .. } => PipelineStage::ResourceChanges,
-            AppView::Operations { .. } => PipelineStage::OperationsTree,
-            AppView::OperationsApply { .. } => PipelineStage::OperationsEpochs,
-            AppView::Done { .. } => PipelineStage::OperationsEpochs,
+        if !view.operations_epochs.is_empty() {
+            PipelineStage::OperationsEpochs
+        } else if view.operations_tree.is_some() {
+            PipelineStage::OperationsTree
+        } else if view.resource_changes.is_some() {
+            PipelineStage::ResourceChanges
+        } else if view.resource_states.is_some() {
+            PipelineStage::ResourceStates
+        } else if view.resources.is_some() {
+            PipelineStage::Resources
+        } else {
+            PipelineStage::ResourceParams
         }
     }
 }
@@ -752,32 +757,29 @@ fn pipeline_feedback_line(app: &TuiApp, outcome: Option<&Result<(), TuiError>>) 
         return "Viewing stderr (press e to return)".to_string();
     }
 
-    match &app.app_view {
-        AppView::Start => "Waiting for planning output...".to_string(),
-
-        AppView::ResourceParams { .. } => "Resource parameters planned.".to_string(),
-
-        AppView::Resources { .. } => "Resources planned.".to_string(),
-
-        AppView::ResourceStates { .. } => "Resource states are being fetched.".to_string(),
-
-        AppView::ResourceChanges { has_changes, .. } => match has_changes {
-            None => "Computing resource changes...".to_string(),
-            Some(false) => "No changes.".to_string(),
-            Some(true) => "Changes detected.".to_string(),
-        },
-
-        AppView::Operations { .. } => "Operations tree planned.".to_string(),
-
-        AppView::OperationsApply { .. } => "Applying operations epochs.".to_string(),
-
-        AppView::Done { .. } => {
-            if app.child_exited {
-                "Complete.".to_string()
-            } else {
-                "Complete (waiting for process to exit)...".to_string()
-            }
+    let view = &app.app_view;
+    if view.done {
+        if !view.had_changes {
+            "No changes.".to_string()
+        } else if app.child_exited {
+            "Complete.".to_string()
+        } else {
+            "Complete (waiting for process to exit)...".to_string()
         }
+    } else if !view.operations_epochs.is_empty() {
+        "Applying operations epochs.".to_string()
+    } else if view.resource_states.is_some() {
+        if view.had_changes {
+            "Changes detected.".to_string()
+        } else {
+            "Probing resource states...".to_string()
+        }
+    } else if view.resources.is_some() {
+        "Resources planned.".to_string()
+    } else if view.resource_params.is_some() {
+        "Resource parameters planned.".to_string()
+    } else {
+        "Waiting for planning output...".to_string()
     }
 }
 
