@@ -30,5 +30,5 @@ You write a plan: a list of resources you want on the machine (packages, files, 
 
 ## Next
 
-- Build it: [Installation](./installation.md)
+- Install it: [Installation](./installation.md)
 - Try it: [Quickstart](./quickstart.md)

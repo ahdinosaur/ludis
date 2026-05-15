@@ -9,7 +9,7 @@ This is the documentation for [lusid](https://github.com/ahdinosaur/lusid) - a d
 ## Start here
 
 - **[Introduction](./introduction.md)** - what lusid is, who it's for, how it compares.
-- **[Installation](./installation.md)** - build from source.
+- **[Installation](./installation.md)** - download a release or build from source.
 - **[Quickstart](./quickstart.md)** - your first plan in five minutes.
 
 ## Concepts
