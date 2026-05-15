@@ -400,9 +400,6 @@ pub enum ParamsValidationError {
     /// Parameter values without parameter types
     ValuesWithoutTypes,
 
-    /// Parameter types without parameter values
-    TypesWithoutValues,
-
     /// Expected an object for parameter values
     ValuesNotAnObject,
 
@@ -610,8 +607,15 @@ pub fn validate(
 ) -> Result<Option<Spanned<Value>>, ParamsValidationError> {
     let (param_types, param_values) = match (param_types, param_values) {
         (Some(param_types), Some(param_values)) => (param_types, param_values),
-        (Some(_), None) => {
-            return Err(ParamsValidationError::TypesWithoutValues);
+        // No values forwarded for a plan that declares a schema. Synthesise
+        // an empty values object so the schema's own structural rules decide
+        // the outcome: empty / all-optional schemas pass; schemas with
+        // required fields produce per-field `MissingParam` errors that point
+        // at the schema declaration. Anchoring the synthetic span on the
+        // schema location keeps those errors attributable.
+        (Some(param_types), None) => {
+            let empty = Spanned::new(Value::Object(ValueObject::new()), param_types.span());
+            (param_types, empty)
         }
         (None, Some(_)) => {
             return Err(ParamsValidationError::ValuesWithoutTypes);
@@ -706,10 +710,34 @@ mod tests {
     }
 
     #[test]
-    fn errors_when_types_present_but_no_values() {
+    fn missing_required_field_when_no_values_forwarded() {
         let schema = struct_schema(vec![("path", ParamType::HostPath, false)]);
         let err = validate(Some(&schema), None, &ctx()).unwrap_err();
-        assert!(matches!(err, ParamsValidationError::TypesWithoutValues));
+        let ParamsValidationError::Struct(boxed) = err else {
+            panic!("expected Struct error, got {err:?}");
+        };
+        assert!(matches!(
+            boxed.errors.as_slice(),
+            [ParamValidationError::MissingParam { key, .. }] if key == "path"
+        ));
+    }
+
+    #[test]
+    fn empty_schema_with_no_values_succeeds() {
+        let schema = struct_schema(vec![]);
+        let coerced = validate(Some(&schema), None, &ctx())
+            .expect("ok")
+            .expect("some");
+        assert!(unwrap_object(coerced).is_empty());
+    }
+
+    #[test]
+    fn all_optional_schema_with_no_values_succeeds() {
+        let schema = struct_schema(vec![("path", ParamType::HostPath, true)]);
+        let coerced = validate(Some(&schema), None, &ctx())
+            .expect("ok")
+            .expect("some");
+        assert!(unwrap_object(coerced).is_empty());
     }
 
     #[test]
