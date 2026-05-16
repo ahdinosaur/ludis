@@ -41,6 +41,7 @@ pub(super) async fn instance_start(
         ports,
         graphics,
         kvm,
+        ready_check: _,
     } = instance;
     let paths = instance.paths();
 

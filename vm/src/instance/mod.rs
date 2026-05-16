@@ -100,6 +100,11 @@ pub struct Vm {
     pub ports: Vec<VmPort>,
     pub graphics: Option<bool>,
     pub kvm: Option<bool>,
+    /// Image-supplied shell snippet to run over SSH after the guest's port 22
+    /// opens, before the caller drives the VM. Lets per-image defaults drain
+    /// first-boot races (cloud-init `packages:`, mirror refreshers) that
+    /// hold OS-level package locks. Idempotent on re-runs.
+    pub ready_check: Option<String>,
 }
 
 impl Vm {

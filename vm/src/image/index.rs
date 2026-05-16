@@ -10,6 +10,13 @@ pub struct VmImageIndex {
     pub hash: VmImageHashRef,
     pub kernel_root: String,
     pub user: String,
+    /// Shell snippet to run over SSH after the guest's port 22 opens, before
+    /// the caller drives the VM. Lets per-image defaults drain first-boot
+    /// races (cloud-init's `packages:` module, distro mirror refreshers, ...)
+    /// that hold OS-level package locks. Idempotent on re-runs: the canonical
+    /// `cloud-init status --wait` returns immediately once cloud-init is
+    /// done. `None` skips the wait.
+    pub ready_check: Option<String>,
 }
 
 impl VmImageIndex {
