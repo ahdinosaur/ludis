@@ -16,7 +16,6 @@ pub struct VmImageIndex {
     /// that hold OS-level package locks. Idempotent on re-runs: the canonical
     /// `cloud-init status --wait` returns immediately once cloud-init is
     /// done. `None` skips the wait.
-    #[serde(default)]
     pub ready_check: Option<String>,
 }
 

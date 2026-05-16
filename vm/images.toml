@@ -21,5 +21,7 @@ user = "arch"
 # from our seed ISO via pacman). `reflector.service` runs in parallel from
 # the cloud image's systemd preset and holds /var/lib/pacman/db.lck while
 # refreshing mirrors; polling the lock file catches it and anything else
-# outside cloud-init's tracking. Both no-op on settled re-runs.
-ready_check = "cloud-init status --wait; while [ -e /var/lib/pacman/db.lck ]; do sleep 1; done"
+# outside cloud-init's tracking. Both no-op on settled re-runs. `$?` capture
+# preserves cloud-init's exit code (1=warnings, 2=errors) through the lock
+# wait so the caller can log degraded first-boots.
+ready_check = "cloud-init status --wait; rc=$?; while [ -e /var/lib/pacman/db.lck ]; do sleep 1; done; exit $rc"
