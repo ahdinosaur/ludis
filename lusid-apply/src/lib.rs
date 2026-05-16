@@ -4,7 +4,7 @@
 //! Stdout is reserved for the newline-delimited [`AppUpdate`] protocol;
 //! human-facing output goes to stderr via `tracing`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -210,7 +210,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     // indices below are the same indices the TUI's `FlatViewTree` assigns
     // when consuming the `ResourcesNode { index: 0, tree }` event above.
     let atoms_flat: PlanFlatTree<Resource> = atoms_nested.clone().into();
-    let parent_of: Vec<Option<usize>> = build_parent_of(&atoms_flat);
+    let parent_of: HashMap<usize, usize> = build_parent_of(&atoms_flat);
 
     // Phase 4: assign each tree node a stable index matching the FlatTree
     // arena layout, and compute resource epochs over the atom tree.
@@ -218,10 +218,6 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     let atom_epochs = compute_epochs(indexed_atoms.map(Some).map_meta(PlanMeta::to_causality))?;
     let epochs_count = atom_epochs.len();
     info!(epochs = epochs_count, "scheduled resource epochs");
-    emit(AppUpdate::ResourceEpochsStart {
-        count: epochs_count,
-    })
-    .await?;
 
     // Phase 5: for each handler-bearing plan-item branch, the latest resource
     // epoch any of its descendant atoms appears in. Phase B fires that branch's
@@ -460,39 +456,22 @@ async fn apply_op_phase(
     Ok(())
 }
 
-/// Build a `child arena idx -> parent arena idx` table over the FlatTree.
-/// Root index is `None`; tombstoned slots are skipped.
-fn build_parent_of<Node, Meta>(flat: &FlatTree<Node, Meta>) -> Vec<Option<usize>>
+/// Map every non-root arena index to its parent's arena index. The root has
+/// no entry. Tombstoned slots are skipped.
+fn build_parent_of<Node, Meta>(flat: &FlatTree<Node, Meta>) -> HashMap<usize, usize>
 where
     Node: Clone,
     Meta: Clone,
 {
-    let mut parent_of: Vec<Option<usize>> = (0..flat_arena_len(flat)).map(|_| None).collect();
+    let mut parent_of = HashMap::new();
     for (idx, node) in flat.nodes_indexed() {
         if let FlatTreeNode::Branch { children, .. } = node {
             for &child in children {
-                if child < parent_of.len() {
-                    parent_of[child] = Some(idx);
-                }
+                parent_of.insert(child, idx);
             }
         }
     }
     parent_of
-}
-
-/// Arena length used to size the parent_of vector. We approximate by taking
-/// the highest live index + 1 (tombstoned tails are ignored, which is fine -
-/// `parent_of.get(idx)` returning `None` for an out-of-range idx behaves the
-/// same as a missing parent).
-fn flat_arena_len<Node, Meta>(flat: &FlatTree<Node, Meta>) -> usize
-where
-    Node: Clone,
-    Meta: Clone,
-{
-    flat.nodes_indexed()
-        .map(|(idx, _)| idx + 1)
-        .max()
-        .unwrap_or(0)
 }
 
 /// Walk up `parent_of` from `leaf_idx` until we hit a branch whose
@@ -500,17 +479,17 @@ where
 /// `None` if no ancestor has handlers.
 fn nearest_handler_ancestor(
     leaf_idx: usize,
-    parent_of: &[Option<usize>],
+    parent_of: &HashMap<usize, usize>,
     flat: &PlanFlatTree<Resource>,
 ) -> Option<usize> {
-    let mut cur = parent_of.get(leaf_idx).copied().flatten();
+    let mut cur = parent_of.get(&leaf_idx).copied();
     while let Some(idx) = cur {
         if let Ok(PlanFlatTreeNode::Branch { meta, .. }) = flat.get(idx)
             && !meta.handlers.is_empty()
         {
             return Some(idx);
         }
-        cur = parent_of.get(idx).copied().flatten();
+        cur = parent_of.get(&idx).copied();
     }
     None
 }
@@ -520,7 +499,7 @@ fn nearest_handler_ancestor(
 /// Used by Phase B to decide when to fire each branch's handlers.
 fn build_latest_epoch_by_branch(
     epochs: &[Vec<(usize, Resource)>],
-    parent_of: &[Option<usize>],
+    parent_of: &HashMap<usize, usize>,
     flat: &PlanFlatTree<Resource>,
 ) -> BTreeMap<usize, usize> {
     let mut latest: BTreeMap<usize, usize> = BTreeMap::new();
@@ -656,10 +635,22 @@ mod tests {
         let flat: PlanFlatTree<Resource> = tree.into();
         let parent_of = build_parent_of(&flat);
 
-        assert_eq!(parent_of[0], None, "root has no parent");
-        assert_eq!(parent_of[1], Some(0), "handler branch's parent is root");
-        assert_eq!(parent_of[2], Some(1), "leaf /a's parent is handler branch");
-        assert_eq!(parent_of[3], Some(1), "leaf /b's parent is handler branch");
+        assert_eq!(parent_of.get(&0), None, "root has no parent entry");
+        assert_eq!(
+            parent_of.get(&1),
+            Some(&0),
+            "handler branch's parent is root"
+        );
+        assert_eq!(
+            parent_of.get(&2),
+            Some(&1),
+            "leaf /a's parent is handler branch"
+        );
+        assert_eq!(
+            parent_of.get(&3),
+            Some(&1),
+            "leaf /b's parent is handler branch"
+        );
     }
 
     #[test]

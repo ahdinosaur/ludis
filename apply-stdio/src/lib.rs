@@ -307,11 +307,6 @@ pub enum AppUpdate {
     },
     ResourcesComplete,
 
-    /// Tells the TUI we have N resource epochs scheduled.
-    ResourceEpochsStart {
-        count: usize,
-    },
-
     /// Per-leaf state-probe lifecycle events. `Start` fires when the probe
     /// future is dispatched; `Complete` fires when it resolves.
     ResourceStatesNodeStart {
@@ -406,9 +401,7 @@ pub struct AppView {
     pub resource_changes: Option<FlatViewTree>,
     pub operations_tree: Option<FlatViewTree>,
     pub operations_epochs: Vec<Vec<OperationView>>,
-    /// Number of resource epochs scheduled, once known.
-    pub resource_epochs_total: Option<usize>,
-    /// Set true the first time any `ResourceChangesNode` arrives with `Some`.
+    /// Whether any resource produced a non-empty change.
     pub had_changes: bool,
     /// True after `ApplyComplete`.
     pub done: bool,
@@ -428,21 +421,14 @@ pub enum AppViewError {
     /// stream is corrupt or the producer has a bug.
     #[error("operations-apply epoch index {got} arrived but expected {expected}")]
     NonMonotonicEpochIndex { got: usize, expected: usize },
-
-    #[error("event {update:?} arrived before {expected_field} was initialised")]
-    MissingField {
-        expected_field: &'static str,
-        update: String,
-    },
 }
 
 impl AppView {
     /// Fold one [`AppUpdate`] into the view.
     ///
-    /// Most events update exactly one field. Stage-template events
-    /// (`ResourcesComplete`, `ResourceEpochsStart`) populate the per-stage
-    /// trees as templates derived from the resources tree, so the TUI can
-    /// render the eventual shape up-front while leaves fill in.
+    /// Most events update exactly one field. `ResourcesComplete` populates the
+    /// downstream per-stage trees as templates derived from the resources tree,
+    /// so the TUI can render the eventual shape up-front while leaves fill in.
     pub fn update(mut self, update: AppUpdate) -> Result<Self, AppViewError> {
         use AppUpdate::*;
         match update {
@@ -468,10 +454,6 @@ impl AppView {
                 self.resource_states = template.clone();
                 self.resource_changes = template.clone();
                 self.operations_tree = template;
-            }
-
-            ResourceEpochsStart { count } => {
-                self.resource_epochs_total = Some(count);
             }
 
             ResourceStatesNodeStart { index } => {

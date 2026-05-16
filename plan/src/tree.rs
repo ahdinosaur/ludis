@@ -117,26 +117,15 @@ mod tests {
     use super::*;
     use crate::PlanId;
     use lusid_causality::compute_epochs;
-    use lusid_operation::operations::command::{CommandExecutor, CommandOperation};
     use lusid_operation::operations::file::FilePath;
     use lusid_resource::Resource;
     use lusid_resource::file::FileResource;
     use std::path::PathBuf;
 
-    fn handler_op() -> Operation {
-        Operation::Command(CommandOperation {
-            command: "true".to_string(),
-            executor: CommandExecutor::Shell,
+    fn file_resource(path: &str) -> Resource {
+        Resource::File(FileResource::Present {
+            path: FilePath::new(path),
         })
-    }
-
-    fn resource_leaf() -> PlanTree<Resource> {
-        Tree::Leaf {
-            meta: PlanMeta::default(),
-            node: Resource::File(FileResource::Present {
-                path: FilePath::new("/tmp/x"),
-            }),
-        }
     }
 
     fn plan_item_id(item: &str) -> PlanNodeId {
@@ -146,28 +135,27 @@ mod tests {
         }
     }
 
-    /// Trace of the causal property that `requires: [plan-item-id]` waits
-    /// for the plan item's atoms. The apply loop adds the further guarantee
-    /// that handlers fire in Phase B before the next resource epoch's
-    /// Phase A, so dependents transitively see handlers' effects.
+    /// `requires: [<branch-id>]` puts the requirer in a strictly-later epoch
+    /// than every leaf inside the required branch. This is the foundation the
+    /// apply layer's Phase A/B ordering relies on.
     #[test]
     fn dependent_lands_strictly_after_plan_item_atoms() {
         let p = PlanTree::Branch {
             meta: PlanMeta {
                 id: Some(plan_item_id("p")),
-                handlers: vec![handler_op()],
                 ..PlanMeta::default()
             },
-            children: vec![resource_leaf()],
+            children: vec![Tree::Leaf {
+                meta: PlanMeta::default(),
+                node: file_resource("/tmp/x"),
+            }],
         };
         let b = PlanTree::Leaf {
             meta: PlanMeta {
                 requires: vec![plan_item_id("p")],
                 ..PlanMeta::default()
             },
-            node: Resource::File(FileResource::Present {
-                path: FilePath::new("/tmp/b"),
-            }),
+            node: file_resource("/tmp/b"),
         };
         let root = PlanTree::Branch {
             meta: PlanMeta::default(),
@@ -176,30 +164,20 @@ mod tests {
         let causality = root.map(Some).map_meta(PlanMeta::to_causality);
         let epochs = compute_epochs(causality).expect("compute_epochs");
 
-        // Resource atoms are leaves. The handler-on-p case is exercised at
-        // the apply layer; this test only proves p's resource atom is in an
-        // earlier epoch than b's.
-        let mut p_epoch = None;
-        let mut b_epoch = None;
-        for (i, epoch) in epochs.iter().enumerate() {
-            for resource in epoch {
-                match resource {
-                    Resource::File(FileResource::Present { path })
-                        if path.as_path() == std::path::Path::new("/tmp/x") =>
+        let epoch_of = |needle: &str| -> usize {
+            for (i, epoch) in epochs.iter().enumerate() {
+                for resource in epoch {
+                    if let Resource::File(FileResource::Present { path }) = resource
+                        && path.as_path() == std::path::Path::new(needle)
                     {
-                        p_epoch = Some(i)
+                        return i;
                     }
-                    Resource::File(FileResource::Present { path })
-                        if path.as_path() == std::path::Path::new("/tmp/b") =>
-                    {
-                        b_epoch = Some(i)
-                    }
-                    _ => {}
                 }
             }
-        }
-        let p_epoch = p_epoch.expect("found p's atom");
-        let b_epoch = b_epoch.expect("found b's atom");
+            panic!("did not find resource for {needle:?}");
+        };
+        let p_epoch = epoch_of("/tmp/x");
+        let b_epoch = epoch_of("/tmp/b");
         assert!(
             b_epoch > p_epoch,
             "b's atom epoch ({b_epoch}) must be strictly later than p's ({p_epoch})",
