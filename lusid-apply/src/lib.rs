@@ -4,7 +4,7 @@
 //! Stdout is reserved for the newline-delimited [`AppUpdate`] protocol;
 //! human-facing output goes to stderr via `tracing`.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -14,14 +14,14 @@ use lusid_ctx::{Context, ContextError};
 use lusid_operation::{Operation, OperationApplyError};
 use lusid_params::ParamsContext;
 use lusid_plan::{
-    self, AtomNode, PlanError, PlanId, PlanMeta, PlanNodeId, PlanTree, inject_handlers,
+    self, PlanError, PlanFlatTree, PlanFlatTreeNode, PlanId, PlanMeta, PlanNodeId, PlanTree,
     map_plan_subitems, plan, render_plan_tree,
 };
 use lusid_resource::{HostPathValidationError, Resource, ResourceStateError};
 use lusid_secrets::{LoadError, Redactor, Secrets};
 use lusid_store::Store;
 use lusid_system::{GetSystemError, System};
-use lusid_tree::{FlatTree, Tree};
+use lusid_tree::{FlatTree, FlatTreeNode, Tree};
 use lusid_view::Render;
 use rimu::SourceId;
 use rimu_interop::{ToRimuError, to_rimu};
@@ -194,13 +194,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
             |_index, _tree| async { Ok::<(), ApplyError>(()) },
         )
         .await?;
-    let resources_nested: PlanTree<Resource> = resources.into();
-
-    // Phase 3: graft on_change handlers into the atom tree. Wraps each
-    // plan-item branch carrying handlers in an anchor branch + handler
-    // leaves, and stamps each Resource atom with the anchor ids it lives
-    // under (used in the per-epoch loop to decide whether each handler fires).
-    let atoms_nested: PlanTree<AtomNode> = inject_handlers(resources_nested);
+    let atoms_nested: PlanTree<Resource> = resources.into();
     debug!("Atoms tree: {atoms_nested:?}");
 
     emit(AppUpdate::ResourcesStart).await?;
@@ -211,12 +205,16 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     .await?;
     emit(AppUpdate::ResourcesComplete).await?;
 
-    // Phase 4: assign each tree node a stable index matching the FlatTree
-    // arena layout. The TUI uses these indices in subsequent per-leaf
-    // events to update its mirror tree.
-    let indexed_atoms: PlanTree<(usize, AtomNode)> = enumerate_atoms(atoms_nested);
+    // Phase 3: derive arena indices and parent links from a FlatTree view.
+    // `FlatTree::from`'s pre-order matches `enumerate_atoms`'s, so the leaf
+    // indices below are the same indices the TUI's `FlatViewTree` assigns
+    // when consuming the `ResourcesNode { index: 0, tree }` event above.
+    let atoms_flat: PlanFlatTree<Resource> = atoms_nested.clone().into();
+    let parent_of: Vec<Option<usize>> = build_parent_of(&atoms_flat);
 
-    // Phase 5: compute resource epochs over the augmented atom tree.
+    // Phase 4: assign each tree node a stable index matching the FlatTree
+    // arena layout, and compute resource epochs over the atom tree.
+    let indexed_atoms: PlanTree<(usize, Resource)> = enumerate_atoms(atoms_nested);
     let atom_epochs = compute_epochs(indexed_atoms.map(Some).map_meta(PlanMeta::to_causality))?;
     let epochs_count = atom_epochs.len();
     info!(epochs = epochs_count, "scheduled resource epochs");
@@ -225,20 +223,26 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     })
     .await?;
 
+    // Phase 5: for each handler-bearing plan-item branch, the latest resource
+    // epoch any of its descendant atoms appears in. Phase B fires that branch's
+    // handlers at the end of its latest epoch. BTreeMap so Phase B's iteration
+    // order is stable across runs.
+    let latest_epoch_by_branch: BTreeMap<usize, usize> =
+        build_latest_epoch_by_branch(&atom_epochs, &parent_of, &atoms_flat);
+
     // Phase 6: process each resource epoch in causality order.
     //
-    // For each epoch:
-    //   - probe state for Resource atoms in parallel (after prior epochs'
-    //     ops have already been applied, so probes see fresh-from-disk
-    //     state),
-    //   - compute change per atom; record any change in `anchors_changed`
-    //     against every anchor branch the atom lives under,
-    //   - decide each Handler atom's fate by checking whether its anchor
-    //     fired in this run,
-    //   - combine per-atom op subtrees + emitted handler ops into one
-    //     per-epoch op tree, compute INTERNAL operation epochs, and apply
-    //     each (with same-family merging) sequentially.
-    let mut anchors_changed: HashSet<PlanNodeId> = HashSet::new();
+    // Within each epoch:
+    //   - Phase A: probe state for atoms (after prior epochs' ops have already
+    //     been applied, so probes see fresh-from-disk state), compute changes,
+    //     and apply the change ops. Atoms that change mark their nearest
+    //     handler-bearing ancestor branch in `changed_branches`.
+    //   - Phase B: for every handler-bearing branch whose latest epoch is this
+    //     one and which was marked changed, apply its on_change operations.
+    //     Phase B runs after Phase A's ops complete and before the next
+    //     epoch's Phase A begins, so handlers fire strictly after the resource
+    //     atoms they watch and strictly before any dependent's atoms.
+    let mut changed_branches: HashSet<usize> = HashSet::new();
     let mut had_changes = false;
     let mut op_epoch_counter: usize = 0;
 
@@ -249,24 +253,8 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
             "processing resource epoch"
         );
 
-        // Partition atoms in this epoch by variant.
-        let mut resource_atoms: Vec<(usize, Resource, Vec<PlanNodeId>)> = Vec::new();
-        let mut handler_atoms: Vec<(usize, Operation, PlanNodeId)> = Vec::new();
-        for (idx, atom) in atoms {
-            match atom {
-                AtomNode::Resource {
-                    resource,
-                    anchor_ids,
-                } => resource_atoms.push((idx, resource, anchor_ids)),
-                AtomNode::Handler {
-                    operation,
-                    anchor_id,
-                } => handler_atoms.push((idx, operation, anchor_id)),
-            }
-        }
-
-        // 6a. Probe states for Resource atoms in parallel.
-        let probes = resource_atoms.iter().map(|(idx, resource, _)| {
+        // Phase A: probe states in parallel.
+        let probes = atoms.iter().map(|(idx, resource)| {
             let mut ctx = ctx.clone();
             let resource = resource.clone();
             let idx = *idx;
@@ -278,10 +266,11 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         });
         let states = futures_util::future::try_join_all(probes).await?;
 
-        // 6b. For each probed atom, emit state event, compute change,
-        // emit change + ops events, and collect op subtrees.
+        // Phase A: for each probed atom, emit state event, compute change,
+        // emit change + ops events, collect op subtrees, and mark the
+        // nearest handler-bearing ancestor branch if the atom changed.
         let mut atom_op_subtrees: Vec<PlanTree<Operation>> = Vec::new();
-        for ((idx, state), (_idx, resource, anchor_ids)) in states.iter().zip(&resource_atoms) {
+        for ((idx, state), (_idx, resource)) in states.iter().zip(&atoms) {
             emit(AppUpdate::ResourceStatesNodeComplete {
                 index: *idx,
                 node: state.render(),
@@ -292,8 +281,8 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
             if change.is_some() {
                 had_changes = true;
-                for anchor_id in anchor_ids {
-                    anchors_changed.insert(anchor_id.clone());
+                if let Some(branch_idx) = nearest_handler_ancestor(*idx, &parent_of, &atoms_flat) {
+                    changed_branches.insert(branch_idx);
                 }
             }
 
@@ -321,144 +310,41 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
             }
         }
 
-        // 6c. Decide each Handler atom's fate. Anchor changes are already
-        // recorded (handler atoms are in epochs strictly after their anchor's
-        // resource atoms, by inject_handlers' construction).
-        for (idx, operation, anchor_id) in handler_atoms {
-            let fires = anchors_changed.contains(&anchor_id);
+        apply_op_phase(atom_op_subtrees, &mut op_epoch_counter, &mut ctx, &redactor).await?;
 
-            // For the per-stage trees, mark the handler's progression. We
-            // emit Start before Complete to match the lifecycle of real
-            // probe events; the "state" string here is conceptually the
-            // anchor's change-flag rather than a probed system state.
-            emit(AppUpdate::ResourceStatesNodeStart { index: idx }).await?;
-            emit(AppUpdate::ResourceStatesNodeComplete {
-                index: idx,
-                node: if fires {
-                    "anchor changed".render()
-                } else {
-                    "anchor unchanged".render()
-                },
-            })
-            .await?;
-
-            emit(AppUpdate::ResourceChangesNode {
-                index: idx,
-                node: if fires {
-                    Some(operation.render())
-                } else {
-                    None
-                },
-            })
-            .await?;
-
-            if fires {
-                emit(AppUpdate::OperationsNode {
-                    index: idx,
-                    operations: lusid_view::ViewTree::Leaf {
-                        view: operation.render(),
-                    },
-                })
-                .await?;
-
-                atom_op_subtrees.push(PlanTree::Leaf {
-                    meta: PlanMeta::default(),
-                    node: operation,
-                });
+        // Phase B: collect handlers for branches whose latest epoch is this
+        // one and which had at least one atom change during apply.
+        let mut pending_handlers: Vec<Operation> = Vec::new();
+        for (branch_idx, latest) in &latest_epoch_by_branch {
+            if *latest != resource_epoch_idx || !changed_branches.contains(branch_idx) {
+                continue;
             }
+            // Remove the branch as we fire so any subsequent unintended
+            // re-entry would fail loudly under `debug_assert!`. (The current
+            // loop iterates `latest_epoch_by_branch` once, so this is a
+            // belt-and-braces invariant for future edits.)
+            let removed = changed_branches.remove(branch_idx);
+            debug_assert!(removed, "Phase B fire-once guard");
+
+            let handlers = match atoms_flat.get(*branch_idx) {
+                Ok(PlanFlatTreeNode::Branch { meta, .. }) => &meta.handlers,
+                _ => unreachable!("latest_epoch_by_branch only contains handler-bearing branches"),
+            };
+            pending_handlers.extend(handlers.iter().cloned());
         }
 
-        if atom_op_subtrees.is_empty() {
-            continue;
-        }
-
-        // 6d. Combine and compute internal operation epochs.
-        let combined: PlanTree<Operation> = PlanTree::Branch {
-            meta: PlanMeta::default(),
-            children: atom_op_subtrees,
-        };
-        let op_epochs = compute_epochs(combined.map(Some).map_meta(PlanMeta::to_causality))?;
-        debug!(
-            "Resource epoch {resource_epoch_idx} -> {} internal op epoch(s)",
-            op_epochs.len()
-        );
-
-        // 6e. Apply each internal op epoch (merge same-family, sequential
-        // execution within a merged batch). `Operation::merge` of a
-        // non-empty input always yields at least one op, so we don't guard
-        // for an empty `merged` - if `atom_op_subtrees` was empty we already
-        // continued above.
-        for ops_in_epoch in op_epochs {
-            let merged = Operation::merge(ops_in_epoch);
-
-            emit(AppUpdate::OperationsApplyEpochAdded {
-                epoch_index: op_epoch_counter,
-                operations: merged.iter().map(Render::render).collect(),
-            })
-            .await?;
-
-            for (op_idx, operation) in merged.iter().enumerate() {
-                let index = (op_epoch_counter, op_idx);
-                emit(AppUpdate::OperationApplyStart { index }).await?;
-
-                let (output, stdout, stderr) = operation.apply(&mut ctx).await?;
-
-                let output_task = async {
-                    output.await?;
-                    Ok::<(), ApplyError>(())
-                };
-
-                let stdout_task = {
-                    let mut lines = BufReader::new(stdout).lines();
-                    let redactor = redactor.clone();
-                    async move {
-                        while let Some(line) = lines
-                            .next_line()
-                            .await
-                            .map_err(ApplyError::ReadOperationStdio)?
-                        {
-                            emit(AppUpdate::OperationApplyStdout {
-                                index,
-                                stdout: redactor.redact(&line),
-                            })
-                            .await?;
-                        }
-                        Ok::<(), ApplyError>(())
-                    }
-                };
-
-                let stderr_task = {
-                    let mut lines = BufReader::new(stderr).lines();
-                    let redactor = redactor.clone();
-                    async move {
-                        while let Some(line) = lines
-                            .next_line()
-                            .await
-                            .map_err(ApplyError::ReadOperationStdio)?
-                        {
-                            emit(AppUpdate::OperationApplyStderr {
-                                index,
-                                stderr: redactor.redact(&line),
-                            })
-                            .await?;
-                        }
-                        Ok::<(), ApplyError>(())
-                    }
-                };
-
-                if let Err(error) = tokio::try_join!(output_task, stdout_task, stderr_task) {
-                    emit(AppUpdate::OperationApplyComplete {
-                        index,
-                        error: Some(error.to_string()),
+        if !pending_handlers.is_empty() {
+            let combined = PlanTree::Branch {
+                meta: PlanMeta::default(),
+                children: pending_handlers
+                    .into_iter()
+                    .map(|op| PlanTree::Leaf {
+                        meta: PlanMeta::default(),
+                        node: op,
                     })
-                    .await?;
-                    return Err(error);
-                } else {
-                    emit(AppUpdate::OperationApplyComplete { index, error: None }).await?;
-                }
-            }
-
-            op_epoch_counter += 1;
+                    .collect(),
+            };
+            apply_op_phase(vec![combined], &mut op_epoch_counter, &mut ctx, &redactor).await?;
         }
     }
 
@@ -470,6 +356,185 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     emit(AppUpdate::ApplyComplete { had_changes }).await?;
 
     Ok(())
+}
+
+/// Apply a batch of operation subtrees: compute their internal operation
+/// epochs, merge same-family ops within each, and execute sequentially.
+/// `op_epoch_counter` advances per internal op-epoch so Phase A and Phase B
+/// calls within the same resource epoch keep emitting strictly-increasing
+/// `OperationsApplyEpochAdded.epoch_index` values.
+///
+/// Returns early on the first operation failure, after emitting
+/// `OperationApplyComplete { error: Some(..) }` so the TUI can surface
+/// which op failed.
+async fn apply_op_phase(
+    subtrees: Vec<PlanTree<Operation>>,
+    op_epoch_counter: &mut usize,
+    ctx: &mut Context,
+    redactor: &Redactor,
+) -> Result<(), ApplyError> {
+    if subtrees.is_empty() {
+        return Ok(());
+    }
+
+    let combined: PlanTree<Operation> = PlanTree::Branch {
+        meta: PlanMeta::default(),
+        children: subtrees,
+    };
+    let op_epochs = compute_epochs(combined.map(Some).map_meta(PlanMeta::to_causality))?;
+    debug!("Phase produced {} internal op epoch(s)", op_epochs.len());
+
+    for ops_in_epoch in op_epochs {
+        let merged = Operation::merge(ops_in_epoch);
+
+        emit(AppUpdate::OperationsApplyEpochAdded {
+            epoch_index: *op_epoch_counter,
+            operations: merged.iter().map(Render::render).collect(),
+        })
+        .await?;
+
+        for (op_idx, operation) in merged.iter().enumerate() {
+            let index = (*op_epoch_counter, op_idx);
+            emit(AppUpdate::OperationApplyStart { index }).await?;
+
+            let (output, stdout, stderr) = operation.apply(ctx).await?;
+
+            let output_task = async {
+                output.await?;
+                Ok::<(), ApplyError>(())
+            };
+
+            let stdout_task = {
+                let mut lines = BufReader::new(stdout).lines();
+                let redactor = redactor.clone();
+                async move {
+                    while let Some(line) = lines
+                        .next_line()
+                        .await
+                        .map_err(ApplyError::ReadOperationStdio)?
+                    {
+                        emit(AppUpdate::OperationApplyStdout {
+                            index,
+                            stdout: redactor.redact(&line),
+                        })
+                        .await?;
+                    }
+                    Ok::<(), ApplyError>(())
+                }
+            };
+
+            let stderr_task = {
+                let mut lines = BufReader::new(stderr).lines();
+                let redactor = redactor.clone();
+                async move {
+                    while let Some(line) = lines
+                        .next_line()
+                        .await
+                        .map_err(ApplyError::ReadOperationStdio)?
+                    {
+                        emit(AppUpdate::OperationApplyStderr {
+                            index,
+                            stderr: redactor.redact(&line),
+                        })
+                        .await?;
+                    }
+                    Ok::<(), ApplyError>(())
+                }
+            };
+
+            if let Err(error) = tokio::try_join!(output_task, stdout_task, stderr_task) {
+                emit(AppUpdate::OperationApplyComplete {
+                    index,
+                    error: Some(error.to_string()),
+                })
+                .await?;
+                return Err(error);
+            } else {
+                emit(AppUpdate::OperationApplyComplete { index, error: None }).await?;
+            }
+        }
+
+        *op_epoch_counter += 1;
+    }
+
+    Ok(())
+}
+
+/// Build a `child arena idx -> parent arena idx` table over the FlatTree.
+/// Root index is `None`; tombstoned slots are skipped.
+fn build_parent_of<Node, Meta>(flat: &FlatTree<Node, Meta>) -> Vec<Option<usize>>
+where
+    Node: Clone,
+    Meta: Clone,
+{
+    let mut parent_of: Vec<Option<usize>> = (0..flat_arena_len(flat)).map(|_| None).collect();
+    for (idx, node) in flat.nodes_indexed() {
+        if let FlatTreeNode::Branch { children, .. } = node {
+            for &child in children {
+                if child < parent_of.len() {
+                    parent_of[child] = Some(idx);
+                }
+            }
+        }
+    }
+    parent_of
+}
+
+/// Arena length used to size the parent_of vector. We approximate by taking
+/// the highest live index + 1 (tombstoned tails are ignored, which is fine -
+/// `parent_of.get(idx)` returning `None` for an out-of-range idx behaves the
+/// same as a missing parent).
+fn flat_arena_len<Node, Meta>(flat: &FlatTree<Node, Meta>) -> usize
+where
+    Node: Clone,
+    Meta: Clone,
+{
+    flat.nodes_indexed()
+        .map(|(idx, _)| idx + 1)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Walk up `parent_of` from `leaf_idx` until we hit a branch whose
+/// `meta.handlers` is non-empty. Returns that branch's arena index, or
+/// `None` if no ancestor has handlers.
+fn nearest_handler_ancestor(
+    leaf_idx: usize,
+    parent_of: &[Option<usize>],
+    flat: &PlanFlatTree<Resource>,
+) -> Option<usize> {
+    let mut cur = parent_of.get(leaf_idx).copied().flatten();
+    while let Some(idx) = cur {
+        if let Ok(PlanFlatTreeNode::Branch { meta, .. }) = flat.get(idx)
+            && !meta.handlers.is_empty()
+        {
+            return Some(idx);
+        }
+        cur = parent_of.get(idx).copied().flatten();
+    }
+    None
+}
+
+/// For every handler-bearing plan-item branch reachable from any leaf in
+/// `epochs`, record the max resource-epoch any descendant atom appears in.
+/// Used by Phase B to decide when to fire each branch's handlers.
+fn build_latest_epoch_by_branch(
+    epochs: &[Vec<(usize, Resource)>],
+    parent_of: &[Option<usize>],
+    flat: &PlanFlatTree<Resource>,
+) -> BTreeMap<usize, usize> {
+    let mut latest: BTreeMap<usize, usize> = BTreeMap::new();
+    for (epoch_idx, atoms) in epochs.iter().enumerate() {
+        for (atom_idx, _) in atoms {
+            if let Some(branch_idx) = nearest_handler_ancestor(*atom_idx, parent_of, flat) {
+                latest
+                    .entry(branch_idx)
+                    .and_modify(|e| *e = (*e).max(epoch_idx))
+                    .or_insert(epoch_idx);
+            }
+        }
+    }
+    latest
 }
 
 /// Walk `tree` in pre-order, assigning each node (branch or leaf) a fresh
@@ -538,4 +603,163 @@ async fn emit(update: AppUpdate) -> Result<(), ApplyError> {
     stdout.flush().await.map_err(ApplyError::FlushStdout)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lusid_operation::operations::command::{CommandExecutor, CommandOperation};
+    use lusid_operation::operations::file::FilePath;
+    use lusid_resource::file::FileResource;
+
+    fn handler_op() -> Operation {
+        Operation::Command(CommandOperation {
+            command: "true".to_string(),
+            executor: CommandExecutor::Shell,
+        })
+    }
+
+    fn resource_leaf(path: &str) -> PlanTree<Resource> {
+        PlanTree::Leaf {
+            meta: PlanMeta::default(),
+            node: Resource::File(FileResource::Present {
+                path: FilePath::new(path),
+            }),
+        }
+    }
+
+    fn handler_branch(children: Vec<PlanTree<Resource>>) -> PlanTree<Resource> {
+        PlanTree::Branch {
+            meta: PlanMeta {
+                handlers: vec![handler_op()],
+                ..PlanMeta::default()
+            },
+            children,
+        }
+    }
+
+    fn plain_branch(children: Vec<PlanTree<Resource>>) -> PlanTree<Resource> {
+        PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children,
+        }
+    }
+
+    /// Pre-order arena layout: root branch is 0; its handler-bearing child
+    /// branch is 1; that branch's two leaves are 2 and 3.
+    #[test]
+    fn build_parent_of_records_each_node_pointing_at_its_branch() {
+        let tree = plain_branch(vec![handler_branch(vec![
+            resource_leaf("/a"),
+            resource_leaf("/b"),
+        ])]);
+        let flat: PlanFlatTree<Resource> = tree.into();
+        let parent_of = build_parent_of(&flat);
+
+        assert_eq!(parent_of[0], None, "root has no parent");
+        assert_eq!(parent_of[1], Some(0), "handler branch's parent is root");
+        assert_eq!(parent_of[2], Some(1), "leaf /a's parent is handler branch");
+        assert_eq!(parent_of[3], Some(1), "leaf /b's parent is handler branch");
+    }
+
+    #[test]
+    fn nearest_handler_ancestor_skips_intermediate_no_handler_branches() {
+        // root (no handlers) -> handler-bearing branch -> no-handler branch -> leaf.
+        // The leaf's nearest handler ancestor is the handler-bearing branch
+        // (two parent hops), not the immediate no-handler parent.
+        let tree = plain_branch(vec![handler_branch(vec![plain_branch(vec![
+            resource_leaf("/a"),
+        ])])]);
+        let flat: PlanFlatTree<Resource> = tree.into();
+        let parent_of = build_parent_of(&flat);
+
+        // Arena layout: 0=root, 1=handler-branch, 2=no-handler-branch, 3=leaf.
+        let leaf_idx = 3;
+        let handler_branch_idx = 1;
+        assert_eq!(
+            nearest_handler_ancestor(leaf_idx, &parent_of, &flat),
+            Some(handler_branch_idx),
+        );
+    }
+
+    #[test]
+    fn nearest_handler_ancestor_returns_nearest_not_outermost() {
+        // outer (handlers=[X]) -> inner (handlers=[Y]) -> leaf. v1's parser
+        // forbids constructing this, but the function picks the innermost
+        // anyway as a forward-compatible safety guarantee.
+        let tree = plain_branch(vec![handler_branch(vec![handler_branch(vec![
+            resource_leaf("/a"),
+        ])])]);
+        let flat: PlanFlatTree<Resource> = tree.into();
+        let parent_of = build_parent_of(&flat);
+
+        // Arena layout: 0=root, 1=outer-handler, 2=inner-handler, 3=leaf.
+        let leaf_idx = 3;
+        let inner_handler_idx = 2;
+        assert_eq!(
+            nearest_handler_ancestor(leaf_idx, &parent_of, &flat),
+            Some(inner_handler_idx),
+        );
+    }
+
+    #[test]
+    fn nearest_handler_ancestor_returns_none_when_no_ancestor_has_handlers() {
+        let tree = plain_branch(vec![resource_leaf("/a")]);
+        let flat: PlanFlatTree<Resource> = tree.into();
+        let parent_of = build_parent_of(&flat);
+
+        assert_eq!(nearest_handler_ancestor(1, &parent_of, &flat), None);
+    }
+
+    #[test]
+    fn build_latest_epoch_records_max_epoch_per_handler_branch() {
+        // Two leaves under one handler-bearing branch, placed in epochs 0 and 2.
+        let tree = plain_branch(vec![handler_branch(vec![
+            resource_leaf("/a"),
+            resource_leaf("/b"),
+        ])]);
+        let flat: PlanFlatTree<Resource> = tree.into();
+        let parent_of = build_parent_of(&flat);
+
+        // Arena layout: 0=root, 1=handler-branch, 2=leaf /a, 3=leaf /b.
+        let epochs = vec![
+            vec![(
+                2,
+                Resource::File(FileResource::Present {
+                    path: FilePath::new("/a"),
+                }),
+            )],
+            vec![],
+            vec![(
+                3,
+                Resource::File(FileResource::Present {
+                    path: FilePath::new("/b"),
+                }),
+            )],
+        ];
+
+        let latest = build_latest_epoch_by_branch(&epochs, &parent_of, &flat);
+        assert_eq!(latest.get(&1), Some(&2), "branch's latest epoch is 2");
+        assert_eq!(
+            latest.len(),
+            1,
+            "only the handler-bearing branch is tracked"
+        );
+    }
+
+    #[test]
+    fn build_latest_epoch_skips_branches_without_handlers() {
+        let tree = plain_branch(vec![resource_leaf("/a")]);
+        let flat: PlanFlatTree<Resource> = tree.into();
+        let parent_of = build_parent_of(&flat);
+
+        let epochs = vec![vec![(
+            1,
+            Resource::File(FileResource::Present {
+                path: FilePath::new("/a"),
+            }),
+        )]];
+        let latest = build_latest_epoch_by_branch(&epochs, &parent_of, &flat);
+        assert!(latest.is_empty());
+    }
 }

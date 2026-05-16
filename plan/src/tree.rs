@@ -3,28 +3,28 @@
 use cuid2::create_id;
 use lusid_causality::CausalityMeta;
 use lusid_operation::Operation;
-use lusid_resource::Resource;
 use lusid_tree::{FlatTree, FlatTreeNode, Tree};
-use lusid_view::{Render, View, ViewTree};
+use lusid_view::{Render, ViewTree};
 
 use crate::PlanNodeId;
 
 /// A nested planned tree. Branch/leaf metadata carries [`PlanNodeId`] identifiers
 /// for dependency scheduling, plus any `on_change` handler operations parsed at
-/// plan-time and waiting to be grafted into the atom tree by [`inject_handlers`].
+/// plan-time.
 pub type PlanTree<Node> = Tree<Node, PlanMeta>;
 
 /// Plan-side metadata: causality fields plus install-hook handlers.
 ///
 /// Handlers live here (not on `CausalityMeta`) because they're plan-layer
 /// concepts. They flow alongside resource params from plan-load through atom
-/// expansion; [`inject_handlers`] is the post-pass that rewrites the tree so
-/// each plan item's handlers appear as their own atom leaves, gated by the
-/// anchor branch's causality id.
+/// expansion and are fired by the apply loop directly, keyed by the arena
+/// index of the owning plan-item branch.
 ///
 /// Invariant: every `map_tree` call that turns a `PlanTree` leaf into a branch
-/// must pass `meta` straight through to the produced branch - otherwise
-/// `handlers` is silently dropped.
+/// must pass `meta` straight through to the produced branch. The apply loop
+/// reads `meta.handlers` from the atoms tree at apply time, so a dropped
+/// `handlers` vector silently disables `on_change` for that plan item with no
+/// other symptom.
 #[derive(Debug, Clone, Default)]
 pub struct PlanMeta {
     pub id: Option<PlanNodeId>,
@@ -95,172 +95,6 @@ where
     })
 }
 
-/// Synthetic sub-item id used by [`inject_handlers`] to anchor on_change
-/// handlers after every resource-side leaf. Each call to [`inject_handlers`]
-/// mints a fresh `scope_id` for the anchor (via [`cuid2`]), so this id can't
-/// collide with the resource's own atom ids (which live under a different
-/// scope minted by [`map_plan_subitems`]).
-const HANDLER_ANCHOR: &str = "@@handler-anchor";
-
-/// One leaf in the augmented atom tree built by [`inject_handlers`].
-///
-/// `Resource` is a real resource atom; the apply pipeline probes its state,
-/// computes a change, and (if any) emits operations.
-///
-/// `Handler` is a parsed `on_change` operation, materialised as its own leaf
-/// so causality scheduling can place it in a strictly-later resource epoch
-/// than the atoms it watches. It fires only if at least one of those atoms
-/// resolved to a change in the current apply.
-#[derive(Debug, Clone)]
-pub enum AtomNode {
-    Resource {
-        resource: Resource,
-        /// Anchor branch ids whose handlers fire when this atom changes. An
-        /// atom may be under several nested anchors (outer plan-item with
-        /// handlers wrapping an inner plan-item with its own handlers); all
-        /// of them get notified.
-        anchor_ids: Vec<PlanNodeId>,
-    },
-    Handler {
-        operation: Operation,
-        /// Synthetic anchor id. The pipeline fires this handler iff the
-        /// `anchors_changed` set built during epoch processing contains this
-        /// id by the time the handler's epoch is reached.
-        anchor_id: PlanNodeId,
-    },
-}
-
-impl Render for AtomNode {
-    fn render(&self) -> View {
-        match self {
-            AtomNode::Resource { resource, .. } => resource.render(),
-            AtomNode::Handler { operation, .. } => operation.render(),
-        }
-    }
-}
-
-/// Branch-level post-pass that grafts `on_change` handlers into the atom tree.
-///
-/// For each `PlanTree::Branch` carrying handlers, the branch's children are
-/// wrapped in this shape:
-///
-/// ```text
-/// Branch (outer, meta with handlers cleared) {
-///   Branch (anchor, id = SubItem(fresh_scope, "@@handler-anchor")) {
-///     <original children, recursively transformed>
-///   },
-///   Leaf (AtomNode::Handler, requires = [anchor_id]),
-///   ... (one leaf per handler operation)
-/// }
-/// ```
-///
-/// The anchor branch carries an id; per causality's branch-as-group semantics,
-/// any leaf requiring that id transitively waits for every leaf inside the
-/// anchor. So every handler leaf runs in a strictly-later resource epoch than
-/// every resource-side atom it watches.
-///
-/// The outer branch retains the plan item's original `id`/`requires`/
-/// `required_by`, so dependents declaring `requires: [this-id]` still wait
-/// for the resource AND its handlers (handler leaves are descendants of the
-/// outer branch and therefore also covered by its id).
-///
-/// Unlike the previous design, the wrap is unconditional: at this point in
-/// the pipeline we don't yet know which atoms will resolve to a change.
-/// Conditional firing is the apply pipeline's job: it tracks `anchor_ids` on
-/// each resource atom and decides each handler atom's fate when its epoch
-/// arrives.
-pub fn inject_handlers(tree: PlanTree<Resource>) -> PlanTree<AtomNode> {
-    let mut active_anchors: Vec<PlanNodeId> = Vec::new();
-    inject_recursive(tree, &mut active_anchors)
-}
-
-fn inject_recursive(
-    tree: PlanTree<Resource>,
-    active_anchors: &mut Vec<PlanNodeId>,
-) -> PlanTree<AtomNode> {
-    match tree {
-        Tree::Leaf { meta, node } => Tree::Leaf {
-            meta,
-            node: AtomNode::Resource {
-                resource: node,
-                anchor_ids: active_anchors.clone(),
-            },
-        },
-        Tree::Branch { meta, children } => {
-            let PlanMeta {
-                id,
-                requires,
-                required_by,
-                handlers,
-            } = meta;
-
-            if handlers.is_empty() {
-                let new_children: Vec<_> = children
-                    .into_iter()
-                    .map(|c| inject_recursive(c, active_anchors))
-                    .collect();
-                return Tree::Branch {
-                    meta: PlanMeta {
-                        id,
-                        requires,
-                        required_by,
-                        handlers,
-                    },
-                    children: new_children,
-                };
-            }
-
-            let anchor_id = PlanNodeId::SubItem {
-                scope_id: create_id(),
-                item_id: HANDLER_ANCHOR.to_string(),
-            };
-
-            active_anchors.push(anchor_id.clone());
-            let new_children: Vec<_> = children
-                .into_iter()
-                .map(|c| inject_recursive(c, active_anchors))
-                .collect();
-            active_anchors.pop();
-
-            let anchor_branch = Tree::Branch {
-                meta: PlanMeta {
-                    id: Some(anchor_id.clone()),
-                    ..PlanMeta::default()
-                },
-                children: new_children,
-            };
-
-            let handler_leaves: Vec<_> = handlers
-                .into_iter()
-                .map(|op| Tree::Leaf {
-                    meta: PlanMeta {
-                        requires: vec![anchor_id.clone()],
-                        ..PlanMeta::default()
-                    },
-                    node: AtomNode::Handler {
-                        operation: op,
-                        anchor_id: anchor_id.clone(),
-                    },
-                })
-                .collect();
-
-            let mut all_children = Vec::with_capacity(1 + handler_leaves.len());
-            all_children.push(anchor_branch);
-            all_children.extend(handler_leaves);
-
-            Tree::Branch {
-                meta: PlanMeta {
-                    id,
-                    requires,
-                    required_by,
-                    handlers: Vec::new(),
-                },
-                children: all_children,
-            }
-        }
-    }
-}
-
 /// Convert a [`PlanTree`] into a [`ViewTree`] for TUI display. Branch labels use the
 /// branch's `PlanNodeId` (rendered) or `.` if the branch is anonymous.
 pub fn render_plan_tree<Node>(tree: PlanTree<Node>) -> ViewTree
@@ -282,8 +116,10 @@ where
 mod tests {
     use super::*;
     use crate::PlanId;
+    use lusid_causality::compute_epochs;
     use lusid_operation::operations::command::{CommandExecutor, CommandOperation};
     use lusid_operation::operations::file::FilePath;
+    use lusid_resource::Resource;
     use lusid_resource::file::FileResource;
     use std::path::PathBuf;
 
@@ -310,263 +146,63 @@ mod tests {
         }
     }
 
+    /// Trace of the causal property that `requires: [plan-item-id]` waits
+    /// for the plan item's atoms. The apply loop adds the further guarantee
+    /// that handlers fire in Phase B before the next resource epoch's
+    /// Phase A, so dependents transitively see handlers' effects.
     #[test]
-    fn no_handlers_passes_through_with_empty_anchor_ids() {
-        let tree = PlanTree::Branch {
+    fn dependent_lands_strictly_after_plan_item_atoms() {
+        let p = PlanTree::Branch {
             meta: PlanMeta {
-                id: Some(plan_item_id("a")),
-                ..PlanMeta::default()
-            },
-            children: vec![resource_leaf()],
-        };
-        let result = inject_handlers(tree);
-        let Tree::Branch { meta, children } = result else {
-            panic!("expected branch");
-        };
-        assert!(meta.handlers.is_empty());
-        assert_eq!(children.len(), 1);
-        let Tree::Leaf { node, .. } = &children[0] else {
-            panic!("expected leaf");
-        };
-        match node {
-            AtomNode::Resource { anchor_ids, .. } => assert!(anchor_ids.is_empty()),
-            _ => panic!("expected Resource leaf"),
-        }
-    }
-
-    #[test]
-    fn handlers_wrap_unconditionally_and_stamp_anchor_id_on_atoms() {
-        let tree = PlanTree::Branch {
-            meta: PlanMeta {
-                id: Some(plan_item_id("nginx-conf")),
-                handlers: vec![handler_op()],
-                ..PlanMeta::default()
-            },
-            children: vec![resource_leaf(), resource_leaf()],
-        };
-        let Tree::Branch {
-            meta: outer_meta,
-            children: outer_children,
-        } = inject_handlers(tree)
-        else {
-            panic!("expected outer branch");
-        };
-
-        assert!(outer_meta.handlers.is_empty(), "outer handlers cleared");
-        assert!(
-            matches!(&outer_meta.id, Some(PlanNodeId::PlanItem { item_id, .. }) if item_id == "nginx-conf"),
-            "outer branch retains plan-item id"
-        );
-        assert_eq!(outer_children.len(), 2, "anchor branch + 1 handler leaf");
-
-        let Tree::Branch {
-            meta: anchor_meta,
-            children: anchor_children,
-        } = &outer_children[0]
-        else {
-            panic!("expected anchor branch as first child");
-        };
-        let anchor_id = anchor_meta.id.clone().expect("anchor has id");
-        assert!(
-            matches!(&anchor_id, PlanNodeId::SubItem { item_id, .. } if item_id == HANDLER_ANCHOR),
-            "anchor branch carries the handler-anchor sub-id",
-        );
-        assert_eq!(anchor_children.len(), 2, "anchor wraps original children");
-
-        // Each Resource atom inside the anchor carries the anchor id.
-        for child in anchor_children {
-            let Tree::Leaf { node, .. } = child else {
-                panic!("expected resource leaf in anchor");
-            };
-            match node {
-                AtomNode::Resource { anchor_ids, .. } => {
-                    assert_eq!(anchor_ids.len(), 1);
-                    assert_eq!(anchor_ids[0], anchor_id);
-                }
-                _ => panic!("expected Resource"),
-            }
-        }
-
-        let Tree::Leaf {
-            meta: handler_meta,
-            node: handler_node,
-        } = &outer_children[1]
-        else {
-            panic!("expected handler leaf as second child");
-        };
-        assert_eq!(handler_meta.requires, vec![anchor_id.clone()]);
-        match handler_node {
-            AtomNode::Handler {
-                anchor_id: handler_anchor_id,
-                ..
-            } => {
-                assert_eq!(handler_anchor_id, &anchor_id);
-            }
-            _ => panic!("expected Handler"),
-        }
-    }
-
-    #[test]
-    fn nested_anchors_stack_anchor_ids_on_innermost_atoms() {
-        let inner = PlanTree::Branch {
-            meta: PlanMeta {
-                id: Some(plan_item_id("inner")),
+                id: Some(plan_item_id("p")),
                 handlers: vec![handler_op()],
                 ..PlanMeta::default()
             },
             children: vec![resource_leaf()],
         };
-        let outer = PlanTree::Branch {
+        let b = PlanTree::Leaf {
             meta: PlanMeta {
-                id: Some(plan_item_id("outer")),
-                handlers: vec![handler_op()],
+                requires: vec![plan_item_id("p")],
                 ..PlanMeta::default()
             },
-            children: vec![inner],
+            node: Resource::File(FileResource::Present {
+                path: FilePath::new("/tmp/b"),
+            }),
         };
-        let Tree::Branch {
-            children: outer_children,
-            ..
-        } = inject_handlers(outer)
-        else {
-            panic!("expected outer branch");
+        let root = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![p, b],
         };
-        let Tree::Branch {
-            meta: outer_anchor_meta,
-            children: outer_anchor_children,
-        } = &outer_children[0]
-        else {
-            panic!("expected outer anchor branch");
-        };
-        let outer_anchor_id = outer_anchor_meta.id.clone().expect("outer anchor id");
-
-        // Inside the outer anchor: the inner plan-item branch (still wrapped).
-        let Tree::Branch {
-            children: inner_outer_children,
-            ..
-        } = &outer_anchor_children[0]
-        else {
-            panic!("expected inner plan-item branch under outer anchor");
-        };
-        let Tree::Branch {
-            meta: inner_anchor_meta,
-            children: inner_anchor_children,
-        } = &inner_outer_children[0]
-        else {
-            panic!("expected inner anchor branch");
-        };
-        let inner_anchor_id = inner_anchor_meta.id.clone().expect("inner anchor id");
-
-        let Tree::Leaf { node, .. } = &inner_anchor_children[0] else {
-            panic!("expected resource leaf");
-        };
-        match node {
-            AtomNode::Resource { anchor_ids, .. } => {
-                assert_eq!(anchor_ids.len(), 2, "leaf is under both anchors");
-                assert!(anchor_ids.contains(&outer_anchor_id));
-                assert!(anchor_ids.contains(&inner_anchor_id));
-            }
-            _ => panic!("expected Resource"),
-        }
-    }
-
-    #[test]
-    fn handler_branch_nested_under_handler_free_branch_passes_through_outer() {
-        // Outer plan-item branch has no handlers; inner has handlers and a
-        // resource leaf. Wrap should happen on the inner branch only.
-        let inner = PlanTree::Branch {
-            meta: PlanMeta {
-                id: Some(plan_item_id("inner")),
-                handlers: vec![handler_op()],
-                ..PlanMeta::default()
-            },
-            children: vec![resource_leaf()],
-        };
-        let outer = PlanTree::Branch {
-            meta: PlanMeta {
-                id: Some(plan_item_id("outer")),
-                ..PlanMeta::default()
-            },
-            children: vec![inner],
-        };
-        let Tree::Branch {
-            meta: outer_meta,
-            children: outer_children,
-        } = inject_handlers(outer)
-        else {
-            panic!("expected outer branch");
-        };
-
-        // Outer branch is unwrapped: its id and structure pass through, no
-        // anchor synthesised at the outer layer.
-        assert!(
-            matches!(&outer_meta.id, Some(PlanNodeId::PlanItem { item_id, .. }) if item_id == "outer"),
-            "outer id retained",
-        );
-        assert!(outer_meta.handlers.is_empty());
-        assert_eq!(outer_children.len(), 1, "outer keeps its single child");
-
-        // Inner branch was wrapped: we should see an anchor + handler leaf.
-        let Tree::Branch {
-            meta: inner_meta,
-            children: inner_children,
-        } = &outer_children[0]
-        else {
-            panic!("expected inner branch under outer");
-        };
-        assert!(
-            matches!(&inner_meta.id, Some(PlanNodeId::PlanItem { item_id, .. }) if item_id == "inner"),
-            "inner id retained",
-        );
-        assert_eq!(
-            inner_children.len(),
-            2,
-            "inner: anchor branch + handler leaf"
-        );
-        assert!(matches!(&inner_children[0], Tree::Branch { .. }));
-        assert!(matches!(
-            &inner_children[1],
-            Tree::Leaf {
-                node: AtomNode::Handler { .. },
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn handler_leaf_lands_in_strictly_later_epoch_than_resource_leaves() {
-        // End-to-end: inject_handlers + compute_epochs places the handler
-        // operation in an epoch strictly after every resource-side atom under
-        // its anchor.
-        use lusid_causality::compute_epochs;
-
-        let tree = PlanTree::Branch {
-            meta: PlanMeta {
-                id: Some(plan_item_id("res")),
-                handlers: vec![handler_op()],
-                ..PlanMeta::default()
-            },
-            children: vec![resource_leaf()],
-        };
-        let injected = inject_handlers(tree);
-        let causality = injected.map(Some).map_meta(PlanMeta::to_causality);
+        let causality = root.map(Some).map_meta(PlanMeta::to_causality);
         let epochs = compute_epochs(causality).expect("compute_epochs");
 
-        let mut resource_epoch = None;
-        let mut handler_epoch = None;
+        // Resource atoms are leaves. The handler-on-p case is exercised at
+        // the apply layer; this test only proves p's resource atom is in an
+        // earlier epoch than b's.
+        let mut p_epoch = None;
+        let mut b_epoch = None;
         for (i, epoch) in epochs.iter().enumerate() {
-            for atom in epoch {
-                match atom {
-                    AtomNode::Resource { .. } => resource_epoch = Some(i),
-                    AtomNode::Handler { .. } => handler_epoch = Some(i),
+            for resource in epoch {
+                match resource {
+                    Resource::File(FileResource::Present { path })
+                        if path.as_path() == std::path::Path::new("/tmp/x") =>
+                    {
+                        p_epoch = Some(i)
+                    }
+                    Resource::File(FileResource::Present { path })
+                        if path.as_path() == std::path::Path::new("/tmp/b") =>
+                    {
+                        b_epoch = Some(i)
+                    }
+                    _ => {}
                 }
             }
         }
-        let resource_epoch = resource_epoch.expect("found resource");
-        let handler_epoch = handler_epoch.expect("found handler");
+        let p_epoch = p_epoch.expect("found p's atom");
+        let b_epoch = b_epoch.expect("found b's atom");
         assert!(
-            handler_epoch > resource_epoch,
-            "handler epoch ({handler_epoch}) must be strictly later than resource epoch ({resource_epoch})",
+            b_epoch > p_epoch,
+            "b's atom epoch ({b_epoch}) must be strictly later than p's ({p_epoch})",
         );
     }
 }

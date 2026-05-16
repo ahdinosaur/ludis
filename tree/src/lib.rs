@@ -138,6 +138,16 @@ where
         })
     }
 
+    /// Iterates `(arena_index, node)` pairs for every live slot in arena order.
+    /// Tombstoned slots are skipped. Useful when downstream needs the arena
+    /// index alongside the node (e.g. building a child→parent map).
+    pub fn nodes_indexed(&self) -> impl Iterator<Item = (usize, &FlatTreeNode<Node, Meta>)> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, slot)| slot.as_ref().map(|n| (idx, n)))
+    }
+
     pub fn get(&self, index: usize) -> Result<&FlatTreeNode<Node, Meta>, FlatTreeError> {
         let node = self
             .nodes

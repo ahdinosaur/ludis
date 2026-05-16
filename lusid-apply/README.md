@@ -7,18 +7,15 @@ Shipped as both a library (`lusid_apply::apply`) and a binary (`lusid-apply`). E
 ## Pipeline
 
 1. **Plan** - [`lusid_plan::plan`] evaluates Rimu, produces `PlanTree<ResourceParams>`.
-2. **Resources** - each plan node expands into 1+ typed resource atoms ([`map_plan_subitems`] scopes intra-resource ids).
-3. **Inject handlers** - [`lusid_plan::inject_handlers`] grafts each plan-item branch's `on_change` operations into the atom tree as `Handler` leaves under a synthetic anchor branch. Resource atoms gain an `anchor_ids` list recording which anchor(s) cover them.
-4. **Epoch scheduling** - [`lusid_causality::compute_epochs`] orders atoms into topological layers.
-5. **Per-epoch processing** - for each layer in order:
-   - probe state for `Resource` atoms in parallel,
-   - compute change per atom; record any change against every anchor covering that atom,
-   - decide each `Handler` atom by checking whether its anchor was marked changed (handlers are always in epochs strictly later than every atom under their anchor),
-   - combine per-atom op subtrees + emitted handler ops, compute INTERNAL operation epochs, and apply each with same-family merging.
+2. **Resources** - each plan node expands into 1+ typed resource atoms ([`map_plan_subitems`] scopes intra-resource ids). `on_change` operations stay on each plan-item branch's `PlanMeta::handlers`; they are not lifted into the atom tree.
+3. **Epoch scheduling** - [`lusid_causality::compute_epochs`] orders atoms into topological layers.
+4. **Per-epoch processing** - for each layer in order:
+   - **Phase A**: probe state for atoms in parallel, compute change per atom, run change ops through `compute_epochs` + `Operation::merge` and apply. When an atom changes, the apply loop walks parent links to find the nearest enclosing plan-item branch whose `meta.handlers` is non-empty and marks it in `changed_branches`.
+   - **Phase B**: for every handler-bearing branch whose latest atom is in this epoch and which is in `changed_branches`, collect its `on_change` operations and apply them through the same merge + apply flow. Phase B fires after Phase A's ops complete and before the next epoch's Phase A begins, so handlers run strictly after the atoms they watch and strictly before any dependent's atoms.
 
 State is probed *per epoch*, not upfront. By the time atoms in epoch N are probed, every atom in epochs 0..N has already been applied, so probes see fresh-from-disk state. This matters when a prior epoch creates the file or installs the package being probed.
 
-Within each epoch, [`Operation::merge`] still coalesces like-typed operations (e.g. multiple `apt install` → one multi-package call). Coalescing does NOT cross epochs; identical operations in two different epochs run twice.
+Within each epoch, [`Operation::merge`] coalesces like-typed operations (e.g. multiple `apt install` → one multi-package call) per phase. Coalescing does NOT cross epochs; identical operations in two different epochs run twice.
 
 ## Protocol
 

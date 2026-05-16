@@ -8,14 +8,18 @@
 //! ## Pipeline shape
 //!
 //! 1. Plan source -> [`AppUpdate::ResourceParams`] (full tree, one event).
-//! 2. Resource expansion -> `Resources*` events (the atoms tree, including
-//!    `on_change` handler leaves grafted in by `inject_handlers`).
+//! 2. Resource expansion -> `Resources*` events (the atoms tree, matching the
+//!    plan as written - one leaf per resource atom).
 //! 3. Per resource epoch (in causality order):
 //!    - state probe events for atoms in this epoch,
 //!    - change events,
 //!    - operations sub-tree events,
-//!    - per-internal-operation-epoch [`AppUpdate::OperationsApplyEpochAdded`]
-//!      with its merged ops, then per-op apply events.
+//!    - Phase A: per-internal-operation-epoch
+//!      [`AppUpdate::OperationsApplyEpochAdded`] with merged change ops,
+//!      then per-op apply events,
+//!    - Phase B: handler ops for any plan item whose latest atom was in
+//!      this epoch and which had at least one atom change. Same lifecycle
+//!      events as Phase A, advancing the same `op_epoch_index` counter.
 //! 4. [`AppUpdate::ApplyComplete`].
 //!
 //! Events from the per-epoch loop interleave: state events for atoms in
@@ -292,10 +296,10 @@ pub enum AppUpdate {
         resource_params: ViewTree,
     },
 
-    /// Begin filling in the atoms tree (the post-`inject_handlers` resources
-    /// tree). `Resources` retains its name from the previous protocol; it now
-    /// includes any `on_change` handler leaves wrapped under their anchor
-    /// branches.
+    /// Begin filling in the atoms tree - the resource atoms produced by
+    /// expanding each plan item's `ResourceParams`. One leaf per atom; no
+    /// synthetic nodes for `on_change` handlers (those fire in Phase B and
+    /// appear only in the apply pane).
     ResourcesStart,
     ResourcesNode {
         index: usize,
@@ -396,8 +400,7 @@ impl OperationView {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppView {
     pub resource_params: Option<FlatViewTree>,
-    /// The atoms tree (post-`inject_handlers`). Retains the legacy "resources"
-    /// name in the field for now.
+    /// The atoms tree - one leaf per resource atom, matching the plan as written.
     pub resources: Option<FlatViewTree>,
     pub resource_states: Option<FlatViewTree>,
     pub resource_changes: Option<FlatViewTree>,
