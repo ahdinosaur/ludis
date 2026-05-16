@@ -9,7 +9,6 @@ use lusid_operation::{
     operations::file::{FileGroup, FileMode, FileOperation, FilePath, FileSource, FileUser},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Span, Spanned, Value};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
@@ -139,8 +138,6 @@ impl Display for FileParams {
     }
 }
 
-impl_display_render!(FileParams);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileResource {
     Sourced {
@@ -199,8 +196,6 @@ impl Display for FileResource {
     }
 }
 
-impl_display_render!(FileResource);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileState {
     Sourced,
@@ -237,8 +232,6 @@ impl Display for FileState {
         write!(f, "{text}")
     }
 }
-
-impl_display_render!(FileState);
 
 #[derive(Error, Debug)]
 pub enum FileStateError {
@@ -311,8 +304,6 @@ impl Display for FileChange {
         }
     }
 }
-
-impl_display_render!(FileChange);
 
 #[derive(Debug, Clone)]
 pub struct File;

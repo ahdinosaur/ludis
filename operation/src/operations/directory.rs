@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
-use lusid_view::impl_display_render;
 use serde::{Deserialize, Serialize};
 use std::{fmt::Display, pin::Pin};
 use tokio::io::AsyncRead;
@@ -79,8 +78,6 @@ impl Display for DirectoryOperation {
         }
     }
 }
-
-impl_display_render!(DirectoryOperation);
 
 #[derive(Debug, Clone)]
 pub struct Directory;

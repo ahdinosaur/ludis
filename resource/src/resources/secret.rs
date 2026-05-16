@@ -29,7 +29,6 @@ use lusid_operation::{
     operations::file::{FileGroup, FileMode, FilePath, FileUser},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 
@@ -74,8 +73,6 @@ impl Display for SecretParams {
         write!(f, "Secret(name={}, path={})", self.name, self.path)
     }
 }
-
-impl_display_render!(SecretParams);
 
 #[derive(Debug, Clone)]
 pub struct Secret;

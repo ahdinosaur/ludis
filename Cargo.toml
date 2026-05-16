@@ -14,14 +14,14 @@ members = [
   "params",
   "plan",
   "render",
-  "rimu-interop",
   "resource",
+  "rimu-interop",
   "secrets",
   "ssh",
   "store",
   "system",
+  "tree",
   "vm",
-  "view", "tree",
 ]
 
 [workspace.dependencies]

@@ -5,7 +5,6 @@
 //!   references (`requires` / `required_by`).
 
 use lusid_store::StoreItemId;
-use lusid_view::impl_display_render;
 use rimu::SourceId;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -113,5 +112,3 @@ impl Display for PlanNodeId {
         }
     }
 }
-
-impl_display_render!(PlanNodeId);

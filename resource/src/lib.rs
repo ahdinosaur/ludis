@@ -12,7 +12,6 @@ use lusid_ctx::Context;
 use lusid_fs::FsError;
 use lusid_operation::{Operation, operations::file::FilePath};
 use lusid_params::ParseParams;
-use lusid_view::Render;
 use rimu::Span;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -63,18 +62,18 @@ pub trait ResourceType {
     /// via [`ParseParams`]. Each variant of the struct/enum corresponds to an
     /// allowed shape - the parser does shape validation and typed extraction
     /// in one pass.
-    type Params: Render + ParseParams;
+    type Params: ParseParams;
 
     /// Indivisible unit of managed state. One `Params` may produce many atoms (e.g. one
     /// per package in a packages list).
-    type Resource: Render;
+    type Resource;
 
     /// Expand params into one or more resource atoms, organised as a causality tree so
     /// intra-resource ordering (e.g. "chmod after write") can be declared via meta ids.
     fn resources(params: Self::Params) -> Vec<CausalityTree<Self::Resource>>;
 
     /// Observed state of a single atom on the target machine.
-    type State: Render;
+    type State;
 
     /// Failures that can occur while observing state (command exec, parse errors, etc.).
     type StateError;
@@ -86,7 +85,7 @@ pub trait ResourceType {
     ) -> Result<Self::State, Self::StateError>;
 
     /// The delta from `State` to the desired `Resource`.
-    type Change: Render;
+    type Change;
 
     /// Compute the change needed to reach `resource` from `state`. `None` means no-op.
     fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change>;
@@ -147,29 +146,6 @@ impl Display for ResourceParams {
     }
 }
 
-impl Render for ResourceParams {
-    fn render(&self) -> lusid_view::View {
-        use ResourceParams::*;
-        match self {
-            Apt(params) => params.render(),
-            AptRepo(params) => params.render(),
-            Aur(params) => params.render(),
-            File(params) => params.render(),
-            Directory(params) => params.render(),
-            Flatpak(params) => params.render(),
-            FlatpakRemote(params) => params.render(),
-            Pacman(params) => params.render(),
-            Podman(params) => params.render(),
-            Command(params) => params.render(),
-            Git(params) => params.render(),
-            Secret(params) => params.render(),
-            Systemd(params) => params.render(),
-            User(params) => params.render(),
-            Group(params) => params.render(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Resource {
     Apt(AptResource),
@@ -206,28 +182,6 @@ impl Display for Resource {
             Systemd(systemd) => systemd.fmt(f),
             User(user) => user.fmt(f),
             Group(group) => group.fmt(f),
-        }
-    }
-}
-
-impl Render for Resource {
-    fn render(&self) -> lusid_view::View {
-        use Resource::*;
-        match self {
-            Apt(params) => params.render(),
-            AptRepo(params) => params.render(),
-            Aur(params) => params.render(),
-            File(params) => params.render(),
-            Directory(params) => params.render(),
-            Flatpak(params) => params.render(),
-            FlatpakRemote(params) => params.render(),
-            Pacman(params) => params.render(),
-            Podman(params) => params.render(),
-            Command(params) => params.render(),
-            Git(params) => params.render(),
-            Systemd(params) => params.render(),
-            User(params) => params.render(),
-            Group(params) => params.render(),
         }
     }
 }
@@ -272,28 +226,6 @@ impl Display for ResourceState {
             Systemd(systemd) => systemd.fmt(f),
             User(user) => user.fmt(f),
             Group(group) => group.fmt(f),
-        }
-    }
-}
-
-impl Render for ResourceState {
-    fn render(&self) -> lusid_view::View {
-        use ResourceState::*;
-        match self {
-            Apt(params) => params.render(),
-            AptRepo(params) => params.render(),
-            Aur(params) => params.render(),
-            File(params) => params.render(),
-            Directory(params) => params.render(),
-            Flatpak(params) => params.render(),
-            FlatpakRemote(params) => params.render(),
-            Pacman(params) => params.render(),
-            Podman(params) => params.render(),
-            Command(params) => params.render(),
-            Git(params) => params.render(),
-            Systemd(params) => params.render(),
-            User(params) => params.render(),
-            Group(params) => params.render(),
         }
     }
 }
@@ -381,28 +313,6 @@ impl Display for ResourceChange {
             Systemd(systemd) => systemd.fmt(f),
             User(user) => user.fmt(f),
             Group(group) => group.fmt(f),
-        }
-    }
-}
-
-impl Render for ResourceChange {
-    fn render(&self) -> lusid_view::View {
-        use ResourceChange::*;
-        match self {
-            Apt(params) => params.render(),
-            AptRepo(params) => params.render(),
-            Aur(params) => params.render(),
-            File(params) => params.render(),
-            Directory(params) => params.render(),
-            Flatpak(params) => params.render(),
-            FlatpakRemote(params) => params.render(),
-            Pacman(params) => params.render(),
-            Podman(params) => params.render(),
-            Command(params) => params.render(),
-            Git(params) => params.render(),
-            Systemd(params) => params.render(),
-            User(params) => params.render(),
-            Group(params) => params.render(),
         }
     }
 }

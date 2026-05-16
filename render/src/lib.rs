@@ -81,8 +81,7 @@ impl RenderedNode {
     }
 
     /// Flatten to a plain string. `Tagged` discards its tag; `Tree` is rendered
-    /// as an indented ASCII tree via [`termtree`], matching the previous
-    /// `ViewTree::Display` output shape.
+    /// as an indented ASCII tree via [`termtree`].
     pub fn to_plain_string(&self) -> String {
         match self {
             RenderedNode::Plain(text) => text.clone(),

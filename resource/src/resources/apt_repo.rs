@@ -10,7 +10,6 @@ use lusid_operation::{
     operations::{apt_repo::AptRepoOperation, file::FilePath},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -89,8 +88,6 @@ impl Display for AptRepoParams {
     }
 }
 
-impl_display_render!(AptRepoParams);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AptRepoResource {
     pub name: String,
@@ -109,8 +106,6 @@ impl Display for AptRepoResource {
         )
     }
 }
-
-impl_display_render!(AptRepoResource);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptRepoState {
@@ -135,8 +130,6 @@ impl Display for AptRepoState {
         }
     }
 }
-
-impl_display_render!(AptRepoState);
 
 #[derive(Error, Debug)]
 pub enum AptRepoStateError {
@@ -173,8 +166,6 @@ impl Display for AptRepoChange {
         }
     }
 }
-
-impl_display_render!(AptRepoChange);
 
 #[derive(Debug, Clone)]
 pub struct AptRepo;

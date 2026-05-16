@@ -26,7 +26,7 @@ lusid is a Cargo workspace. The crates split by responsibility:
 | --- | --- |
 | [`lusid`](../lusid/) | User-facing CLI. Reads `lusid.toml`, spawns `lusid-apply`, renders progress in a ratatui TUI. |
 | [`apply-stdio`](../apply-stdio/) | Shared wire protocol between `lusid-apply` and the TUI. |
-| [`view`](../view/) | Serializable styled-text view primitives. |
+| [`render`](../render/) | Lowers structured domain types to ratatui text or plain strings. |
 | [`config`](../lusid/src/config.rs) | `lusid.toml` schema. |
 
 ### Targets

@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use lusid_cmd::{Command as RunCommand, CommandError as RunCommandError};
 use lusid_ctx::Context;
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fmt::Display, pin::Pin, str::FromStr};
@@ -68,8 +67,6 @@ impl Display for CommandOperation {
         write!(f, "Command({command})")
     }
 }
-
-impl_display_render!(CommandOperation);
 
 #[derive(Error, Debug)]
 pub enum CommandApplyError {

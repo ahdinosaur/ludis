@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use displaydoc::Display as DisplaydocDisplay;
 use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
-use lusid_view::impl_display_render;
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -189,8 +188,6 @@ impl Display for FileOperation {
         }
     }
 }
-
-impl_display_render!(FileOperation);
 
 /// Apply-time resolution of a [`FileSource`] for a write:
 ///

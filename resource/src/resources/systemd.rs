@@ -6,7 +6,6 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::systemd::SystemdOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -54,8 +53,6 @@ impl Display for SystemdParams {
     }
 }
 
-impl_display_render!(SystemdParams);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemdResource {
     pub name: String,
@@ -81,8 +78,6 @@ impl Display for SystemdResource {
     }
 }
 
-impl_display_render!(SystemdResource);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemdState {
     pub enabled: bool,
@@ -95,8 +90,6 @@ impl Display for SystemdState {
         write!(f, "Systemd(enabled = {enabled}, active = {active})")
     }
 }
-
-impl_display_render!(SystemdState);
 
 #[derive(Error, Debug)]
 pub enum SystemdStateError {
@@ -143,8 +136,6 @@ impl Display for SystemdChange {
         write!(f, "Systemd::{}({name}){scope}", verbs.join("+"))
     }
 }
-
-impl_display_render!(SystemdChange);
 
 #[derive(Debug, Clone)]
 pub struct Systemd;

@@ -11,7 +11,6 @@ use lusid_operation::{
     operations::podman::{CONFIG_HASH_LABEL, PodmanOperation},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -82,8 +81,6 @@ impl Display for PodmanParams {
     }
 }
 
-impl_display_render!(PodmanParams);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanResource {
     Present {
@@ -118,8 +115,6 @@ impl Display for PodmanResource {
     }
 }
 
-impl_display_render!(PodmanResource);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanState {
     Absent,
@@ -144,8 +139,6 @@ impl Display for PodmanState {
         }
     }
 }
-
-impl_display_render!(PodmanState);
 
 #[derive(Error, Debug)]
 pub enum PodmanStateError {
@@ -240,8 +233,6 @@ impl Display for PodmanChange {
         }
     }
 }
-
-impl_display_render!(PodmanChange);
 
 #[derive(Debug, Clone)]
 pub struct Podman;

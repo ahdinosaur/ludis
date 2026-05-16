@@ -39,7 +39,9 @@ To understand the runtime behavior, read in this order:
 2. `plan/src/lib.rs` (planning recursion + resource modules)
 3. `params/src/lib.rs` (schema/value validation)
 4. `causality/src/epoch.rs` (dependency scheduling)
-5. `lusid/src/tui.rs` (how updates are rendered)
+5. `apply-stdio/src/lib.rs` (structured wire types: `AppUpdate`, `AppView`, `LeafState`)
+6. `render/src/lib.rs` (`Render` trait, `RenderedNode`, `Palette`)
+7. `lusid/src/tui.rs` (how updates are rendered)
 
 ## Gotchas / invariants to preserve
 
@@ -74,6 +76,8 @@ Implementation notes:
 ### Streaming output protocol
 `lusid-apply` emits **newline-delimited JSON** `AppUpdate` messages to stdout.
 The `lusid` TUI expects this exact protocol. Avoid printing human text to stdout from `lusid-apply`; use tracing/logging to stderr.
+
+`AppUpdate` variants carry the structured domain types directly (`ResourceParams`, `Resource`, `ResourceState`, `ResourceChange`, `Operation`, `PlanTree<...>`). The receiver lowers them to display text through `lusid-render`. There is no intermediate `View` layer; producer and consumer share the same serde types end to end. Add new payload fields to the matching domain type, not to a wire-shadow struct.
 
 ### Resources, operations, and `on_change` hooks
 

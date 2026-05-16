@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
-use lusid_view::impl_display_render;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fmt::Display, pin::Pin};
 use thiserror::Error;
@@ -26,8 +25,6 @@ impl Display for AptOperation {
         }
     }
 }
-
-impl_display_render!(AptOperation);
 
 #[derive(Error, Debug)]
 pub enum AptApplyError {

@@ -9,7 +9,6 @@ use lusid_operation::{
     operations::{file::FilePath, user::UserOperation},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -88,8 +87,6 @@ impl Display for UserParams {
     }
 }
 
-impl_display_render!(UserParams);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserResource {
     Present {
@@ -123,8 +120,6 @@ impl Display for UserResource {
     }
 }
 
-impl_display_render!(UserResource);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserState {
     Absent,
@@ -155,8 +150,6 @@ impl Display for UserState {
         }
     }
 }
-
-impl_display_render!(UserState);
 
 #[derive(Error, Debug)]
 pub enum UserStateError {
@@ -232,8 +225,6 @@ impl Display for UserChange {
         }
     }
 }
-
-impl_display_render!(UserChange);
 
 #[derive(Debug, Clone)]
 pub struct User;

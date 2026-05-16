@@ -6,7 +6,6 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::pacman::PacmanOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -47,8 +46,6 @@ impl Display for PacmanParams {
     }
 }
 
-impl_display_render!(PacmanParams);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PacmanResource {
     pub package: String,
@@ -60,8 +57,6 @@ impl Display for PacmanResource {
         write!(f, "Pacman({package})")
     }
 }
-
-impl_display_render!(PacmanResource);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PacmanState {
@@ -77,8 +72,6 @@ impl Display for PacmanState {
         }
     }
 }
-
-impl_display_render!(PacmanState);
 
 #[derive(Error, Debug)]
 pub enum PacmanStateError {
@@ -103,8 +96,6 @@ impl Display for PacmanChange {
         }
     }
 }
-
-impl_display_render!(PacmanChange);
 
 #[derive(Debug, Clone)]
 pub struct Pacman;

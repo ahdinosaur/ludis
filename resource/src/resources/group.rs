@@ -6,7 +6,6 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::group::GroupOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -67,8 +66,6 @@ impl Display for GroupParams {
     }
 }
 
-impl_display_render!(GroupParams);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupResource {
     Present {
@@ -91,8 +88,6 @@ impl Display for GroupResource {
     }
 }
 
-impl_display_render!(GroupResource);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupState {
     Absent,
@@ -111,8 +106,6 @@ impl Display for GroupState {
         }
     }
 }
-
-impl_display_render!(GroupState);
 
 #[derive(Error, Debug)]
 pub enum GroupStateError {
@@ -161,8 +154,6 @@ impl Display for GroupChange {
         }
     }
 }
-
-impl_display_render!(GroupChange);
 
 #[derive(Debug, Clone)]
 pub struct Group;

@@ -6,7 +6,6 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::flatpak::FlatpakOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -97,8 +96,6 @@ impl Display for FlatpakParams {
     }
 }
 
-impl_display_render!(FlatpakParams);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakResource {
     Present {
@@ -132,8 +129,6 @@ impl Display for FlatpakResource {
     }
 }
 
-impl_display_render!(FlatpakResource);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakState {
     NotInstalled,
@@ -148,8 +143,6 @@ impl Display for FlatpakState {
         }
     }
 }
-
-impl_display_render!(FlatpakState);
 
 #[derive(Error, Debug)]
 pub enum FlatpakStateError {
@@ -189,8 +182,6 @@ impl Display for FlatpakChange {
         }
     }
 }
-
-impl_display_render!(FlatpakChange);
 
 #[derive(Debug, Clone)]
 pub struct Flatpak;

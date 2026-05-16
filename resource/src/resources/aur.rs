@@ -6,7 +6,6 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::aur::AurOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -47,8 +46,6 @@ impl Display for AurParams {
     }
 }
 
-impl_display_render!(AurParams);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AurResource {
     pub package: String,
@@ -60,8 +57,6 @@ impl Display for AurResource {
         write!(f, "Aur({package})")
     }
 }
-
-impl_display_render!(AurResource);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AurState {
@@ -77,8 +72,6 @@ impl Display for AurState {
         }
     }
 }
-
-impl_display_render!(AurState);
 
 #[derive(Error, Debug)]
 pub enum AurStateError {
@@ -103,8 +96,6 @@ impl Display for AurChange {
         }
     }
 }
-
-impl_display_render!(AurChange);
 
 #[derive(Debug, Clone)]
 pub struct Aur;

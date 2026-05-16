@@ -2634,7 +2634,6 @@ dependencies = [
  "lusid-store",
  "lusid-system",
  "lusid-tree",
- "lusid-view",
  "rimu",
  "rimu-interop",
  "serde",
@@ -2729,7 +2728,6 @@ dependencies = [
  "lusid-fs",
  "lusid-http",
  "lusid-params",
- "lusid-view",
  "pin-project",
  "rimu",
  "secrecy",
@@ -2767,7 +2765,6 @@ dependencies = [
  "lusid-store",
  "lusid-system",
  "lusid-tree",
- "lusid-view",
  "rimu",
  "rimu-interop",
  "serde",
@@ -2800,7 +2797,6 @@ dependencies = [
  "lusid-fs",
  "lusid-operation",
  "lusid-params",
- "lusid-view",
  "rimu",
  "secrecy",
  "serde",
@@ -2880,14 +2876,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "lusid-view"
-version = "0.1.0"
-dependencies = [
- "serde",
- "termtree",
 ]
 
 [[package]]

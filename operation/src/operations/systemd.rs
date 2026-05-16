@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fmt::Display, pin::Pin};
@@ -36,8 +35,6 @@ impl Display for SystemdOperation {
         write!(f, "Systemd::{verb}({name}){scope}")
     }
 }
-
-impl_display_render!(SystemdOperation);
 
 impl ParseParams for SystemdOperation {
     fn parse_params(value: Spanned<Value>) -> Result<Self, Spanned<ParseError>> {

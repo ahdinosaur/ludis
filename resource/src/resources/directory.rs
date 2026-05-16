@@ -12,7 +12,6 @@ use lusid_operation::{
     },
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Span, Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -127,8 +126,6 @@ impl Display for DirectoryParams {
     }
 }
 
-impl_display_render!(DirectoryParams);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryResource {
     Sourced { source: FilePath, path: FilePath },
@@ -163,8 +160,6 @@ impl Display for DirectoryResource {
         }
     }
 }
-
-impl_display_render!(DirectoryResource);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryState {
@@ -202,8 +197,6 @@ impl Display for DirectoryState {
         write!(f, "{text}")
     }
 }
-
-impl_display_render!(DirectoryState);
 
 #[derive(Error, Debug)]
 pub enum DirectoryStateError {
@@ -271,8 +264,6 @@ impl Display for DirectoryChange {
         }
     }
 }
-
-impl_display_render!(DirectoryChange);
 
 #[derive(Debug, Clone)]
 pub struct Directory;

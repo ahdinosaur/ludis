@@ -10,7 +10,6 @@ use lusid_operation::{
     operations::{file::FilePath, git::GitOperation},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -55,8 +54,6 @@ impl Display for GitParams {
     }
 }
 
-impl_display_render!(GitParams);
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitResource {
     pub repo: String,
@@ -75,8 +72,6 @@ impl Display for GitResource {
         )
     }
 }
-
-impl_display_render!(GitResource);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GitState {
@@ -106,8 +101,6 @@ impl Display for GitState {
         }
     }
 }
-
-impl_display_render!(GitState);
 
 #[derive(Error, Debug)]
 pub enum GitStateError {
@@ -170,8 +163,6 @@ impl Display for GitChange {
         }
     }
 }
-
-impl_display_render!(GitChange);
 
 #[derive(Debug, Clone)]
 pub struct Git;

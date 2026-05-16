@@ -5,7 +5,6 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
 use lusid_http::HttpError;
-use lusid_view::impl_display_render;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -61,8 +60,6 @@ impl Display for AptRepoOperation {
         }
     }
 }
-
-impl_display_render!(AptRepoOperation);
 
 #[derive(Error, Debug)]
 pub enum AptRepoApplyError {

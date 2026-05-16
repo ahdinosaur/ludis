@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
-use lusid_view::impl_display_render;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fmt::Display, pin::Pin};
 use thiserror::Error;
@@ -32,8 +31,6 @@ impl Display for AurOperation {
         }
     }
 }
-
-impl_display_render!(AurOperation);
 
 #[derive(Error, Debug)]
 pub enum AurApplyError {

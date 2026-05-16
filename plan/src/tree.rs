@@ -4,7 +4,6 @@ use cuid2::create_id;
 use lusid_causality::CausalityMeta;
 use lusid_operation::Operation;
 use lusid_tree::{FlatTree, FlatTreeNode, Tree};
-use lusid_view::{Render, ViewTree};
 use serde::{Deserialize, Serialize};
 
 use crate::PlanNodeId;
@@ -101,23 +100,6 @@ where
             handlers: Vec::new(),
         })
     })
-}
-
-/// Convert a [`PlanTree`] into a [`ViewTree`] for TUI display. Branch labels use the
-/// branch's `PlanNodeId` (rendered) or `.` if the branch is anonymous.
-pub fn render_plan_tree<Node>(tree: PlanTree<Node>) -> ViewTree
-where
-    Node: Render,
-{
-    match tree {
-        Tree::Branch { meta, children } => ViewTree::Branch {
-            view: meta.id.map(|id| id.render()).unwrap_or(".".render()),
-            children: children.into_iter().map(render_plan_tree).collect(),
-        },
-        Tree::Leaf { meta: _, node } => ViewTree::Leaf {
-            view: node.render(),
-        },
-    }
 }
 
 #[cfg(test)]
