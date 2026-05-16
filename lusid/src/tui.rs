@@ -25,8 +25,8 @@ use std::pin::Pin;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use lusid_apply_stdio::{
-    AppUpdate, AppView, AppViewError, FlatViewTree, FlatViewTreeError, FlatViewTreeNode,
-    OperationView, ViewNode,
+    AppUpdate, AppView, AppViewError, FlatViewTree, FlatViewTreeNode, OperationView,
+    PipelineProgress, ViewNode,
 };
 use lusid_cmd::CommandError;
 use lusid_ssh::SshError;
@@ -60,9 +60,6 @@ pub enum TuiError {
 
     #[error(transparent)]
     AppView(#[from] AppViewError),
-
-    #[error(transparent)]
-    FlatTree(#[from] FlatViewTreeError),
 
     #[error("apply command failed: {0}")]
     Command(#[from] CommandError),
@@ -248,29 +245,49 @@ impl PipelineStage {
     fn is_available(self, view: &AppView) -> bool {
         match self {
             PipelineStage::ResourceParams => view.resource_params().is_some(),
-            PipelineStage::Resources => view.resources().is_some(),
-            PipelineStage::ResourceStates => view.resource_states().is_some(),
-            PipelineStage::ResourceChanges => view.resource_changes().is_some(),
-            PipelineStage::OperationsTree => view.operations_tree().is_some(),
-            PipelineStage::OperationsEpochs => view.operations_epochs().is_some(),
+            PipelineStage::Resources
+            | PipelineStage::ResourceStates
+            | PipelineStage::ResourceChanges
+            | PipelineStage::OperationsTree => {
+                // All four projections are derived from the atoms tree, so
+                // they become available together once the tree is known.
+                view.resources.is_some()
+            }
+            PipelineStage::OperationsEpochs => !view.operations_epochs.is_empty(),
         }
     }
 
     /// Pick the most-advanced stage that has any data yet. Used by "follow"
     /// mode to advance the visible stage as new data arrives.
     fn from_app_view(view: &AppView) -> PipelineStage {
-        if !view.operations_epochs.is_empty() {
-            PipelineStage::OperationsEpochs
-        } else if view.operations_tree.is_some() {
-            PipelineStage::OperationsTree
-        } else if view.resource_changes.is_some() {
-            PipelineStage::ResourceChanges
-        } else if view.resource_states.is_some() {
-            PipelineStage::ResourceStates
-        } else if view.resources.is_some() {
-            PipelineStage::Resources
-        } else {
-            PipelineStage::ResourceParams
+        Self::from_progress(view, view.progress())
+    }
+
+    fn from_progress(view: &AppView, progress: PipelineProgress) -> PipelineStage {
+        match progress {
+            PipelineProgress::Applying => PipelineStage::OperationsEpochs,
+            PipelineProgress::SomeOpsExpanded => PipelineStage::OperationsTree,
+            PipelineProgress::SomeResolved => PipelineStage::ResourceChanges,
+            PipelineProgress::Probing => PipelineStage::ResourceStates,
+            PipelineProgress::AwaitingStates => PipelineStage::Resources,
+            PipelineProgress::AwaitingResources | PipelineProgress::AwaitingParams => {
+                PipelineStage::ResourceParams
+            }
+            PipelineProgress::Done => {
+                // After done, prefer the stage that actually holds content.
+                // `resources` may still be `None` (e.g. an `ApplyComplete`
+                // arriving without prior events), so fall back to whatever
+                // stage we have data for.
+                if !view.operations_epochs.is_empty() {
+                    PipelineStage::OperationsEpochs
+                } else if view.had_changes && view.resources.is_some() {
+                    PipelineStage::ResourceChanges
+                } else if view.resources.is_some() {
+                    PipelineStage::Resources
+                } else {
+                    PipelineStage::ResourceParams
+                }
+            }
         }
     }
 }
@@ -587,8 +604,8 @@ impl TuiApp {
                     Some((selected + 1).min(len.saturating_sub(1)));
             }
             _ => {
-                if let Some((tree, state)) = self.tree_for_stage_mut() {
-                    tree_move_selection(tree, state, 1);
+                if let Some((tree, state)) = self.tree_and_state_for_stage() {
+                    tree_move_selection(&tree, state, 1);
                 }
             }
         }
@@ -601,16 +618,16 @@ impl TuiApp {
                 self.operations_apply_state.selected_flat = Some(selected.saturating_sub(1));
             }
             _ => {
-                if let Some((tree, state)) = self.tree_for_stage_mut() {
-                    tree_move_selection(tree, state, -1);
+                if let Some((tree, state)) = self.tree_and_state_for_stage() {
+                    tree_move_selection(&tree, state, -1);
                 }
             }
         }
     }
 
     fn toggle_selected(&mut self) {
-        if let Some((tree, state)) = self.tree_for_stage_mut() {
-            let rows = build_visible_rows(tree, state);
+        if let Some((tree, state)) = self.tree_and_state_for_stage() {
+            let rows = build_visible_rows(&tree, state);
             if rows.is_empty() {
                 return;
             }
@@ -624,27 +641,32 @@ impl TuiApp {
         }
     }
 
-    fn tree_for_stage_mut(&mut self) -> Option<(&FlatViewTree, &mut TreeState)> {
+    /// Build the projected tree for the current stage and borrow the
+    /// matching `TreeState` field. The projection is owned (allocated per
+    /// call); the state borrow is disjoint from `app_view`, so this compiles
+    /// despite returning both from `&mut self`.
+    fn tree_and_state_for_stage(&mut self) -> Option<(FlatViewTree, &mut TreeState)> {
         match self.stage {
             PipelineStage::ResourceParams => self
                 .app_view
                 .resource_params()
+                .cloned()
                 .map(|tree| (tree, &mut self.params_state)),
             PipelineStage::Resources => self
                 .app_view
-                .resources()
+                .resources_view()
                 .map(|tree| (tree, &mut self.resources_state)),
             PipelineStage::ResourceStates => self
                 .app_view
-                .resource_states()
+                .resource_states_view()
                 .map(|tree| (tree, &mut self.states_state)),
             PipelineStage::ResourceChanges => self
                 .app_view
-                .resource_changes()
+                .resource_changes_view()
                 .map(|tree| (tree, &mut self.changes_state)),
             PipelineStage::OperationsTree => self
                 .app_view
-                .operations_tree()
+                .operations_tree_view()
                 .map(|tree| (tree, &mut self.operations_state)),
             PipelineStage::OperationsEpochs => None,
         }
@@ -758,28 +780,29 @@ fn pipeline_feedback_line(app: &TuiApp, outcome: Option<&Result<(), TuiError>>) 
     }
 
     let view = &app.app_view;
-    if view.done {
-        if !view.had_changes {
-            "No changes.".to_string()
-        } else if app.child_exited {
-            "Complete.".to_string()
-        } else {
-            "Complete (waiting for process to exit)...".to_string()
+    match view.progress() {
+        PipelineProgress::Done => {
+            if !view.had_changes {
+                "No changes.".to_string()
+            } else if app.child_exited {
+                "Complete.".to_string()
+            } else {
+                "Complete (waiting for process to exit)...".to_string()
+            }
         }
-    } else if !view.operations_epochs.is_empty() {
-        "Applying operations epochs.".to_string()
-    } else if view.resource_states.is_some() {
-        if view.had_changes {
-            "Changes detected.".to_string()
-        } else {
-            "Probing resource states...".to_string()
+        PipelineProgress::Applying => "Applying operations epochs.".to_string(),
+        PipelineProgress::SomeOpsExpanded => "Operations expanded.".to_string(),
+        PipelineProgress::SomeResolved => {
+            if view.had_changes {
+                "Changes detected.".to_string()
+            } else {
+                "No changes detected so far.".to_string()
+            }
         }
-    } else if view.resources.is_some() {
-        "Resources planned.".to_string()
-    } else if view.resource_params.is_some() {
-        "Resource parameters planned.".to_string()
-    } else {
-        "Waiting for planning output...".to_string()
+        PipelineProgress::Probing => "Probing resource states...".to_string(),
+        PipelineProgress::AwaitingStates => "Resources planned.".to_string(),
+        PipelineProgress::AwaitingResources => "Resource parameters planned.".to_string(),
+        PipelineProgress::AwaitingParams => "Waiting for planning output...".to_string(),
     }
 }
 
@@ -792,38 +815,38 @@ fn draw_main(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
 
 fn draw_main_pipeline(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
     match app.stage {
-        PipelineStage::ResourceParams => match app.app_view.resource_params() {
-            Some(tree) => draw_tree(frame, area, "resource params", tree, &mut app.params_state),
+        PipelineStage::ResourceParams => match app.app_view.resource_params().cloned() {
+            Some(tree) => draw_tree(frame, area, "resource params", &tree, &mut app.params_state),
             None => draw_placeholder(frame, area, "Waiting for resource params..."),
         },
 
-        PipelineStage::Resources => match app.app_view.resources() {
-            Some(tree) => draw_tree(frame, area, "resources", tree, &mut app.resources_state),
+        PipelineStage::Resources => match app.app_view.resources_view() {
+            Some(tree) => draw_tree(frame, area, "resources", &tree, &mut app.resources_state),
             None => draw_placeholder(frame, area, "Resources are not available yet."),
         },
 
-        PipelineStage::ResourceStates => match app.app_view.resource_states() {
-            Some(tree) => draw_tree(frame, area, "resource states", tree, &mut app.states_state),
+        PipelineStage::ResourceStates => match app.app_view.resource_states_view() {
+            Some(tree) => draw_tree(frame, area, "resource states", &tree, &mut app.states_state),
             None => draw_placeholder(frame, area, "Resource states are not available yet."),
         },
 
-        PipelineStage::ResourceChanges => match app.app_view.resource_changes() {
+        PipelineStage::ResourceChanges => match app.app_view.resource_changes_view() {
             Some(tree) => draw_tree(
                 frame,
                 area,
                 "resource changes",
-                tree,
+                &tree,
                 &mut app.changes_state,
             ),
             None => draw_placeholder(frame, area, "Resource changes are not available yet."),
         },
 
-        PipelineStage::OperationsTree => match app.app_view.operations_tree() {
+        PipelineStage::OperationsTree => match app.app_view.operations_tree_view() {
             Some(tree) => draw_tree(
                 frame,
                 area,
                 "operations tree",
-                tree,
+                &tree,
                 &mut app.operations_state,
             ),
             None => draw_placeholder(frame, area, "Operations tree is not available yet."),
