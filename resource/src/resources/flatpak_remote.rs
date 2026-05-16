@@ -8,6 +8,7 @@ use lusid_operation::{Operation, operations::flatpak::FlatpakOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
@@ -29,7 +30,7 @@ use crate::ResourceType;
 /// remote is `Add`-only: once added, we never re-emit `Modify`. Operators
 /// who want URL-level drift detection should declare the canonical repo URL
 /// directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakRemoteParams {
     Present {
         name: String,
@@ -79,7 +80,7 @@ impl Display for FlatpakRemoteParams {
 
 impl_display_render!(FlatpakRemoteParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakRemoteResource {
     Present {
         name: String,
@@ -108,7 +109,7 @@ impl Display for FlatpakRemoteResource {
 
 impl_display_render!(FlatpakRemoteResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakRemoteState {
     Absent,
     Present { url: String },
@@ -133,7 +134,7 @@ pub enum FlatpakRemoteStateError {
     Command(#[from] CommandError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakRemoteChange {
     Add {
         name: String,
@@ -448,5 +449,68 @@ mod tests {
     #[test]
     fn parse_remotes_line_rejects_no_tab() {
         assert!(parse_remotes_line("flathub").is_none());
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip_covers_every_variant() {
+        round_trip(&FlatpakRemoteParams::Present {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            user: Some(false),
+        });
+        round_trip(&FlatpakRemoteParams::Absent {
+            name: "flathub".into(),
+            user: Some(true),
+        });
+    }
+
+    #[test]
+    fn resource_round_trip_covers_every_variant() {
+        round_trip(&FlatpakRemoteResource::Present {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            user: false,
+        });
+        round_trip(&FlatpakRemoteResource::Absent {
+            name: "flathub".into(),
+            user: true,
+        });
+    }
+
+    #[test]
+    fn state_round_trip_covers_every_variant() {
+        round_trip(&FlatpakRemoteState::Absent);
+        round_trip(&FlatpakRemoteState::Present {
+            url: "https://dl.flathub.org/repo/".into(),
+        });
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        round_trip(&FlatpakRemoteChange::Add {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            user: false,
+        });
+        round_trip(&FlatpakRemoteChange::Modify {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            user: false,
+        });
+        round_trip(&FlatpakRemoteChange::Remove {
+            name: "flathub".into(),
+            user: false,
+        });
     }
 }

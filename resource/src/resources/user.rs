@@ -11,6 +11,7 @@ use lusid_operation::{
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
@@ -22,7 +23,7 @@ use crate::ResourceType;
 // TODO(cc): add password (hashed), lock/unlock (`usermod -L`/`-U`), and account
 // expiry (`chage` / `usermod --expiredate`) support. Salt and Ansible both expose
 // these.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserParams {
     Present {
         name: String,
@@ -89,7 +90,7 @@ impl Display for UserParams {
 
 impl_display_render!(UserParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserResource {
     Present {
         name: String,
@@ -124,7 +125,7 @@ impl Display for UserResource {
 
 impl_display_render!(UserResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserState {
     Absent,
     Present {
@@ -183,7 +184,7 @@ pub enum UserStateError {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserChange {
     Create {
         name: String,
@@ -581,4 +582,94 @@ async fn get_supplementary_groups(
         .map(str::to_string)
         .collect();
     Ok(groups)
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip_covers_every_variant() {
+        round_trip(&UserParams::Present {
+            name: "alice".into(),
+            uid: Some(1001),
+            group: Some("alice".into()),
+            append_groups: Some(vec!["wheel".into(), "docker".into()]),
+            comment: Some("Alice".into()),
+            home: Some(FilePath::new("/home/alice")),
+            shell: Some("/bin/zsh".into()),
+            system: Some(false),
+            create_home: Some(true),
+        });
+        round_trip(&UserParams::Absent {
+            name: "alice".into(),
+            remove_home: Some(true),
+        });
+    }
+
+    #[test]
+    fn resource_round_trip_covers_every_variant() {
+        round_trip(&UserResource::Present {
+            name: "alice".into(),
+            uid: Some(1001),
+            group: Some("alice".into()),
+            append_groups: Some(vec!["wheel".into()]),
+            comment: Some("Alice".into()),
+            home: Some(FilePath::new("/home/alice")),
+            shell: Some("/bin/zsh".into()),
+            system: false,
+            create_home: true,
+        });
+        round_trip(&UserResource::Absent {
+            name: "alice".into(),
+            remove_home: false,
+        });
+    }
+
+    #[test]
+    fn state_round_trip_covers_every_variant() {
+        round_trip(&UserState::Absent);
+        round_trip(&UserState::Present {
+            uid: 1001,
+            primary_group: "alice".into(),
+            extra_groups: vec!["wheel".into()],
+            comment: "Alice".into(),
+            home: "/home/alice".into(),
+            shell: "/bin/zsh".into(),
+        });
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        round_trip(&UserChange::Create {
+            name: "alice".into(),
+            uid: Some(1001),
+            primary_group: Some("alice".into()),
+            append_groups: vec!["wheel".into()],
+            comment: Some("Alice".into()),
+            home: Some(FilePath::new("/home/alice")),
+            shell: Some("/bin/zsh".into()),
+            system: false,
+            create_home: true,
+        });
+        round_trip(&UserChange::Modify {
+            name: "alice".into(),
+            uid: Some(1002),
+            primary_group: Some("staff".into()),
+            append_groups: Some(vec!["docker".into()]),
+            comment: Some("Alice B.".into()),
+            home: Some(FilePath::new("/home/alice2")),
+            shell: Some("/bin/bash".into()),
+        });
+        round_trip(&UserChange::Delete {
+            name: "alice".into(),
+            remove_home: true,
+        });
+    }
 }

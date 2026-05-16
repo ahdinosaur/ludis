@@ -8,11 +8,12 @@ use lusid_operation::{Operation, operations::pacman::PacmanOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PacmanParams {
     Package { package: String },
     Packages { packages: Vec<String> },
@@ -48,7 +49,7 @@ impl Display for PacmanParams {
 
 impl_display_render!(PacmanParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PacmanResource {
     pub package: String,
 }
@@ -62,7 +63,7 @@ impl Display for PacmanResource {
 
 impl_display_render!(PacmanResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PacmanState {
     NotInstalled,
     Installed,
@@ -90,7 +91,7 @@ pub enum PacmanStateError {
 
 // TODO(cc): add an `Uninstall` variant - mirror image of the apt resource. A declared
 // package cannot currently be retracted.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PacmanChange {
     Install { package: String },
 }
@@ -188,5 +189,46 @@ impl ResourceType for Pacman {
                 ]
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip_covers_every_variant() {
+        round_trip(&PacmanParams::Package {
+            package: "git".into(),
+        });
+        round_trip(&PacmanParams::Packages {
+            packages: vec!["base-devel".into(), "git".into()],
+        });
+    }
+
+    #[test]
+    fn resource_round_trip() {
+        round_trip(&PacmanResource {
+            package: "git".into(),
+        });
+    }
+
+    #[test]
+    fn state_round_trip_covers_every_variant() {
+        round_trip(&PacmanState::NotInstalled);
+        round_trip(&PacmanState::Installed);
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        round_trip(&PacmanChange::Install {
+            package: "git".into(),
+        });
     }
 }

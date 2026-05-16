@@ -8,6 +8,7 @@ use lusid_operation::{Operation, operations::group::GroupOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
@@ -17,7 +18,7 @@ use crate::ResourceType;
 /// Tagged by `state: "present" | "absent"`. Mirrors the shape used by Salt
 /// (`group.present`) and Ansible (`ansible.builtin.group`), with an additional
 /// `append_users` field to declaratively guarantee supplementary group membership.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupParams {
     Present {
         name: String,
@@ -68,7 +69,7 @@ impl Display for GroupParams {
 
 impl_display_render!(GroupParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupResource {
     Present {
         name: String,
@@ -92,7 +93,7 @@ impl Display for GroupResource {
 
 impl_display_render!(GroupResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupState {
     Absent,
     Present { gid: u32, members: Vec<String> },
@@ -129,7 +130,7 @@ pub enum GroupStateError {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupChange {
     Create {
         name: String,
@@ -413,4 +414,68 @@ async fn get_group_entry(name: &str) -> Result<Option<GroupEntry>, GroupStateErr
         .collect();
 
     Ok(Some(GroupEntry { gid, members }))
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip_covers_every_variant() {
+        round_trip(&GroupParams::Present {
+            name: "devs".into(),
+            gid: Some(1000),
+            system: Some(false),
+            append_users: Some(vec!["alice".into(), "bob".into()]),
+        });
+        round_trip(&GroupParams::Absent {
+            name: "devs".into(),
+        });
+    }
+
+    #[test]
+    fn resource_round_trip_covers_every_variant() {
+        round_trip(&GroupResource::Present {
+            name: "devs".into(),
+            gid: Some(1000),
+            system: false,
+            append_users: Some(vec!["alice".into()]),
+        });
+        round_trip(&GroupResource::Absent {
+            name: "devs".into(),
+        });
+    }
+
+    #[test]
+    fn state_round_trip_covers_every_variant() {
+        round_trip(&GroupState::Absent);
+        round_trip(&GroupState::Present {
+            gid: 1000,
+            members: vec!["alice".into(), "bob".into()],
+        });
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        round_trip(&GroupChange::Create {
+            name: "devs".into(),
+            gid: Some(1000),
+            system: false,
+            append_users: vec!["alice".into()],
+        });
+        round_trip(&GroupChange::Modify {
+            name: "devs".into(),
+            gid: Some(1001),
+            append_users: vec!["bob".into()],
+        });
+        round_trip(&GroupChange::Delete {
+            name: "devs".into(),
+        });
+    }
 }

@@ -14,11 +14,12 @@ use lusid_operation::{
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Span, Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryParams {
     /// Recursive copy of the directory tree at `source` into `path`. Edits
     /// to `source` only propagate on the next apply. The state probe is
@@ -31,6 +32,9 @@ pub enum DirectoryParams {
         source: FilePath,
         /// Span of the `source` value in the plan source. Carried so
         /// host-path validation errors can point at the offending line.
+        /// Skipped on the wire: validation runs pre-emit, so the span
+        /// is unused downstream.
+        #[serde(skip, default)]
         source_span: Span,
         path: FilePath,
         mode: Option<FileMode>,
@@ -49,6 +53,7 @@ pub enum DirectoryParams {
         source: FilePath,
         /// Span of the `source` value in the plan source. See
         /// [`DirectoryParams::Sourced::source_span`] for rationale.
+        #[serde(skip, default)]
         source_span: Span,
         path: FilePath,
     },
@@ -124,7 +129,7 @@ impl Display for DirectoryParams {
 
 impl_display_render!(DirectoryParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryResource {
     Sourced { source: FilePath, path: FilePath },
     Linked { source: FilePath, path: FilePath },
@@ -161,7 +166,7 @@ impl Display for DirectoryResource {
 
 impl_display_render!(DirectoryResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryState {
     Sourced,
     NotSourced,
@@ -206,7 +211,7 @@ pub enum DirectoryStateError {
     Fs(#[from] FsError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryChange {
     Create {
         path: FilePath,
@@ -698,5 +703,115 @@ mod tests {
             }
             other => panic!("expected CreateSymlink, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip() {
+        // `source_span` is `#[serde(skip, default)]`; it does not survive the
+        // wire and the round-tripped value contains a default Span.
+        round_trip(&DirectoryParams::Sourced {
+            source: FilePath::new("/host/src"),
+            source_span: Span::default(),
+            path: FilePath::new("/target/dest"),
+            mode: Some(FileMode::new(0o755)),
+            user: None,
+            group: None,
+        });
+        round_trip(&DirectoryParams::Linked {
+            source: FilePath::new("/host/src"),
+            source_span: Span::default(),
+            path: FilePath::new("/target/dest"),
+        });
+        round_trip(&DirectoryParams::Present {
+            path: FilePath::new("/target/dest"),
+            mode: None,
+            user: None,
+            group: None,
+        });
+        round_trip(&DirectoryParams::Absent {
+            path: FilePath::new("/target/dest"),
+        });
+    }
+
+    #[test]
+    fn resource_round_trip_covers_every_variant() {
+        let path = FilePath::new("/target/dest");
+        round_trip(&DirectoryResource::Sourced {
+            source: FilePath::new("/host/src"),
+            path: path.clone(),
+        });
+        round_trip(&DirectoryResource::Linked {
+            source: FilePath::new("/host/src"),
+            path: path.clone(),
+        });
+        round_trip(&DirectoryResource::Present { path: path.clone() });
+        round_trip(&DirectoryResource::Absent { path: path.clone() });
+        round_trip(&DirectoryResource::Mode {
+            path: path.clone(),
+            mode: FileMode::new(0o755),
+        });
+        round_trip(&DirectoryResource::User {
+            path: path.clone(),
+            user: FileUser::new("root"),
+        });
+        round_trip(&DirectoryResource::Group {
+            path,
+            group: FileGroup::new("wheel"),
+        });
+    }
+
+    #[test]
+    fn state_round_trip_covers_every_variant() {
+        for state in [
+            DirectoryState::Sourced,
+            DirectoryState::NotSourced,
+            DirectoryState::Linked,
+            DirectoryState::NotLinked,
+            DirectoryState::Present,
+            DirectoryState::Absent,
+            DirectoryState::ModeCorrect,
+            DirectoryState::ModeIncorrect,
+            DirectoryState::UserCorrect,
+            DirectoryState::UserIncorrect,
+            DirectoryState::GroupCorrect,
+            DirectoryState::GroupIncorrect,
+        ] {
+            round_trip(&state);
+        }
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        let path = FilePath::new("/target/dest");
+        round_trip(&DirectoryChange::Create { path: path.clone() });
+        round_trip(&DirectoryChange::CreateSymlink {
+            source: FilePath::new("/host/src"),
+            path: path.clone(),
+        });
+        round_trip(&DirectoryChange::CopyTree {
+            source: FilePath::new("/host/src"),
+            path: path.clone(),
+        });
+        round_trip(&DirectoryChange::Remove { path: path.clone() });
+        round_trip(&DirectoryChange::ChangeMode {
+            path: path.clone(),
+            mode: FileMode::new(0o755),
+        });
+        round_trip(&DirectoryChange::ChangeOwner {
+            path,
+            user: Some(FileUser::new("root")),
+            group: None,
+        });
     }
 }

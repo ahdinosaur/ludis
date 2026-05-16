@@ -8,11 +8,12 @@ use lusid_operation::{Operation, operations::apt::AptOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptParams {
     Package { package: String },
     Packages { packages: Vec<String> },
@@ -50,7 +51,7 @@ impl Display for AptParams {
 
 impl_display_render!(AptParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AptResource {
     pub package: String,
 }
@@ -64,7 +65,7 @@ impl Display for AptResource {
 
 impl_display_render!(AptResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptState {
     NotInstalled,
     Installed,
@@ -92,7 +93,7 @@ pub enum AptStateError {
 
 // TODO(cc): add an `Uninstall` variant. Today a package can be declared but not
 // retracted - removing it from the plan leaves it installed on the machine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptChange {
     Install { package: String },
 }
@@ -199,5 +200,48 @@ impl ResourceType for Apt {
                 ]
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip_params(params: AptParams) {
+        let json = serde_json::to_string(&params).unwrap();
+        let back: AptParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip() {
+        round_trip_params(AptParams::Package {
+            package: "nginx".into(),
+        });
+        round_trip_params(AptParams::Packages {
+            packages: vec!["nginx".into(), "curl".into()],
+        });
+    }
+
+    #[test]
+    fn resource_state_change_round_trip() {
+        let resource = AptResource {
+            package: "nginx".into(),
+        };
+        let json = serde_json::to_string(&resource).unwrap();
+        let back: AptResource = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+
+        let state = AptState::Installed;
+        let json = serde_json::to_string(&state).unwrap();
+        let back: AptState = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+
+        let change = AptChange::Install {
+            package: "nginx".into(),
+        };
+        let json = serde_json::to_string(&change).unwrap();
+        let back: AptChange = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
     }
 }

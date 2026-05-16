@@ -8,11 +8,12 @@ use lusid_operation::{Operation, operations::systemd::SystemdOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemdParams {
     pub name: String,
     pub enabled: Option<bool>,
@@ -55,7 +56,7 @@ impl Display for SystemdParams {
 
 impl_display_render!(SystemdParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemdResource {
     pub name: String,
     pub enabled: bool,
@@ -82,7 +83,7 @@ impl Display for SystemdResource {
 
 impl_display_render!(SystemdResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemdState {
     pub enabled: bool,
     pub active: bool,
@@ -115,7 +116,7 @@ pub enum SystemdStateError {
 /// Desired-state delta for a systemd unit. `enable` / `active` are `Some(desired)` if a
 /// transition is needed on that dimension, `None` if the current state already matches.
 /// At least one field is `Some` - otherwise [`Systemd::change`] returns `None`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemdChange {
     pub name: String,
     pub enable: Option<bool>,
@@ -334,5 +335,82 @@ fn parse_unit_file_state(state: &str) -> Result<bool, SystemdStateError> {
         other => Err(SystemdStateError::UnknownUnitFileState {
             state: other.to_string(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip() {
+        round_trip(&SystemdParams {
+            name: "nginx".into(),
+            enabled: Some(true),
+            active: Some(true),
+            user: Some(false),
+        });
+        round_trip(&SystemdParams {
+            name: "nginx".into(),
+            enabled: None,
+            active: None,
+            user: None,
+        });
+    }
+
+    #[test]
+    fn resource_round_trip() {
+        round_trip(&SystemdResource {
+            name: "nginx".into(),
+            enabled: true,
+            active: true,
+            user: false,
+        });
+        round_trip(&SystemdResource {
+            name: "nginx".into(),
+            enabled: false,
+            active: false,
+            user: true,
+        });
+    }
+
+    #[test]
+    fn state_round_trip() {
+        round_trip(&SystemdState {
+            enabled: true,
+            active: false,
+        });
+        round_trip(&SystemdState {
+            enabled: false,
+            active: true,
+        });
+    }
+
+    #[test]
+    fn change_round_trip() {
+        round_trip(&SystemdChange {
+            name: "nginx".into(),
+            enable: Some(true),
+            active: Some(true),
+            user: false,
+        });
+        round_trip(&SystemdChange {
+            name: "nginx".into(),
+            enable: Some(false),
+            active: None,
+            user: true,
+        });
+        round_trip(&SystemdChange {
+            name: "nginx".into(),
+            enable: None,
+            active: Some(false),
+            user: false,
+        });
     }
 }

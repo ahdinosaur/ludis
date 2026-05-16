@@ -12,6 +12,7 @@ use lusid_operation::{
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
@@ -28,7 +29,7 @@ const SOURCES_LIST_DIR: &str = "/etc/apt/sources.list.d";
 // (`^[a-z0-9][a-z0-9._-]*$`). `name` is interpolated into `/etc/apt/keyrings/`
 // and `/etc/apt/sources.list.d/`, so a path-traversing value would let a plan
 // author write outside those directories.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AptRepoParams {
     /// Filesystem-safe stem reused as the basename of the sources file
     /// (`<name>.sources`) and keyring (`<name>.asc`).
@@ -90,7 +91,7 @@ impl Display for AptRepoParams {
 
 impl_display_render!(AptRepoParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AptRepoResource {
     pub name: String,
     pub sources_path: FilePath,
@@ -111,7 +112,7 @@ impl Display for AptRepoResource {
 
 impl_display_render!(AptRepoResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptRepoState {
     Absent,
     Present {
@@ -145,7 +146,7 @@ pub enum AptRepoStateError {
 
 // TODO(cc): add a `Remove` variant mirroring the note on `AptChange`. Today
 // removing an apt-repo from the plan leaves both files on the target.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptRepoChange {
     Install {
         name: String,
@@ -590,5 +591,104 @@ Enabled: no
                 assert!(sources.is_none());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip() {
+        // All-fields-set form exercises the `Some` arms of each `Option`.
+        round_trip(&AptRepoParams {
+            name: "docker".into(),
+            uris: vec!["https://download.docker.com/linux/debian".into()],
+            suites: vec!["bookworm".into()],
+            components: vec!["stable".into()],
+            key_url: "https://download.docker.com/linux/debian/gpg".into(),
+            types: Some(vec!["deb".into()]),
+            architectures: Some(vec!["amd64".into()]),
+            enabled: Some(true),
+        });
+        // Bare-minimum form exercises the `None` arms.
+        round_trip(&AptRepoParams {
+            name: "docker".into(),
+            uris: vec!["https://download.docker.com/linux/debian".into()],
+            suites: vec!["bookworm".into()],
+            components: vec!["stable".into()],
+            key_url: "https://download.docker.com/linux/debian/gpg".into(),
+            types: None,
+            architectures: None,
+            enabled: None,
+        });
+    }
+
+    #[test]
+    fn resource_round_trip() {
+        round_trip(&AptRepoResource {
+            name: "docker".into(),
+            sources_path: FilePath::new("/etc/apt/sources.list.d/docker.sources"),
+            sources_content: "Types: deb\n".into(),
+            key_url: "https://download.docker.com/linux/debian/gpg".into(),
+            key_path: FilePath::new("/etc/apt/keyrings/docker.asc"),
+        });
+    }
+
+    #[test]
+    fn state_round_trip_covers_every_variant() {
+        round_trip(&AptRepoState::Absent);
+        round_trip(&AptRepoState::Present {
+            sources_matches: true,
+            key_present: false,
+        });
+        round_trip(&AptRepoState::Present {
+            sources_matches: false,
+            key_present: true,
+        });
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        // Full install: directory, key, and sources all emitted.
+        round_trip(&AptRepoChange::Install {
+            name: "docker".into(),
+            ensure_dir: true,
+            key: Some((
+                "https://download.docker.com/linux/debian/gpg".into(),
+                FilePath::new("/etc/apt/keyrings/docker.asc"),
+            )),
+            sources: Some((
+                FilePath::new("/etc/apt/sources.list.d/docker.sources"),
+                "Types: deb\n".into(),
+            )),
+        });
+        // Sources-only install exercises the `None` arms of `key` /
+        // `ensure_dir = false`.
+        round_trip(&AptRepoChange::Install {
+            name: "docker".into(),
+            ensure_dir: false,
+            key: None,
+            sources: Some((
+                FilePath::new("/etc/apt/sources.list.d/docker.sources"),
+                "Types: deb\n".into(),
+            )),
+        });
+        // Key-only install exercises the `None` arm of `sources`.
+        round_trip(&AptRepoChange::Install {
+            name: "docker".into(),
+            ensure_dir: true,
+            key: Some((
+                "https://download.docker.com/linux/debian/gpg".into(),
+                FilePath::new("/etc/apt/keyrings/docker.asc"),
+            )),
+            sources: None,
+        });
     }
 }

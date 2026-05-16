@@ -8,11 +8,12 @@ use lusid_operation::{Operation, operations::aur::AurOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AurParams {
     Package { package: String },
     Packages { packages: Vec<String> },
@@ -48,7 +49,7 @@ impl Display for AurParams {
 
 impl_display_render!(AurParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AurResource {
     pub package: String,
 }
@@ -62,7 +63,7 @@ impl Display for AurResource {
 
 impl_display_render!(AurResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AurState {
     NotInstalled,
     Installed,
@@ -90,7 +91,7 @@ pub enum AurStateError {
 
 // TODO(cc): add an `Uninstall` variant - mirror image of the apt resource. A declared
 // package cannot currently be retracted.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AurChange {
     Install { package: String },
 }
@@ -205,5 +206,46 @@ impl ResourceType for Aur {
                 meta: CausalityMeta::default(),
             }],
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip_covers_every_variant() {
+        round_trip(&AurParams::Package {
+            package: "yay".into(),
+        });
+        round_trip(&AurParams::Packages {
+            packages: vec!["yay".into(), "paru".into()],
+        });
+    }
+
+    #[test]
+    fn resource_round_trip() {
+        round_trip(&AurResource {
+            package: "yay".into(),
+        });
+    }
+
+    #[test]
+    fn state_round_trip_covers_every_variant() {
+        round_trip(&AurState::NotInstalled);
+        round_trip(&AurState::Installed);
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        round_trip(&AurChange::Install {
+            package: "yay".into(),
+        });
     }
 }

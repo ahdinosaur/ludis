@@ -8,6 +8,7 @@ use lusid_operation::{Operation, operations::flatpak::FlatpakOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
@@ -39,7 +40,7 @@ const DEFAULT_REMOTE: &str = "flathub";
 /// `org.mozilla.firefox`) confuse `flatpak install` under `-y` (multiple
 /// refs match; flatpak errors). We don't validate the shape - flatpak's
 /// error message is clear enough.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakParams {
     Present {
         name: String,
@@ -98,7 +99,7 @@ impl Display for FlatpakParams {
 
 impl_display_render!(FlatpakParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakResource {
     Present {
         name: String,
@@ -133,7 +134,7 @@ impl Display for FlatpakResource {
 
 impl_display_render!(FlatpakResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakState {
     NotInstalled,
     Installed,
@@ -156,7 +157,7 @@ pub enum FlatpakStateError {
     Command(#[from] CommandError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakChange {
     Install {
         name: String,
@@ -425,5 +426,64 @@ mod tests {
             }
             other => panic!("expected Present, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip_covers_every_variant() {
+        round_trip(&FlatpakParams::Present {
+            name: "org.mozilla.firefox".into(),
+            remote: Some("flathub".into()),
+            user: Some(false),
+        });
+        round_trip(&FlatpakParams::Absent {
+            name: "org.mozilla.firefox".into(),
+            user: Some(true),
+            delete_data: Some(true),
+        });
+    }
+
+    #[test]
+    fn resource_round_trip_covers_every_variant() {
+        round_trip(&FlatpakResource::Present {
+            name: "org.mozilla.firefox".into(),
+            remote: "flathub".into(),
+            user: false,
+        });
+        round_trip(&FlatpakResource::Absent {
+            name: "org.mozilla.firefox".into(),
+            user: false,
+            delete_data: true,
+        });
+    }
+
+    #[test]
+    fn state_round_trip_covers_every_variant() {
+        round_trip(&FlatpakState::NotInstalled);
+        round_trip(&FlatpakState::Installed);
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        round_trip(&FlatpakChange::Install {
+            name: "org.mozilla.firefox".into(),
+            remote: "flathub".into(),
+            user: false,
+        });
+        round_trip(&FlatpakChange::Uninstall {
+            name: "org.mozilla.firefox".into(),
+            user: false,
+            delete_data: true,
+        });
     }
 }

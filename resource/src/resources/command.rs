@@ -11,11 +11,12 @@ use lusid_operation::{
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandParams {
     Install {
         is_installed: Option<String>,
@@ -84,13 +85,13 @@ impl Display for CommandParams {
 
 impl_display_render!(CommandParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandStatus {
     Install,
     Uninstall,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandResource {
     pub status: CommandStatus,
     pub is_installed: Option<String>,
@@ -123,7 +124,7 @@ impl Display for CommandResource {
 
 impl_display_render!(CommandResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandState {
     Installed,
     NotInstalled,
@@ -151,7 +152,7 @@ pub enum CommandStateError {
     ParseCommand(#[source] <RunCommand as FromStr>::Err),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandChange {
     Install { command: String },
     Uninstall { command: String },
@@ -262,5 +263,63 @@ impl ResourceType for Command {
                 )]
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip_covers_every_variant() {
+        round_trip(&CommandParams::Install {
+            is_installed: Some("test -f /usr/local/bin/foo".into()),
+            install: "install-foo".into(),
+            uninstall: Some("uninstall-foo".into()),
+        });
+        round_trip(&CommandParams::Uninstall {
+            is_installed: Some("test -f /usr/local/bin/foo".into()),
+            install: Some("install-foo".into()),
+            uninstall: "uninstall-foo".into(),
+        });
+    }
+
+    #[test]
+    fn status_round_trip_covers_every_variant() {
+        round_trip(&CommandStatus::Install);
+        round_trip(&CommandStatus::Uninstall);
+    }
+
+    #[test]
+    fn resource_round_trip() {
+        round_trip(&CommandResource {
+            status: CommandStatus::Install,
+            is_installed: Some("test -f /usr/local/bin/foo".into()),
+            install: Some("install-foo".into()),
+            uninstall: Some("uninstall-foo".into()),
+        });
+    }
+
+    #[test]
+    fn state_round_trip_covers_every_variant() {
+        round_trip(&CommandState::Installed);
+        round_trip(&CommandState::NotInstalled);
+        round_trip(&CommandState::Unknown);
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        round_trip(&CommandChange::Install {
+            command: "install-foo".into(),
+        });
+        round_trip(&CommandChange::Uninstall {
+            command: "uninstall-foo".into(),
+        });
     }
 }

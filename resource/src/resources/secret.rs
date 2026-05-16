@@ -31,6 +31,7 @@ use lusid_operation::{
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 
 use crate::ResourceType;
 use crate::resources::file::{File, FileChange, FileResource, FileState, FileStateError};
@@ -40,7 +41,7 @@ use crate::resources::file::{File, FileChange, FileResource, FileState, FileStat
 /// deliberately group-readable for a multi-user service).
 pub const DEFAULT_MODE: u32 = 0o600;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretParams {
     pub name: String,
     pub path: FilePath,
@@ -154,5 +155,24 @@ impl ResourceType for Secret {
 
     fn operations(change: Self::Change) -> Vec<CausalityTree<Operation>> {
         <File as ResourceType>::operations(change)
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip() {
+        let params = SecretParams {
+            name: "api_key".into(),
+            path: FilePath::new("/run/secrets/api_key"),
+            mode: Some(FileMode::new(0o600)),
+            user: Some(FileUser::new("root")),
+            group: Some(FileGroup::new("root")),
+        };
+        let json = serde_json::to_string(&params).unwrap();
+        let back: SecretParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
     }
 }

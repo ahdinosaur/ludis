@@ -12,11 +12,12 @@ use lusid_operation::{
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitParams {
     pub repo: String,
     pub path: FilePath,
@@ -56,7 +57,7 @@ impl Display for GitParams {
 
 impl_display_render!(GitParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitResource {
     pub repo: String,
     pub path: FilePath,
@@ -77,7 +78,7 @@ impl Display for GitResource {
 
 impl_display_render!(GitResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GitState {
     Absent,
     Present {
@@ -132,7 +133,7 @@ pub enum GitStateError {
     Dirty,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GitChange {
     Clone {
         repo: String,
@@ -370,4 +371,84 @@ async fn git_run(
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(resource.path.as_path()).args(args);
     cmd.run().await
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip() {
+        let path = FilePath::new("/srv/example");
+        round_trip(&GitParams {
+            repo: "https://example.com/repo.git".into(),
+            path: path.clone(),
+            version: Some("main".into()),
+            update: Some(true),
+            force: Some(false),
+        });
+        round_trip(&GitParams {
+            repo: "https://example.com/repo.git".into(),
+            path,
+            version: None,
+            update: None,
+            force: None,
+        });
+    }
+
+    #[test]
+    fn resource_round_trip() {
+        let path = FilePath::new("/srv/example");
+        round_trip(&GitResource {
+            repo: "https://example.com/repo.git".into(),
+            path: path.clone(),
+            version: Some("main".into()),
+            update: true,
+            force: false,
+        });
+        round_trip(&GitResource {
+            repo: "https://example.com/repo.git".into(),
+            path,
+            version: None,
+            update: false,
+            force: true,
+        });
+    }
+
+    #[test]
+    fn state_round_trip_covers_every_variant() {
+        round_trip(&GitState::Absent);
+        round_trip(&GitState::Present {
+            head: Some("abc123".into()),
+            branch: Some("main".into()),
+            is_dirty: false,
+        });
+        round_trip(&GitState::Present {
+            head: None,
+            branch: None,
+            is_dirty: true,
+        });
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        let path = FilePath::new("/srv/example");
+        round_trip(&GitChange::Clone {
+            repo: "https://example.com/repo.git".into(),
+            path: path.clone(),
+        });
+        round_trip(&GitChange::Checkout {
+            path: path.clone(),
+            version: "v1.0.0".into(),
+            force: true,
+            fetch: true,
+        });
+        round_trip(&GitChange::Pull { path });
+    }
 }

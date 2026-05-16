@@ -29,7 +29,7 @@ use crate::ResourceType;
 /// An upstream change to a floating tag (e.g. `nginx:latest` republished)
 /// will not trigger a recreate - pin with `@sha256:...` for digest-level
 /// control.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanParams {
     Present {
         name: String,
@@ -84,7 +84,7 @@ impl Display for PodmanParams {
 
 impl_display_render!(PodmanParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanResource {
     Present {
         name: String,
@@ -120,7 +120,7 @@ impl Display for PodmanResource {
 
 impl_display_render!(PodmanResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanState {
     Absent,
     Present {
@@ -193,7 +193,7 @@ struct InspectState {
     running: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanChange {
     /// Container doesn't exist - create and optionally start.
     Create {
@@ -1040,5 +1040,89 @@ mod tests {
             canonicalize_image("bitnami/redis@sha256:deadbeef"),
             "docker.io/bitnami/redis@sha256:deadbeef"
         );
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip() {
+        round_trip(&PodmanParams::Present {
+            name: "web".into(),
+            image: "nginx:latest".into(),
+            command: Some(vec!["nginx".into(), "-g".into(), "daemon off;".into()]),
+            env: Some(vec!["A=1".into()]),
+            ports: Some(vec!["8080:80".into()]),
+            volumes: Some(vec!["/srv/data:/data".into()]),
+            restart_policy: Some("unless-stopped".into()),
+            running: Some(true),
+        });
+        round_trip(&PodmanParams::Absent { name: "web".into() });
+    }
+
+    #[test]
+    fn resource_round_trip() {
+        round_trip(&PodmanResource::Present {
+            name: "web".into(),
+            image: "nginx:latest".into(),
+            command: None,
+            env: vec!["A=1".into()],
+            ports: vec!["8080:80".into()],
+            volumes: vec![],
+            restart_policy: Some("unless-stopped".into()),
+            running: true,
+        });
+        round_trip(&PodmanResource::Absent { name: "web".into() });
+    }
+
+    #[test]
+    fn state_round_trip() {
+        round_trip(&PodmanState::Absent);
+        round_trip(&PodmanState::Present {
+            image: "docker.io/library/nginx:latest".into(),
+            running: true,
+            config_hash: Some("abc123".into()),
+        });
+        round_trip(&PodmanState::Present {
+            image: "nginx".into(),
+            running: false,
+            config_hash: None,
+        });
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        let common = || PodmanChange::Create {
+            name: "web".into(),
+            image: "nginx:latest".into(),
+            command: None,
+            env: vec![],
+            ports: vec!["8080:80".into()],
+            volumes: vec![],
+            restart_policy: Some("unless-stopped".into()),
+            start: true,
+        };
+        round_trip(&common());
+        round_trip(&PodmanChange::Start { name: "web".into() });
+        round_trip(&PodmanChange::Stop { name: "web".into() });
+        round_trip(&PodmanChange::Recreate {
+            name: "web".into(),
+            image: "nginx:latest".into(),
+            command: None,
+            env: vec![],
+            ports: vec!["8080:80".into()],
+            volumes: vec![],
+            restart_policy: None,
+            start: false,
+        });
+        round_trip(&PodmanChange::Remove { name: "web".into() });
     }
 }

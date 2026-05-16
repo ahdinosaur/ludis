@@ -12,11 +12,12 @@ use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Span, Spanned, Value};
 use secrecy::ExposeSecret;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::ResourceType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileParams {
     /// Byte-copy from `source` (a host-path) into `path` (a target-path),
     /// atomically. Edits to `source` only propagate on the next apply. Use
@@ -27,6 +28,9 @@ pub enum FileParams {
         source: FilePath,
         /// Span of the `source` value in the plan source. Carried so
         /// host-path validation errors can point at the offending line.
+        /// Skipped on the wire: validation runs pre-emit, so the span
+        /// is unused downstream.
+        #[serde(skip, default)]
         source_span: Span,
         path: FilePath,
         mode: Option<FileMode>,
@@ -53,6 +57,7 @@ pub enum FileParams {
         source: FilePath,
         /// Span of the `source` value in the plan source. See
         /// [`FileParams::Sourced::source_span`] for rationale.
+        #[serde(skip, default)]
         source_span: Span,
         path: FilePath,
     },
@@ -136,7 +141,7 @@ impl Display for FileParams {
 
 impl_display_render!(FileParams);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileResource {
     Sourced {
         source: FilePath,
@@ -196,7 +201,7 @@ impl Display for FileResource {
 
 impl_display_render!(FileResource);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileState {
     Sourced,
     NotSourced,
@@ -249,7 +254,7 @@ pub enum FileStateError {
     MissingSecret { name: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileChange {
     Write {
         path: FilePath,
@@ -788,5 +793,126 @@ mod tests {
             }
             other => panic!("expected CreateSymlink, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn params_round_trip() {
+        // `source_span` is `#[serde(skip, default)]`; it does not survive
+        // the wire and the round-tripped value contains a default Span.
+        round_trip(&FileParams::Sourced {
+            source: FilePath::new("/host/src.txt"),
+            source_span: Span::default(),
+            path: FilePath::new("/target/dest.txt"),
+            mode: Some(FileMode::new(0o644)),
+            user: Some(FileUser::new("root")),
+            group: Some(FileGroup::new("wheel")),
+        });
+        round_trip(&FileParams::Linked {
+            source: FilePath::new("/host/src.txt"),
+            source_span: Span::default(),
+            path: FilePath::new("/target/dest.txt"),
+        });
+        round_trip(&FileParams::Present {
+            path: FilePath::new("/target/dest.txt"),
+            mode: None,
+            user: None,
+            group: None,
+        });
+        round_trip(&FileParams::Absent {
+            path: FilePath::new("/target/dest.txt"),
+        });
+    }
+
+    #[test]
+    fn resource_round_trip_covers_every_variant() {
+        let path = FilePath::new("/target/dest.txt");
+        round_trip(&FileResource::Sourced {
+            source: FilePath::new("/host/src.txt"),
+            path: path.clone(),
+        });
+        round_trip(&FileResource::Linked {
+            source: FilePath::new("/host/src.txt"),
+            path: path.clone(),
+        });
+        round_trip(&FileResource::Secret {
+            name: "api-key".into(),
+            path: path.clone(),
+        });
+        round_trip(&FileResource::Present { path: path.clone() });
+        round_trip(&FileResource::Absent { path: path.clone() });
+        round_trip(&FileResource::Mode {
+            path: path.clone(),
+            mode: FileMode::new(0o600),
+        });
+        round_trip(&FileResource::User {
+            path: path.clone(),
+            user: FileUser::new("root"),
+        });
+        round_trip(&FileResource::Group {
+            path,
+            group: FileGroup::new("wheel"),
+        });
+    }
+
+    #[test]
+    fn state_round_trip_covers_every_variant() {
+        for state in [
+            FileState::Sourced,
+            FileState::NotSourced,
+            FileState::Linked,
+            FileState::NotLinked,
+            FileState::Present,
+            FileState::Absent,
+            FileState::ModeCorrect,
+            FileState::ModeIncorrect,
+            FileState::UserCorrect,
+            FileState::UserIncorrect,
+            FileState::GroupCorrect,
+            FileState::GroupIncorrect,
+        ] {
+            round_trip(&state);
+        }
+    }
+
+    #[test]
+    fn change_round_trip_covers_every_variant() {
+        let path = FilePath::new("/target/dest.txt");
+        round_trip(&FileChange::Write {
+            path: path.clone(),
+            source: FileSource::Contents(b"hello\n".to_vec()),
+        });
+        round_trip(&FileChange::Write {
+            path: path.clone(),
+            source: FileSource::Path(FilePath::new("/host/src.txt")),
+        });
+        round_trip(&FileChange::Write {
+            path: path.clone(),
+            source: FileSource::Secret("api-key".into()),
+        });
+        round_trip(&FileChange::CreateSymlink {
+            source: FilePath::new("/host/src.txt"),
+            path: path.clone(),
+        });
+        round_trip(&FileChange::Remove { path: path.clone() });
+        round_trip(&FileChange::ChangeMode {
+            path: path.clone(),
+            mode: FileMode::new(0o600),
+        });
+        round_trip(&FileChange::ChangeOwner {
+            path,
+            user: Some(FileUser::new("root")),
+            group: Some(FileGroup::new("wheel")),
+        });
     }
 }
