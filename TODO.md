@@ -272,7 +272,7 @@ cargo clippy --workspace -- -D warnings
 
 ## Task 4 — Create `lusid-render` crate
 
-**Status:** pending
+**Status:** done 87f4a5e
 
 **Goal:** New crate that takes structured domain types (output of Tasks 2-3) and produces text + semantic tags suitable for both ratatui rendering and plain-log mode. Lifts the display logic out of `lusid-view::Render` impls.
 
