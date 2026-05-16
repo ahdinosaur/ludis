@@ -2,7 +2,6 @@ mod fragment;
 mod line;
 mod paragraph;
 mod span;
-mod text;
 
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -14,13 +13,10 @@ pub use self::fragment::*;
 pub use self::line::*;
 pub use self::paragraph::*;
 pub use self::span::*;
-pub use self::text::*;
 
 /// The central view type. Sum of the four primitive shapes; every `Render`
 /// implementation produces one of these. `Display` recurses into the chosen
-/// variant - the text content is preserved, but the styling metadata on
-/// [`Span`]/[`Line`]/[`Paragraph`] is only visible to callers that inspect
-/// the structure directly.
+/// variant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum View {
     Fragment(Fragment),

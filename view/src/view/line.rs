@@ -2,54 +2,19 @@ use std::fmt::{Debug, Display};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Alignment, Span, TextStyle, View};
+use crate::{Span, View};
 
-/// A single logical line of text, composed of one or more [`Span`]s. `style`
-/// applies to the whole line as a backdrop; individual spans can override.
-/// `alignment` is advisory - the `Display` impl doesn't honour it, consumers
-/// that care (e.g. a ratatui renderer) read it off the struct.
+/// A single logical line of text, composed of one or more [`Span`]s.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Line {
     pub spans: Vec<Span>,
-    pub style: TextStyle,
-    pub alignment: Option<Alignment>,
 }
 
 impl Line {
-    /// Create a new `Line` with given spans and default style/alignment.
     pub fn new<S: Into<Vec<Span>>>(spans: S) -> Self {
         Self {
             spans: spans.into(),
-            style: TextStyle::default(),
-            alignment: None,
         }
-    }
-
-    /// Create a `Line` with a specific style.
-    pub fn new_styled<S: Into<Vec<Span>>>(spans: S, style: TextStyle) -> Self {
-        Self {
-            spans: spans.into(),
-            style,
-            alignment: None,
-        }
-    }
-
-    /// Set the style for the line in a builder pattern.
-    pub fn style(mut self, style: TextStyle) -> Self {
-        self.style = style;
-        self
-    }
-
-    /// Set the alignment for the line in a builder pattern.
-    pub fn alignment(mut self, alignment: Alignment) -> Self {
-        self.alignment = Some(alignment);
-        self
-    }
-
-    /// Add a span to the existing spans.
-    pub fn push_span(mut self, span: Span) -> Self {
-        self.spans.push(span);
-        self
     }
 }
 
