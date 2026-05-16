@@ -400,7 +400,7 @@ cargo run -p lusid -- --config examples/nginx-cluster/lusid.toml local apply -y
 
 ## Task 6 — Delete `view/` crate (stop-rule milestone)
 
-**Status:** in progress
+**Status:** done ddd21e2
 
 **Goal:** Remove the `view/` crate, the `Render` trait that lived there, and every remaining `impl_display_render!` invocation. This is the commitment: Phase 0 is finished.
 
