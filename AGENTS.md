@@ -11,9 +11,9 @@ Lusid takes a `.lusid` plan (written in the **Rimu** language), optionally a par
    - **Resource modules** (`@resource/*`) → typed `ResourceParams` (apt/file/pacman/…).
    - Or nested plans (module path) → recursively planned.
 3. Validates parameter schemas and values (with span/source error reporting).
-4. Builds a **causality tree** (nodes can have `id`, `requires`, `required_by`).
-5. Computes dependency **epochs** (topological layers via Kahn's algorithm).
-6. Applies operations epoch-by-epoch, streaming structured updates as JSON to stdout.
+4. Expands ResourceParams into a tree of resource **atoms**. `on_change` operations stay on each plan-item branch's `PlanMeta::handlers`.
+5. Computes dependency **epochs** over the atom tree (topological layers via Kahn's algorithm).
+6. For each epoch in order: probe state for atoms in that epoch, compute changes, expand and apply the change operations (Phase A), then apply `on_change` ops for any plan item whose last atom is in this epoch and which had at least one atom change (Phase B). Streams structured updates as JSON to stdout.
 7. The `lusid` CLI renders a TUI from those updates.
 
 ## Principles
@@ -86,7 +86,7 @@ Resources live at the top level of `setup`. Operations live only inside an `on_c
 
 #### `on_change` hooks
 
-A resource may declare a list of operations to run when it changes. Hooks fire on any change (new contents, different mode, owner change, etc.) and run in a strictly-later epoch than the resource's own operations. Identical hooks in the same epoch coalesce - ten resources each declaring `on_change: reload nginx` collapse to one reload.
+A resource may declare a list of operations to run when it changes. Hooks fire on any change (new contents, different mode, owner change, etc.) and run after the resource's own change ops in the same resource epoch, before the next epoch's probes. Identical hooks landing in the same epoch coalesce: ten resources each declaring `on_change: reload nginx`, when their atoms all live in the same resource epoch, collapse to one reload.
 
 ```rimu
 - module: "@resource/file"
@@ -96,20 +96,29 @@ A resource may declare a list of operations to run when it changes. Hooks fire o
       params: { name: "nginx", action: "reload" }
 ```
 
-A plan item's `id` registers its hooks too: a `requires: [<id>]` dependent waits for both the resource and its hooks. See the `inject_handlers` post-pass below for the mechanism.
+A plan item's `id` registers its hooks too: a `requires: [<id>]` dependent waits for both the resource and its hooks. The dependent's atoms are in a strictly-later resource epoch than the plan item's atoms, and hooks fire in Phase B of the latest of those epochs before the next epoch begins, so dependents see the post-hook state.
 
 #### v1 limitations
 
 - Hooks are inline only - no by-reference (`on_change: ["handler-id"]`).
 - Inline operations cannot declare `id`, `requires`, or `required_by`.
 - Triggered on any change - no add/modify/remove distinction.
-- **Cross-epoch coalescing not handled.** If resource A reloads nginx, resource B also reloads nginx, and B `requires: ["A"]` (so they're in different epochs), nginx reloads twice. Workaround: factor the reload into a single dedicated `@resource/command` downstream, or accept the duplicate (nginx reload is idempotent).
+- **Cross-epoch coalescing not handled.** If resource A reloads nginx, resource B also reloads nginx, and B `requires: ["A"]` (so they're in different resource epochs), nginx reloads twice. `Operation::merge` only coalesces handler ops fired by plan items that share a resource epoch. Workaround: factor the reload into a single dedicated `@resource/command` downstream, or accept the duplicate (nginx reload is idempotent).
 - **Hook failure leaves you stuck.** If a hook fails, apply aborts. The resource is now in its target state, so re-applying will NOT re-trigger the hook. Recovery: either run the operation manually (e.g. `sudo systemctl reload nginx`), or briefly toggle a field on the resource (e.g. change `mode` on a `@resource/file`, or `enabled` on a `@resource/systemd`) and re-apply, then revert.
 - **`@operation/command` covers a lot.** Although only `command` and `systemd` are exposed as operations in v1, `@operation/command` shells out - logrotate signals, cron reloads, cache invalidation, etc. all fit under it.
 
-#### Implementation: the `inject_handlers` post-pass
+#### Implementation: Phase A / Phase B per resource epoch
 
-Handlers are parsed alongside the rest of a plan item and stashed in `PlanMeta::handlers`. They flow through the resource → state → change → operations pipeline as inert passengers. After operations expansion, `inject_handlers` (in `lusid-plan`) walks the tree branch-by-branch and, wherever a branch's `meta.handlers` is non-empty AND its subtree contains a `Some(_)` leaf (i.e. the resource actually had a change), wraps the existing children in a synthetic anchor branch (`id = SubItem(fresh_scope, "@@handler-anchor")`) and appends one handler leaf per operation, each `requires`-ing the anchor. Per causality's branch-as-group semantics, the handlers wait for every resource-side op, and the outer branch's plan-item id transitively registers the handlers for dependents. The anchor's `scope_id` is freshly minted per `inject_handlers` call, so it can't collide with the resource's own atom ids (which live under a different scope from `map_plan_subitems`).
+Handlers are parsed alongside the rest of a plan item and stashed in `PlanMeta::handlers` on the plan-item branch. They are never lifted into the atom tree.
+
+Before the per-epoch loop, `lusid-apply::apply` walks the atom tree once to build a `parent_of: Vec<Option<usize>>` (child arena idx → parent arena idx) and a `latest_epoch_by_branch: BTreeMap<usize, usize>` (for each handler-bearing plan-item branch, the max resource epoch any of its descendant atoms lives in).
+
+Per resource epoch K:
+
+- **Phase A**: probe each atom in parallel, compute its change, accumulate change ops, apply through `compute_epochs` + `Operation::merge`. When an atom changes, the apply loop walks `parent_of` upward to find the nearest enclosing plan-item branch whose `meta.handlers` is non-empty and inserts that branch's arena index into `changed_branches: HashSet<usize>`.
+- **Phase B**: iterate `latest_epoch_by_branch` in (deterministic) BTreeMap order. For each `(branch_idx, latest)` where `latest == K && changed_branches.contains(&branch_idx)`, read the handlers off `atoms_flat.get(branch_idx).meta.handlers` and apply them through the same merge + apply flow. The branch is removed from `changed_branches` to enforce fire-once via a `debug_assert!`.
+
+Phase B's ordering inside K means handlers fire strictly after the resource atoms they watch and strictly before the next epoch's Phase A. Since a dependent's atoms (with `requires: [<plan-item-id>]`) land in an epoch strictly later than the plan item's latest atom, Phase B of that latest epoch has already run before the dependent probes.
 
 
 ## Build / run / test (agent checklist)

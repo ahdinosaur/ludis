@@ -10,25 +10,31 @@ both ends.
 emits one update per newline on stdout; the TUI deserializes each and folds
 it into its [`AppView`](src/lib.rs) state.
 
-Pipeline phases, each bracketed by a `*Start` and `*Complete`:
+Outline:
 
-1. **ResourceParams** - the plan tree with typed params filled in.
-2. **Resources** - per-node resource construction (`ResourceParams → Resource`).
-3. **ResourceStates** - per-leaf state probe (async, emits `NodeStart` /
-   `NodeComplete`).
-4. **ResourceChanges** - diff of desired vs. actual; leaves with no change
-   are dropped via `set_node_none`.
-5. **Operations** - per-node operation tree expansion.
-6. **OperationsApply** - per-epoch, per-operation execution; streams live
-   `stdout`/`stderr` + final exit state.
+1. `ResourceParams` - the plan tree with typed params filled in.
+2. `ResourcesStart` / `ResourcesNode { index: 0, tree }` / `ResourcesComplete`
+   carrying the full atoms tree, one leaf per resource atom.
+3. Per resource epoch, interleaved across atoms:
+   - `ResourceStatesNodeStart` / `ResourceStatesNodeComplete` per leaf.
+   - `ResourceChangesNode { node: Option<View> }` per leaf; `None` is a
+     no-op leaf.
+   - `OperationsNode { operations: ViewTree }` per changed leaf.
+   - `OperationsApplyEpochAdded` + per-op apply events for Phase A; same
+     events repeated for Phase B's `on_change` handlers.
+4. `ApplyComplete { had_changes }`.
 
 ## AppView
 
-A phase-tagged enum that accumulates one [`FlatViewTree`](src/lib.rs) per
-stage. Each new phase clones the prior phase's tree via
-[`template()`](src/lib.rs) - same shape, leaves reset to `NotStarted` - so
-the TUI can show the eventual layout immediately and fill it in as events
-arrive.
+A per-leaf state machine over the atoms tree, plus the operations apply
+pane. Each resource atom advances through `Planned -> Probing -> Probed ->
+NoChange | Changed { ops: None } -> Changed { ops: Some }`; per-leaf events
+trigger transitions and invalid (state, event) pairs return
+`AppViewError::InvalidLeafTransition`. See [`LeafState`](src/lib.rs).
+
+The TUI navigates four per-stage trees (resources / states / changes /
+operations). These are projections of the leaf states, built on demand by
+[`AppView::resources_view`](src/lib.rs) and friends.
 
 ## FlatViewTree
 

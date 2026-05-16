@@ -37,7 +37,7 @@ This says: install nginx first, then write the config, then enable + start the s
 
 ## Epochs
 
-When lusid schedules operations, it groups them into **epochs** - layers of the dependency graph. Within an epoch every operation is independent; across epochs there's a "must happen before" relationship.
+When lusid schedules a plan, it groups resources into **epochs** - layers of the dependency graph. Within an epoch every resource is independent; across epochs there's a "must happen before" relationship.
 
 ```text
 Epoch 1: apt install nginx
@@ -45,7 +45,9 @@ Epoch 2: write /etc/nginx/nginx.conf
 Epoch 3: systemctl enable nginx; systemctl start nginx
 ```
 
-Operations within an epoch run in parallel where possible. Some families merge: ten `apt install` ops in one epoch collapse into a single `apt install <pkg1> <pkg2> …` call (same for `pacman`, `aur`, `flatpak`). Side-effecting families (file writes, git pulls) don't merge - order matters.
+For each epoch in turn, lusid probes the current state of every resource in that epoch, computes the diff against the desired state, and emits operations to close the diff. Then it runs those operations before moving on. **State probing happens per-epoch**, so a resource's diff reflects what's true on the machine after every prior epoch has been applied - not what was true at the start of the apply.
+
+Within one epoch, operations are coalesced where possible. Ten `apt install` ops in one epoch collapse into a single `apt install <pkg1> <pkg2> …` call (same for `pacman`, `aur`, `flatpak`). Side-effecting families (file writes, git pulls) don't merge - order matters. Coalescing only happens *within* an epoch; the same operation appearing in two different epochs runs twice (because the second occurrence might legitimately need to re-do the work after the first epoch's changes).
 
 A plan with no `requires` edges runs as one big epoch (modulo intra-resource ordering).
 
