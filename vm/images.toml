@@ -5,6 +5,10 @@ image = { type = "qcow2", url = "https://cloud.debian.org/images/cloud/trixie/la
 hash = { type = "sha512sums", url = "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS" }
 kernel_root = "/dev/vda1"
 user = "debian"
+# Drain cloud-init's first-boot modules (the `packages:` injection from our
+# seed ISO uses apt, which holds /var/lib/dpkg/lock) before the caller drives
+# the VM. Idempotent: returns immediately once cloud-init is done.
+ready_check = "cloud-init status --wait"
 
 [arch-x86-64]
 arch = "x86-64"
@@ -13,3 +17,9 @@ image = { type = "qcow2", url = "https://fastly.mirror.pkgbuild.com/images/lates
 hash = { type = "sha256sums", url = "https://fastly.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256" }
 kernel_root = "/dev/vda3"
 user = "arch"
+# `cloud-init status --wait` drains cloud-init's package install (`openssh`
+# from our seed ISO via pacman). `reflector.service` runs in parallel from
+# the cloud image's systemd preset and holds /var/lib/pacman/db.lck while
+# refreshing mirrors; polling the lock file catches it and anything else
+# outside cloud-init's tracking. Both no-op on settled re-runs.
+ready_check = "cloud-init status --wait; while [ -e /var/lib/pacman/db.lck ]; do sleep 1; done"
