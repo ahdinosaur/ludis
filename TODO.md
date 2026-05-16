@@ -177,7 +177,7 @@ grep -rn "view::TextStyle\|view::Alignment" --include="*.rs" view/ operation/ re
 
 ## Task 2 — Serde-derive the `Operation` tree
 
-**Status:** pending
+**Status:** done a594409
 
 **Goal:** Add `Serialize` + `Deserialize` to `Operation` and every `*Operation` / `*Executor` / `*Source` / `*Path` type underneath it. After this task, an `Operation` value round-trips through JSON cleanly.
 
