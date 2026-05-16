@@ -1,0 +1,11 @@
+[package]
+name = "lusid-render"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+lusid-operation = { path = "../operation", version = "0.1" }
+lusid-plan = { path = "../plan", version = "0.1" }
+lusid-resource = { path = "../resource", version = "0.1" }
+ratatui = "0.30"
+termtree = "1.0.0"

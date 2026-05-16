@@ -13,6 +13,7 @@ members = [
   "operation",
   "params",
   "plan",
+  "render",
   "rimu-interop",
   "resource",
   "secrets",

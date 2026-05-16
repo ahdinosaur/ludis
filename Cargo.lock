@@ -2772,6 +2772,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lusid-render"
+version = "0.1.0"
+dependencies = [
+ "lusid-operation",
+ "lusid-plan",
+ "lusid-resource",
+ "ratatui",
+ "termtree",
+]
+
+[[package]]
 name = "lusid-resource"
 version = "0.1.0"
 dependencies = [
