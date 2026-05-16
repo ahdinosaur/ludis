@@ -19,7 +19,6 @@
 #![allow(clippy::collapsible_if)]
 
 use std::collections::HashSet;
-use std::fmt::Display;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -31,6 +30,7 @@ use lusid_apply_stdio::{
 };
 use lusid_cmd::CommandError;
 use lusid_plan::PlanMeta;
+use lusid_render::Render;
 use lusid_ssh::SshError;
 use ratatui::{
     CompletedFrame, DefaultTerminal, Frame,
@@ -648,8 +648,8 @@ impl TuiApp {
     /// call); the state borrow is disjoint from `app_view`, so this compiles
     /// despite returning both from `&mut self`. The stage's typed projection
     /// is collapsed to a [`StringTree`] so per-stage projections share one
-    /// downstream rendering path while each domain payload's `Display` impl
-    /// still authors its own text.
+    /// downstream rendering path while each domain payload's
+    /// [`lusid_render::Render`] impl still authors its own text.
     fn tree_and_state_for_stage(&mut self) -> Option<(StringTree, &mut TreeState)> {
         match self.stage {
             PipelineStage::ResourceParams => self
@@ -1015,7 +1015,7 @@ fn draw_apply(
             };
             let label = format!(
                 "[{status}] (epoch {epoch_index}, operation {operation_index}) {}",
-                operation.label
+                operation.label.render().to_plain_string()
             );
             items.push(ListItem::new(Line::from(Span::raw(label))));
         }
@@ -1245,6 +1245,9 @@ fn tree_move_selection(tree: &StringTree, state: &mut TreeState, delta: i32) {
 /// rendering and navigation. Each per-stage projection has its own payload
 /// type; collapsing to strings here lets one set of `draw_tree` /
 /// `build_visible_rows` / `tree_move_selection` helpers cover every stage.
+/// Labels come from [`lusid_render::Render`], so any structured tagging the
+/// renderer adds in future tasks (diffs, semantic spans) will flow through
+/// without further changes here.
 #[derive(Debug, Clone)]
 struct StringTree {
     nodes: Vec<Option<StringNode>>,
@@ -1264,10 +1267,10 @@ impl StringTree {
     }
 
     /// Convert each branch's `PlanMeta` to its `id` label (`.` for anonymous
-    /// branches) and each leaf's `Lifecycle<T>` to the relevant text (the
-    /// payload's `Display` for `Complete`; "not started" / "in progress" for
-    /// the pre-completion phases).
-    fn from_projection<T: Display>(projection: &ProjectedTree<T>) -> Self {
+    /// branches) and each leaf's `Lifecycle<T>` to display text via
+    /// [`lusid_render::Render`] for `Complete`, with placeholder text for
+    /// the pre-completion phases.
+    fn from_projection<T: Render>(projection: &ProjectedTree<T>) -> Self {
         let nodes = projection
             .nodes()
             .iter()
@@ -1281,7 +1284,7 @@ impl StringTree {
                         label: match lifecycle {
                             Lifecycle::NotStarted => "not started".to_string(),
                             Lifecycle::Started => "in progress".to_string(),
-                            Lifecycle::Complete(value) => value.to_string(),
+                            Lifecycle::Complete(value) => value.render().to_plain_string(),
                         },
                     },
                 })
@@ -1294,6 +1297,6 @@ impl StringTree {
 fn plan_meta_label(meta: &PlanMeta) -> String {
     meta.id
         .as_ref()
-        .map(|id| id.to_string())
+        .map(|id| id.render().to_plain_string())
         .unwrap_or_else(|| ".".to_string())
 }

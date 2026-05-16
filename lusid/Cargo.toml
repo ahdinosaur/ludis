@@ -10,6 +10,7 @@ lusid-ctx = { path = "../ctx", version = "0.1" }
 lusid-machine = { path = "../machine", version = "0.1" }
 lusid-params = { path = "../params", version = "0.1" }
 lusid-plan = { path = "../plan", version = "0.1" }
+lusid-render = { path = "../render", version = "0.1" }
 lusid-secrets = { path = "../secrets", version = "0.1" }
 lusid-ssh = { path = "../ssh", version = "0.1" }
 lusid-store = { path = "../store", version = "0.1" }

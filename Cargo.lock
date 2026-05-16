@@ -2598,6 +2598,7 @@ dependencies = [
  "lusid-machine",
  "lusid-params",
  "lusid-plan",
+ "lusid-render",
  "lusid-secrets",
  "lusid-ssh",
  "lusid-store",
