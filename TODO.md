@@ -133,7 +133,7 @@ The View layer ships styled text the TUI never reads (the comment in `view/src/l
 
 ## Task 1 — Drop style metadata from View
 
-**Status:** pending
+**Status:** done 4f60b71
 
 **Goal:** Remove `TextStyle`, `Color`, `Alignment`, `Modifier` fields from `Span` / `Line` / `Paragraph`. View becomes a stripped-down text container.
 
