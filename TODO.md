@@ -336,7 +336,7 @@ cargo clippy --workspace -- -D warnings
 
 ## Task 5 — Migrate `AppUpdate` variants to structured payloads
 
-**Status:** pending
+**Status:** done (5a: 3e2d120; 5b: 33fc4e7; 5c: e1603ae)
 
 **Goal:** Replace `View` / `ViewTree` fields in every `AppUpdate` variant with structured serde types from Tasks 2-3. The TUI and plain-log mode use `lusid-render` to produce display text.
 
