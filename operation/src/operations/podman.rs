@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use std::{fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -16,7 +17,7 @@ use crate::OperationType;
 /// can't disagree - change the key in one place.
 pub const CONFIG_HASH_LABEL: &str = "lusid.config-hash";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanOperation {
     /// Create a container from `image` under `name`. `--pull=missing` is used
     /// so the image is fetched inline when it isn't already present locally -
@@ -181,5 +182,51 @@ impl OperationType for Podman {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip(op: PodmanOperation) {
+        let json = serde_json::to_string(&op).unwrap();
+        let back: PodmanOperation = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn round_trip_create() {
+        round_trip(PodmanOperation::Create {
+            name: "web".into(),
+            image: "docker.io/nginx:latest".into(),
+            command: Some(vec!["nginx".into(), "-g".into(), "daemon off;".into()]),
+            env: vec!["FOO=bar".into()],
+            ports: vec!["8080:80".into()],
+            volumes: vec!["/srv:/srv:ro".into()],
+            restart_policy: Some("always".into()),
+            config_hash: "abcd1234".into(),
+        });
+    }
+
+    #[test]
+    fn round_trip_create_defaults() {
+        round_trip(PodmanOperation::Create {
+            name: "web".into(),
+            image: "docker.io/nginx:latest".into(),
+            command: None,
+            env: Vec::new(),
+            ports: Vec::new(),
+            volumes: Vec::new(),
+            restart_policy: None,
+            config_hash: "abcd1234".into(),
+        });
+    }
+
+    #[test]
+    fn round_trip_start_stop_remove() {
+        round_trip(PodmanOperation::Start { name: "web".into() });
+        round_trip(PodmanOperation::Stop { name: "web".into() });
+        round_trip(PodmanOperation::Remove { name: "web".into() });
     }
 }

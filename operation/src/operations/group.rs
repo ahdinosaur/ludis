@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use std::{fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -9,7 +10,7 @@ use tracing::info;
 
 use crate::OperationType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupOperation {
     Add {
         name: String,
@@ -145,5 +146,36 @@ impl OperationType for Group {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip(op: GroupOperation) {
+        let json = serde_json::to_string(&op).unwrap();
+        let back: GroupOperation = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn round_trip_all_variants() {
+        round_trip(GroupOperation::Add {
+            name: "wheel".into(),
+            gid: Some(10),
+            system: true,
+        });
+        round_trip(GroupOperation::Modify {
+            name: "wheel".into(),
+            gid: Some(99),
+        });
+        round_trip(GroupOperation::AddUser {
+            name: "wheel".into(),
+            user: "alice".into(),
+        });
+        round_trip(GroupOperation::Delete {
+            name: "wheel".into(),
+        });
     }
 }

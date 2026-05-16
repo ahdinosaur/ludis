@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
 use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use std::{fmt::Display, pin::Pin};
 use tokio::io::AsyncRead;
 use tracing::info;
@@ -9,7 +10,7 @@ use tracing::info;
 use crate::OperationType;
 use crate::operations::file::{FileGroup, FileMode, FilePath, FileUser};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryOperation {
     Create {
         path: FilePath,
@@ -167,5 +168,43 @@ impl OperationType for Directory {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip(op: DirectoryOperation) {
+        let json = serde_json::to_string(&op).unwrap();
+        let back: DirectoryOperation = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn round_trip_all_variants() {
+        round_trip(DirectoryOperation::Create {
+            path: FilePath::new("/srv/foo"),
+        });
+        round_trip(DirectoryOperation::CreateSymlink {
+            source: FilePath::new("/srv/src"),
+            path: FilePath::new("/srv/link"),
+        });
+        round_trip(DirectoryOperation::CopyTree {
+            source: FilePath::new("/srv/src"),
+            path: FilePath::new("/srv/dst"),
+        });
+        round_trip(DirectoryOperation::Remove {
+            path: FilePath::new("/srv/foo"),
+        });
+        round_trip(DirectoryOperation::ChangeMode {
+            path: FilePath::new("/srv/foo"),
+            mode: FileMode::new(0o755),
+        });
+        round_trip(DirectoryOperation::ChangeOwner {
+            path: FilePath::new("/srv/foo"),
+            user: Some(FileUser::new("root")),
+            group: None,
+        });
     }
 }

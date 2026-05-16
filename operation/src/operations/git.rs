@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use std::{fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -11,7 +12,7 @@ use crate::OperationType;
 
 use crate::operations::file::FilePath;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GitOperation {
     Clone {
         repo: String,
@@ -149,5 +150,35 @@ impl OperationType for Git {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip(op: GitOperation) {
+        let json = serde_json::to_string(&op).unwrap();
+        let back: GitOperation = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn round_trip_all_variants() {
+        round_trip(GitOperation::Clone {
+            repo: "https://github.com/foo/bar".into(),
+            path: FilePath::new("/srv/bar"),
+        });
+        round_trip(GitOperation::Fetch {
+            path: FilePath::new("/srv/bar"),
+        });
+        round_trip(GitOperation::Checkout {
+            path: FilePath::new("/srv/bar"),
+            version: "main".into(),
+            force: true,
+        });
+        round_trip(GitOperation::Pull {
+            path: FilePath::new("/srv/bar"),
+        });
     }
 }

@@ -6,6 +6,7 @@ use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
 use lusid_http::HttpError;
 use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
 use tracing::info;
@@ -15,7 +16,7 @@ use crate::operations::file::FilePath;
 
 const STAGE_SUBDIR: &str = "apt-repo";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptRepoOperation {
     /// Create `/etc/apt/keyrings` (mode 0755) on the target. Idempotent -
     /// `install -d` is a no-op when the directory already exists.
@@ -188,4 +189,40 @@ async fn stage_path_for(
     let stage_dir = ctx.paths().cache_dir().join(STAGE_SUBDIR);
     fs::create_dir(&stage_dir).await?;
     Ok(stage_dir.join(format!("{name}.{extension}")))
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip(op: AptRepoOperation) {
+        let json = serde_json::to_string(&op).unwrap();
+        let back: AptRepoOperation = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn round_trip_ensure_keyrings_dir() {
+        round_trip(AptRepoOperation::EnsureKeyringsDir {
+            path: FilePath::new("/etc/apt/keyrings"),
+        });
+    }
+
+    #[test]
+    fn round_trip_download_key() {
+        round_trip(AptRepoOperation::DownloadKey {
+            name: "docker".into(),
+            url: "https://download.docker.com/linux/debian/gpg".into(),
+            path: FilePath::new("/etc/apt/keyrings/docker.asc"),
+        });
+    }
+
+    #[test]
+    fn round_trip_write_sources() {
+        round_trip(AptRepoOperation::WriteSources {
+            name: "docker".into(),
+            path: FilePath::new("/etc/apt/sources.list.d/docker.sources"),
+            content: "Types: deb\nURIs: https://download.docker.com/linux/debian\n".into(),
+        });
+    }
 }

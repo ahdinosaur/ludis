@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -9,7 +10,7 @@ use tracing::info;
 
 use crate::OperationType;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptOperation {
     Update,
     Install { packages: Vec<String> },
@@ -112,5 +113,28 @@ impl OperationType for Apt {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip(op: AptOperation) {
+        let json = serde_json::to_string(&op).unwrap();
+        let back: AptOperation = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn round_trip_update() {
+        round_trip(AptOperation::Update);
+    }
+
+    #[test]
+    fn round_trip_install() {
+        round_trip(AptOperation::Install {
+            packages: vec!["nginx".into(), "curl".into()],
+        });
     }
 }

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, collections::BTreeSet, fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -26,7 +27,7 @@ use crate::OperationType;
 /// command block rather than error. Within one lusid epoch operations run
 /// serially, so we don't deadlock against ourselves, but apply against a
 /// machine with active flatpak daemons can stall.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakOperation {
     /// Install one or more refs from `remote` into the named scope. Batched at
     /// merge time when multiple `@core/flatpak` resources share the same
@@ -496,5 +497,48 @@ mod tests {
     #[test]
     fn merge_empty_in_empty_out() {
         assert!(Flatpak::merge(Vec::new()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip(op: FlatpakOperation) {
+        let json = serde_json::to_string(&op).unwrap();
+        let back: FlatpakOperation = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn round_trip_install_uninstall() {
+        round_trip(FlatpakOperation::Install {
+            remote: "flathub".into(),
+            names: vec!["org.gnome.Calculator".into()],
+            user: true,
+        });
+        round_trip(FlatpakOperation::Uninstall {
+            names: vec!["org.gnome.Calculator".into()],
+            user: false,
+            delete_data: true,
+        });
+    }
+
+    #[test]
+    fn round_trip_remotes() {
+        round_trip(FlatpakOperation::AddRemote {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/flathub.flatpakrepo".into(),
+            user: false,
+        });
+        round_trip(FlatpakOperation::ModifyRemote {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            user: false,
+        });
+        round_trip(FlatpakOperation::RemoveRemote {
+            name: "old".into(),
+            user: true,
+        });
     }
 }

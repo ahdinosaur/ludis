@@ -4,6 +4,7 @@ use lusid_ctx::Context;
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fmt::Display, pin::Pin, str::FromStr};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -11,13 +12,14 @@ use tracing::info;
 
 use crate::OperationType;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CommandExecutor {
     Direct,
     Shell,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CommandOperation {
     pub command: String,
     pub executor: CommandExecutor,
@@ -156,5 +158,35 @@ mod tests {
             executor: CommandExecutor::Direct,
         };
         assert_eq!(Command::merge(vec![shell, direct]).len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_both_executors() {
+        for executor in [CommandExecutor::Direct, CommandExecutor::Shell] {
+            let op = CommandOperation {
+                command: "ls -la".into(),
+                executor,
+            };
+            let json = serde_json::to_string(&op).unwrap();
+            let back: CommandOperation = serde_json::from_str(&json).unwrap();
+            assert_eq!(op, back);
+        }
+    }
+
+    #[test]
+    fn executor_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&CommandExecutor::Direct).unwrap(),
+            "\"direct\""
+        );
+        assert_eq!(
+            serde_json::to_string(&CommandExecutor::Shell).unwrap(),
+            "\"shell\""
+        );
     }
 }

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use std::{fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -11,7 +12,7 @@ use crate::OperationType;
 
 use crate::operations::file::FilePath;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserOperation {
     Add {
         name: String,
@@ -204,5 +205,67 @@ impl OperationType for User {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip(op: UserOperation) {
+        let json = serde_json::to_string(&op).unwrap();
+        let back: UserOperation = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn round_trip_add() {
+        round_trip(UserOperation::Add {
+            name: "alice".into(),
+            uid: Some(1001),
+            primary_group: Some("alice".into()),
+            append_groups: vec!["wheel".into(), "docker".into()],
+            comment: Some("Alice".into()),
+            home: Some(FilePath::new("/home/alice")),
+            shell: Some("/bin/zsh".into()),
+            system: false,
+            create_home: true,
+        });
+    }
+
+    #[test]
+    fn round_trip_modify_with_none() {
+        round_trip(UserOperation::Modify {
+            name: "alice".into(),
+            uid: None,
+            primary_group: None,
+            append_groups: None,
+            comment: None,
+            home: None,
+            shell: None,
+        });
+    }
+
+    #[test]
+    fn round_trip_modify_with_some() {
+        // The `Some` arm of `append_groups` drives the `usermod -aG` branch in
+        // apply; round-trip it so an Option<Vec<_>> shape change can't sneak past.
+        round_trip(UserOperation::Modify {
+            name: "alice".into(),
+            uid: Some(1002),
+            primary_group: Some("staff".into()),
+            append_groups: Some(vec!["wheel".into(), "docker".into()]),
+            comment: Some("Alice".into()),
+            home: Some(FilePath::new("/home/alice")),
+            shell: Some("/bin/zsh".into()),
+        });
+    }
+
+    #[test]
+    fn round_trip_delete() {
+        round_trip(UserOperation::Delete {
+            name: "alice".into(),
+            remove_home: true,
+        });
     }
 }

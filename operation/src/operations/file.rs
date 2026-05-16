@@ -4,6 +4,7 @@ use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
 use lusid_view::impl_display_render;
 use secrecy::ExposeSecret;
+use serde::{Deserialize, Serialize};
 use std::{
     fmt::{Debug, Display},
     path::Path,
@@ -31,7 +32,7 @@ pub enum FileApplyError {
     MissingSecret { name: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileSource {
     Contents(Vec<u8>),
 
@@ -44,7 +45,8 @@ pub enum FileSource {
     Secret(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct FilePath(String);
 
 impl FilePath {
@@ -63,7 +65,8 @@ impl Display for FilePath {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct FileMode(u32);
 
 impl FileMode {
@@ -82,7 +85,8 @@ impl Display for FileMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct FileUser(String);
 
 impl FileUser {
@@ -101,7 +105,8 @@ impl Display for FileUser {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct FileGroup(String);
 
 impl FileGroup {
@@ -120,7 +125,7 @@ impl Display for FileGroup {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileOperation {
     Write {
         path: FilePath,
@@ -333,5 +338,69 @@ impl OperationType for File {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip(op: FileOperation) {
+        let json = serde_json::to_string(&op).unwrap();
+        let back: FileOperation = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn round_trip_write_variants() {
+        round_trip(FileOperation::Write {
+            path: FilePath::new("/etc/motd"),
+            source: FileSource::Contents(b"hello\n".to_vec()),
+        });
+        round_trip(FileOperation::Write {
+            path: FilePath::new("/etc/hosts"),
+            source: FileSource::Path(FilePath::new("/srv/hosts")),
+        });
+        round_trip(FileOperation::Write {
+            path: FilePath::new("/etc/ssl/private/key.pem"),
+            source: FileSource::Secret("ssl-key".into()),
+        });
+    }
+
+    #[test]
+    fn round_trip_other_variants() {
+        round_trip(FileOperation::CreateSymlink {
+            source: FilePath::new("/etc/foo"),
+            path: FilePath::new("/etc/bar"),
+        });
+        round_trip(FileOperation::Remove {
+            path: FilePath::new("/etc/foo"),
+        });
+        round_trip(FileOperation::ChangeMode {
+            path: FilePath::new("/etc/foo"),
+            mode: FileMode::new(0o600),
+        });
+        round_trip(FileOperation::ChangeOwner {
+            path: FilePath::new("/etc/foo"),
+            user: Some(FileUser::new("root")),
+            group: Some(FileGroup::new("wheel")),
+        });
+    }
+
+    #[test]
+    fn helpers_serialize_transparently() {
+        assert_eq!(
+            serde_json::to_string(&FilePath::new("/etc/foo")).unwrap(),
+            "\"/etc/foo\""
+        );
+        assert_eq!(serde_json::to_string(&FileMode::new(0o600)).unwrap(), "384");
+        assert_eq!(
+            serde_json::to_string(&FileUser::new("root")).unwrap(),
+            "\"root\""
+        );
+        assert_eq!(
+            serde_json::to_string(&FileGroup::new("wheel")).unwrap(),
+            "\"wheel\""
+        );
     }
 }

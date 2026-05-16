@@ -7,6 +7,7 @@ use core::task;
 use lusid_ctx::Context;
 use lusid_view::Render;
 use pin_project::pin_project;
+use serde::{Deserialize, Serialize};
 use std::{
     fmt::{Debug, Display},
     future::Future,
@@ -70,7 +71,7 @@ pub trait OperationType {
 
 /// Dispatcher over every operation family. Every leaf of the per-epoch causality
 /// tree is an `Operation`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Operation {
     Apt(AptOperation),
     AptRepo(AptRepoOperation),
@@ -513,6 +514,40 @@ pub struct OperationsByType {
     systemd: Vec<SystemdOperation>,
     user: Vec<UserOperation>,
     group: Vec<GroupOperation>,
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+    use crate::operations::{
+        apt::AptOperation, command::CommandExecutor, command::CommandOperation,
+        file::FileOperation, file::FilePath, file::FileSource, systemd::SystemdOperation,
+    };
+
+    fn round_trip(op: Operation) {
+        let json = serde_json::to_string(&op).unwrap();
+        let back: Operation = serde_json::from_str(&json).unwrap();
+        assert_eq!(json, serde_json::to_string(&back).unwrap());
+    }
+
+    #[test]
+    fn round_trip_dispatches_to_each_family() {
+        round_trip(Operation::Apt(AptOperation::Install {
+            packages: vec!["nginx".into()],
+        }));
+        round_trip(Operation::File(FileOperation::Write {
+            path: FilePath::new("/etc/motd"),
+            source: FileSource::Contents(b"hi".to_vec()),
+        }));
+        round_trip(Operation::Command(CommandOperation {
+            command: "echo hi".into(),
+            executor: CommandExecutor::Shell,
+        }));
+        round_trip(Operation::Systemd(SystemdOperation::Reload {
+            name: "nginx".into(),
+            user: false,
+        }));
+    }
 }
 
 /// Bucket a mixed iterator of operations into per-family vectors.

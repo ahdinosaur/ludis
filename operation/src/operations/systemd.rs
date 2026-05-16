@@ -4,6 +4,7 @@ use lusid_ctx::Context;
 use lusid_params::{ParseError, ParseParams, StructFields};
 use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -11,7 +12,7 @@ use tracing::info;
 
 use crate::OperationType;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SystemdOperation {
     Enable { name: String, user: bool },
     Disable { name: String, user: bool },
@@ -200,5 +201,44 @@ mod tests {
             user: false,
         };
         assert_eq!(Systemd::merge(vec![restart, reload]).len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_all_verbs() {
+        for op in [
+            SystemdOperation::Enable {
+                name: "nginx".into(),
+                user: false,
+            },
+            SystemdOperation::Disable {
+                name: "nginx".into(),
+                user: true,
+            },
+            SystemdOperation::Start {
+                name: "nginx".into(),
+                user: false,
+            },
+            SystemdOperation::Stop {
+                name: "nginx".into(),
+                user: true,
+            },
+            SystemdOperation::Restart {
+                name: "nginx".into(),
+                user: false,
+            },
+            SystemdOperation::Reload {
+                name: "nginx".into(),
+                user: false,
+            },
+        ] {
+            let json = serde_json::to_string(&op).unwrap();
+            let back: SystemdOperation = serde_json::from_str(&json).unwrap();
+            assert_eq!(op, back);
+        }
     }
 }
