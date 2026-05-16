@@ -164,7 +164,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         ParamsContext::new(root_path.clone())
     };
 
-    // Phase 1: parse + evaluate to a tree of resource params.
+    // Parse + evaluate to a tree of resource params.
     let resource_params = plan(plan_id, param_values, &params_ctx, &mut store, &system).await?;
     debug!("Resource params: {resource_params:?}");
     emit(AppUpdate::ResourceParams {
@@ -185,9 +185,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         .map(|params| params.validate_host_paths());
     futures_util::future::try_join_all(validations).await?;
 
-    // Phase 2: expand each ResourceParams into a tree of Resource atoms.
-    // Synchronous (CPU-only); no point streaming a per-leaf event for a
-    // negligible-cost transform.
+    // Expand each ResourceParams into a tree of Resource atoms.
     let resources = resource_params_flat
         .map_tree(
             |node, meta| PlanTree::branch(meta, map_plan_subitems(node, |n| n.resources())),
@@ -205,39 +203,40 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     .await?;
     emit(AppUpdate::ResourcesComplete).await?;
 
-    // Phase 3: derive arena indices and parent links from a FlatTree view.
-    // `FlatTree::from`'s pre-order matches `enumerate_atoms`'s, so the leaf
-    // indices below are the same indices the TUI's `FlatViewTree` assigns
-    // when consuming the `ResourcesNode { index: 0, tree }` event above.
+    // Build the arena once. `FlatTree::from` walks in pre-order, matching
+    // `enumerate_atoms` below and the indices the TUI's `FlatViewTree`
+    // assigns when it consumes the `ResourcesNode { index: 0, tree }` event
+    // above.
     let atoms_flat: PlanFlatTree<Resource> = atoms_nested.clone().into();
     let parent_of: HashMap<usize, usize> = build_parent_of(&atoms_flat);
 
-    // Phase 4: assign each tree node a stable index matching the FlatTree
-    // arena layout, and compute resource epochs over the atom tree.
+    // Tag each leaf with its arena index so the per-epoch loop can carry
+    // `(arena_index, atom)` pairs through `compute_epochs`.
     let indexed_atoms: PlanTree<(usize, Resource)> = enumerate_atoms(atoms_nested);
     let atom_epochs = compute_epochs(indexed_atoms.map(Some).map_meta(PlanMeta::to_causality))?;
     let epochs_count = atom_epochs.len();
     info!(epochs = epochs_count, "scheduled resource epochs");
 
-    // Phase 5: for each handler-bearing plan-item branch, the latest resource
-    // epoch any of its descendant atoms appears in. Phase B fires that branch's
-    // handlers at the end of its latest epoch. BTreeMap so Phase B's iteration
-    // order is stable across runs.
+    // For each handler-bearing plan-item branch, the latest resource epoch
+    // any of its descendant atoms appears in. Phase B fires that branch's
+    // handlers at the end of its latest epoch. BTreeMap so Phase B's
+    // iteration order is stable across runs.
     let latest_epoch_by_branch: BTreeMap<usize, usize> =
         build_latest_epoch_by_branch(&atom_epochs, &parent_of, &atoms_flat);
 
-    // Phase 6: process each resource epoch in causality order.
+    // Process each resource epoch in causality order.
     //
     // Within each epoch:
-    //   - Phase A: probe state for atoms (after prior epochs' ops have already
-    //     been applied, so probes see fresh-from-disk state), compute changes,
-    //     and apply the change ops. Atoms that change mark their nearest
-    //     handler-bearing ancestor branch in `changed_branches`.
-    //   - Phase B: for every handler-bearing branch whose latest epoch is this
-    //     one and which was marked changed, apply its on_change operations.
-    //     Phase B runs after Phase A's ops complete and before the next
-    //     epoch's Phase A begins, so handlers fire strictly after the resource
-    //     atoms they watch and strictly before any dependent's atoms.
+    //   - Phase A: probe state for atoms (after prior epochs' ops have
+    //     already been applied, so probes see fresh-from-disk state),
+    //     compute changes, and apply the change ops. Atoms that change mark
+    //     their nearest handler-bearing ancestor branch in `changed_branches`.
+    //   - Phase B: for every handler-bearing branch whose latest epoch is
+    //     this one and which was marked changed, apply its on_change
+    //     operations. Phase B runs after Phase A's ops complete and before
+    //     the next epoch's Phase A begins, so handlers fire strictly after
+    //     the resource atoms they watch and strictly before any dependent's
+    //     atoms.
     let mut changed_branches: HashSet<usize> = HashSet::new();
     let mut had_changes = false;
     let mut op_epoch_counter: usize = 0;
@@ -249,41 +248,38 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
             "processing resource epoch"
         );
 
-        // Phase A: probe states in parallel.
-        let probes = atoms.iter().map(|(idx, resource)| {
+        // Phase A: probe states in parallel, then walk results sequentially
+        // to emit events, compute changes, collect op subtrees, and mark
+        // each changed atom's nearest handler-bearing ancestor.
+        let probes = atoms.into_iter().map(|(idx, resource)| {
             let mut ctx = ctx.clone();
-            let resource = resource.clone();
-            let idx = *idx;
             async move {
                 emit(AppUpdate::ResourceStatesNodeStart { index: idx }).await?;
                 let state = resource.state(&mut ctx).await?;
-                Ok::<_, ApplyError>((idx, state))
+                Ok::<_, ApplyError>((idx, resource, state))
             }
         });
-        let states = futures_util::future::try_join_all(probes).await?;
+        let probed = futures_util::future::try_join_all(probes).await?;
 
-        // Phase A: for each probed atom, emit state event, compute change,
-        // emit change + ops events, collect op subtrees, and mark the
-        // nearest handler-bearing ancestor branch if the atom changed.
         let mut atom_op_subtrees: Vec<PlanTree<Operation>> = Vec::new();
-        for ((idx, state), (_idx, resource)) in states.iter().zip(&atoms) {
+        for (idx, resource, state) in probed {
             emit(AppUpdate::ResourceStatesNodeComplete {
-                index: *idx,
+                index: idx,
                 node: state.render(),
             })
             .await?;
 
-            let change = resource.change(state);
+            let change = resource.change(&state);
 
             if change.is_some() {
                 had_changes = true;
-                if let Some(branch_idx) = nearest_handler_ancestor(*idx, &parent_of, &atoms_flat) {
+                if let Some(branch_idx) = nearest_handler_ancestor(idx, &parent_of, &atoms_flat) {
                     changed_branches.insert(branch_idx);
                 }
             }
 
             emit(AppUpdate::ResourceChangesNode {
-                index: *idx,
+                index: idx,
                 node: change.as_ref().map(Render::render),
             })
             .await?;
@@ -292,13 +288,12 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
                 let scoped: Vec<PlanTree<Operation>> =
                     map_plan_subitems(change, |c| c.operations()).collect();
 
-                let display_subtree: PlanTree<Operation> = PlanTree::Branch {
-                    meta: PlanMeta::default(),
-                    children: scoped.clone(),
-                };
                 emit(AppUpdate::OperationsNode {
-                    index: *idx,
-                    operations: render_plan_tree(display_subtree),
+                    index: idx,
+                    operations: render_plan_tree(PlanTree::Branch {
+                        meta: PlanMeta::default(),
+                        children: scoped.clone(),
+                    }),
                 })
                 .await?;
 
@@ -310,38 +305,26 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
         // Phase B: collect handlers for branches whose latest epoch is this
         // one and which had at least one atom change during apply.
-        let mut pending_handlers: Vec<Operation> = Vec::new();
+        let mut handler_leaves: Vec<PlanTree<Operation>> = Vec::new();
         for (branch_idx, latest) in &latest_epoch_by_branch {
             if *latest != resource_epoch_idx || !changed_branches.contains(branch_idx) {
                 continue;
             }
-            // Remove the branch as we fire so any subsequent unintended
-            // re-entry would fail loudly under `debug_assert!`. (The current
-            // loop iterates `latest_epoch_by_branch` once, so this is a
-            // belt-and-braces invariant for future edits.)
+            // Remove the branch as we fire so any unintended re-entry fails
+            // loudly under the debug_assert below.
             let removed = changed_branches.remove(branch_idx);
-            debug_assert!(removed, "Phase B fire-once guard");
+            debug_assert!(removed, "Phase B fired the same branch twice");
 
             let handlers = match atoms_flat.get(*branch_idx) {
                 Ok(PlanFlatTreeNode::Branch { meta, .. }) => &meta.handlers,
                 _ => unreachable!("latest_epoch_by_branch only contains handler-bearing branches"),
             };
-            pending_handlers.extend(handlers.iter().cloned());
-        }
-
-        if !pending_handlers.is_empty() {
-            let combined = PlanTree::Branch {
+            handler_leaves.extend(handlers.iter().cloned().map(|op| PlanTree::Leaf {
                 meta: PlanMeta::default(),
-                children: pending_handlers
-                    .into_iter()
-                    .map(|op| PlanTree::Leaf {
-                        meta: PlanMeta::default(),
-                        node: op,
-                    })
-                    .collect(),
-            };
-            apply_op_phase(vec![combined], &mut op_epoch_counter, &mut ctx, &redactor).await?;
+                node: op,
+            }));
         }
+        apply_op_phase(handler_leaves, &mut op_epoch_counter, &mut ctx, &redactor).await?;
     }
 
     if !had_changes {
@@ -516,42 +499,31 @@ fn build_latest_epoch_by_branch(
     latest
 }
 
-/// Walk `tree` in pre-order, assigning each node (branch or leaf) a fresh
-/// arena-style index. The order matches `lusid_tree::FlatTree::from`'s
-/// `append_tree_nodes` traversal, so the indices on leaves correspond
-/// exactly to the indices the TUI's `FlatViewTree` will assign when
-/// consuming the equivalent `ResourcesNode { index: 0, tree }` event.
-///
-/// We walk and label here (rather than threading an arena index out of
-/// `compute_epochs`) so the per-epoch loop can carry `(arena_index, atom)`
-/// pairs and emit per-leaf events with a stable index.
+/// Tag each leaf with the arena index it would have under
+/// `lusid_tree::FlatTree::from` (pre-order, branches and leaves both
+/// consuming a slot). Branch positions are still counted; only the leaf
+/// indices are kept.
 fn enumerate_atoms<T>(tree: PlanTree<T>) -> PlanTree<(usize, T)> {
-    let mut counter: usize = 0;
-    enumerate_atoms_inner(tree, &mut counter)
-}
-
-fn enumerate_atoms_inner<T>(tree: PlanTree<T>, counter: &mut usize) -> PlanTree<(usize, T)> {
-    match tree {
-        Tree::Leaf { meta, node } => {
-            let idx = *counter;
-            *counter += 1;
-            Tree::Leaf {
-                meta,
-                node: (idx, node),
+    fn walk<T>(tree: PlanTree<T>, counter: &mut usize) -> PlanTree<(usize, T)> {
+        match tree {
+            Tree::Leaf { meta, node } => {
+                let idx = *counter;
+                *counter += 1;
+                Tree::Leaf {
+                    meta,
+                    node: (idx, node),
+                }
             }
-        }
-        Tree::Branch { meta, children } => {
-            *counter += 1;
-            let new_children: Vec<_> = children
-                .into_iter()
-                .map(|c| enumerate_atoms_inner(c, counter))
-                .collect();
-            Tree::Branch {
-                meta,
-                children: new_children,
+            Tree::Branch { meta, children } => {
+                *counter += 1;
+                Tree::Branch {
+                    meta,
+                    children: children.into_iter().map(|c| walk(c, counter)).collect(),
+                }
             }
         }
     }
+    walk(tree, &mut 0)
 }
 
 /// Serializes access to stdout across the apply. Operation stdout/stderr are
@@ -675,9 +647,8 @@ mod tests {
 
     #[test]
     fn nearest_handler_ancestor_returns_nearest_not_outermost() {
-        // outer (handlers=[X]) -> inner (handlers=[Y]) -> leaf. v1's parser
-        // forbids constructing this, but the function picks the innermost
-        // anyway as a forward-compatible safety guarantee.
+        // outer (handlers) -> inner (handlers) -> leaf. The innermost
+        // handler-bearing branch wins regardless of how deep the nesting is.
         let tree = plain_branch(vec![handler_branch(vec![handler_branch(vec![
             resource_leaf("/a"),
         ])])]);
