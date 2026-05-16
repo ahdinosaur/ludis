@@ -215,7 +215,7 @@ cargo clippy --workspace -- -D warnings
 
 ## Task 3 — Serde-derive `ResourceParams` / `Resource` / `ResourceState` / `ResourceChange`
 
-**Status:** pending
+**Status:** done 21c925d
 
 **Goal:** Add `Serialize` + `Deserialize` to the resource-side type trees. After this task, the full domain of "what we're applying" round-trips through JSON.
 
