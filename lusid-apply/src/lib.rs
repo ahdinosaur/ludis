@@ -15,14 +15,13 @@ use lusid_operation::{Operation, OperationApplyError};
 use lusid_params::ParamsContext;
 use lusid_plan::{
     self, PlanError, PlanFlatTree, PlanFlatTreeNode, PlanId, PlanMeta, PlanNodeId, PlanTree,
-    map_plan_subitems, plan, render_plan_tree,
+    map_plan_subitems, plan,
 };
 use lusid_resource::{HostPathValidationError, Resource, ResourceStateError};
 use lusid_secrets::{LoadError, Redactor, Secrets};
 use lusid_store::Store;
 use lusid_system::{GetSystemError, System};
 use lusid_tree::{FlatTree, FlatTreeNode, Tree};
-use lusid_view::Render;
 use rimu::SourceId;
 use rimu_interop::{ToRimuError, to_rimu};
 use thiserror::Error;
@@ -168,7 +167,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     let resource_params = plan(plan_id, param_values, &params_ctx, &mut store, &system).await?;
     debug!("Resource params: {resource_params:?}");
     emit(AppUpdate::ResourceParams {
-        resource_params: render_plan_tree(resource_params.clone()),
+        resource_params: resource_params.clone(),
     })
     .await?;
     let resource_params_flat = FlatTree::from(resource_params);
@@ -198,7 +197,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     emit(AppUpdate::ResourcesStart).await?;
     emit(AppUpdate::ResourcesNode {
         index: 0,
-        tree: render_plan_tree(atoms_nested.clone()),
+        tree: atoms_nested.clone(),
     })
     .await?;
     emit(AppUpdate::ResourcesComplete).await?;
@@ -265,7 +264,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         for (idx, resource, state) in probed {
             emit(AppUpdate::ResourceStatesNodeComplete {
                 index: idx,
-                node: state.render(),
+                state: state.clone(),
             })
             .await?;
 
@@ -280,7 +279,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
             emit(AppUpdate::ResourceChangesNode {
                 index: idx,
-                node: change.as_ref().map(Render::render),
+                change: change.clone(),
             })
             .await?;
 
@@ -290,10 +289,10 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
                 emit(AppUpdate::OperationsNode {
                     index: idx,
-                    operations: render_plan_tree(PlanTree::Branch {
+                    operations: PlanTree::Branch {
                         meta: PlanMeta::default(),
                         children: scoped.clone(),
-                    }),
+                    },
                 })
                 .await?;
 
@@ -368,7 +367,7 @@ async fn apply_op_phase(
 
         emit(AppUpdate::OperationsApplyEpochAdded {
             epoch_index: *op_epoch_counter,
-            operations: merged.iter().map(Render::render).collect(),
+            operations: merged.clone(),
         })
         .await?;
 

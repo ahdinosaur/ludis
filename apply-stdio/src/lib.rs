@@ -5,6 +5,12 @@
 //! [`AppView`]: a per-leaf state machine over the atoms tree, plus the
 //! operations apply pane.
 //!
+//! ## Wire shape
+//!
+//! Variants carry serde-derived domain types from `lusid-plan`,
+//! `lusid-resource`, and `lusid-operation`. The consumer renders these to
+//! display text on demand; the producer ships structured data only.
+//!
 //! ## Pipeline shape
 //!
 //! 1. Plan source -> [`AppUpdate::ResourceParams`] (full tree, one event).
@@ -40,13 +46,18 @@
 //!
 //! ## FlatViewTree
 //!
-//! Mirrors [`lusid_tree::FlatTree`](lusid_tree::FlatTree) but storing
-//! [`lusid_view::View`]s instead of domain nodes, so the TUI never needs to
-//! understand lusid's domain types. Arena is `Vec<Option<Node>>`; missing
-//! children / out-of-bounds indices are tolerated (lenient rendering).
-//! Subtrees are appended; "replace subtree at index" recursively clears the
-//! old children before writing the new.
+//! Arena-backed view of the atoms tree, parallel to
+//! [`lusid_tree::FlatTree`](lusid_tree::FlatTree) but storing
+//! [`lusid_view::View`]s. Returned by the projection methods on [`AppView`]
+//! so the TUI can render with simple text widgets. Arena slots are
+//! `Vec<Option<Node>>`; missing children / out-of-bounds indices are
+//! tolerated (lenient rendering). Subtrees are appended; "replace subtree
+//! at index" recursively clears the old children before writing the new.
 
+use lusid_operation::Operation;
+use lusid_plan::{PlanMeta, PlanNodeId, PlanTree};
+use lusid_resource::{Resource, ResourceChange, ResourceParams, ResourceState};
+use lusid_tree::Tree;
 use lusid_view::{Fragment, Render, View, ViewTree};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -213,9 +224,12 @@ fn replace_view_tree_nodes(
 /// phase order, but per-leaf transitions are strict - see [`LeafState`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AppUpdate {
-    /// Full resource-params tree, one event up front.
+    /// Full resource-params tree, one event up front. Carries the planner's
+    /// [`PlanMeta`] per branch (id / requires / required_by / on_change
+    /// handlers) so consumers can render labels, dependency annotations, and
+    /// handler counts without re-rendering at the producer.
     ResourceParams {
-        resource_params: ViewTree,
+        resource_params: PlanTree<ResourceParams>,
     },
 
     /// Begin filling in the atoms tree - the resource atoms produced by
@@ -225,7 +239,7 @@ pub enum AppUpdate {
     ResourcesStart,
     ResourcesNode {
         index: usize,
-        tree: ViewTree,
+        tree: PlanTree<Resource>,
     },
     ResourcesComplete,
 
@@ -236,28 +250,28 @@ pub enum AppUpdate {
     },
     ResourceStatesNodeComplete {
         index: usize,
-        node: View,
+        state: ResourceState,
     },
 
-    /// Per-leaf computed change. `node` is `None` when the diff is empty
+    /// Per-leaf computed change. `change` is `None` when the diff is empty
     /// (no-op); the TUI prunes the leaf in that case.
     ResourceChangesNode {
         index: usize,
-        node: Option<View>,
+        change: Option<ResourceChange>,
     },
 
     /// Per-leaf operations subtree (one or more concrete operations to
     /// execute). Replaces the leaf at `index` in the operations tree.
     OperationsNode {
         index: usize,
-        operations: ViewTree,
+        operations: PlanTree<Operation>,
     },
 
     /// One internal operation epoch's merged op list, appended to the apply
     /// pane. The TUI grows `operations_epochs` as these arrive.
     OperationsApplyEpochAdded {
         epoch_index: usize,
-        operations: Vec<View>,
+        operations: Vec<Operation>,
     },
 
     /// Per-operation lifecycle during apply. `index = (op_epoch_index, op_index)`,
@@ -468,8 +482,9 @@ impl AppView {
         use AppUpdate::*;
         match update {
             ResourceParams { resource_params } => {
-                self.resource_params =
-                    Some(FlatViewTree::from_view_tree_completed(resource_params));
+                self.resource_params = Some(FlatViewTree::from_view_tree_completed(
+                    plan_tree_to_view_tree(resource_params),
+                ));
             }
 
             // The full atoms tree arrives as one `ResourcesNode { index: 0 }`
@@ -488,30 +503,32 @@ impl AppView {
                     other => Err(other.name()),
                 })?;
             }
-            ResourceStatesNodeComplete { index, node } => {
-                self.transition_leaf("ResourceStatesNodeComplete", index, |state| match state {
+            ResourceStatesNodeComplete { index, state } => {
+                let view = state.render();
+                self.transition_leaf("ResourceStatesNodeComplete", index, |prev| match prev {
                     LeafState::Probing { resource } => Ok(LeafState::Probed {
                         resource: resource.clone(),
-                        state: node.clone(),
+                        state: view.clone(),
                     }),
                     other => Err(other.name()),
                 })?;
             }
-            ResourceChangesNode { index, node } => {
-                let is_change = node.is_some();
+            ResourceChangesNode { index, change } => {
+                let is_change = change.is_some();
+                let change_view = change.as_ref().map(Render::render);
                 self.transition_leaf("ResourceChangesNode", index, |state| match state {
                     LeafState::Probed {
                         resource,
                         state: probed_state,
-                    } => match &node {
+                    } => match &change_view {
                         None => Ok(LeafState::NoChange {
                             resource: resource.clone(),
                             state: probed_state.clone(),
                         }),
-                        Some(change) => Ok(LeafState::Changed {
+                        Some(view) => Ok(LeafState::Changed {
                             resource: resource.clone(),
                             state: probed_state.clone(),
-                            change: change.clone(),
+                            change: view.clone(),
                             ops: None,
                         }),
                     },
@@ -522,6 +539,7 @@ impl AppView {
                 }
             }
             OperationsNode { index, operations } => {
+                let ops_view = plan_tree_to_view_tree(operations);
                 let seq = self.ops_seq_counter;
                 self.transition_leaf("OperationsNode", index, |state| match state {
                     LeafState::Changed {
@@ -533,7 +551,7 @@ impl AppView {
                         resource: resource.clone(),
                         state: probed_state.clone(),
                         change: change.clone(),
-                        ops: Some((operations.clone(), seq)),
+                        ops: Some((ops_view.clone(), seq)),
                     }),
                     other => Err(other.name()),
                 })?;
@@ -552,8 +570,12 @@ impl AppView {
                         expected: self.operations_epochs.len(),
                     });
                 }
-                self.operations_epochs
-                    .push(operations.into_iter().map(OperationView::new).collect());
+                self.operations_epochs.push(
+                    operations
+                        .into_iter()
+                        .map(|op| OperationView::new(op.render()))
+                        .collect(),
+                );
             }
 
             OperationApplyStart { index: (e, o) } => {
@@ -801,28 +823,35 @@ where
     FlatViewTree { nodes }
 }
 
-/// Build a `ResourcesTree` from the producer's nested `ViewTree`. Branches
-/// take their `view` from the rendered `PlanNodeId`; every leaf starts in
-/// `Planned { resource: <leaf view> }`.
-fn build_resources_tree(tree: ViewTree) -> ResourcesTree {
+/// Build a `ResourcesTree` from the producer's nested `PlanTree<Resource>`.
+/// Each branch takes its label from `meta.id` (rendered, or `.` if anonymous);
+/// every leaf starts in `Planned { resource: <rendered Resource> }`. Branch
+/// labels and leaf views are rendered once here so the lifecycle pane and the
+/// projection methods can read `View`s without touching the structured tree.
+fn build_resources_tree(tree: PlanTree<Resource>) -> ResourcesTree {
     let mut nodes = Vec::new();
     append_resources_tree_nodes(&mut nodes, tree);
     ResourcesTree { nodes }
 }
 
-fn append_resources_tree_nodes(nodes: &mut Vec<Option<ResourcesNode>>, tree: ViewTree) -> usize {
+fn append_resources_tree_nodes(
+    nodes: &mut Vec<Option<ResourcesNode>>,
+    tree: PlanTree<Resource>,
+) -> usize {
     match tree {
-        ViewTree::Leaf { view } => {
+        Tree::Leaf { meta: _, node } => {
             let index = nodes.len();
             nodes.push(Some(ResourcesNode::Leaf {
-                state: LeafState::Planned { resource: view },
+                state: LeafState::Planned {
+                    resource: node.render(),
+                },
             }));
             index
         }
-        ViewTree::Branch { view, children } => {
+        Tree::Branch { meta, children } => {
             let index = nodes.len();
             nodes.push(Some(ResourcesNode::Branch {
-                view,
+                view: plan_meta_label(&meta),
                 children: Vec::new(),
             }));
             let child_indices: Vec<usize> = children
@@ -834,6 +863,29 @@ fn append_resources_tree_nodes(nodes: &mut Vec<Option<ResourcesNode>>, tree: Vie
             }
             index
         }
+    }
+}
+
+/// Render a `PlanMeta`'s id to a `View` label, or `.` when the branch is
+/// anonymous. Mirrors `lusid_plan::render_plan_tree`'s branch labelling.
+fn plan_meta_label(meta: &PlanMeta) -> View {
+    meta.id
+        .as_ref()
+        .map(PlanNodeId::render)
+        .unwrap_or_else(|| ".".render())
+}
+
+/// Render a `PlanTree<Node>` to a `ViewTree`. Branch labels come from
+/// [`plan_meta_label`]; leaf views from each node's [`Render`] impl.
+fn plan_tree_to_view_tree<Node: Render>(tree: PlanTree<Node>) -> ViewTree {
+    match tree {
+        Tree::Branch { meta, children } => ViewTree::Branch {
+            view: plan_meta_label(&meta),
+            children: children.into_iter().map(plan_tree_to_view_tree).collect(),
+        },
+        Tree::Leaf { meta: _, node } => ViewTree::Leaf {
+            view: node.render(),
+        },
     }
 }
 
@@ -884,23 +936,72 @@ impl std::fmt::Display for FlatViewTree {
 mod tests {
     use super::*;
 
-    fn view(text: &str) -> View {
-        View::Span(text.into())
+    use lusid_operation::Operation;
+    use lusid_operation::operations::command::{CommandExecutor, CommandOperation};
+    use lusid_operation::operations::file::FilePath;
+    use lusid_plan::{PlanId, PlanMeta, PlanNodeId, PlanTree};
+    use lusid_resource::{
+        Resource, ResourceChange, ResourceParams, ResourceState,
+        apt::{AptChange, AptParams, AptState},
+        file::{FileResource, FileState},
+    };
+    use std::path::PathBuf;
+
+    fn resource_leaf(path: &str) -> PlanTree<Resource> {
+        PlanTree::Leaf {
+            meta: PlanMeta::default(),
+            node: Resource::File(FileResource::Present {
+                path: FilePath::new(path),
+            }),
+        }
     }
 
-    /// Build an `AppView` whose atoms tree has two sibling leaves under one
-    /// branch. Used as the common starting shape for transition tests.
-    fn app_view_with_two_leaves() -> AppView {
-        let tree = ViewTree::Branch {
-            view: view("branch"),
+    fn file_state() -> ResourceState {
+        ResourceState::File(FileState::Absent)
+    }
+
+    fn apt_change() -> ResourceChange {
+        ResourceChange::Apt(AptChange::Install {
+            package: "nginx".into(),
+        })
+    }
+
+    fn command_op(label: &str) -> Operation {
+        Operation::Command(CommandOperation {
+            command: label.to_string(),
+            executor: CommandExecutor::Shell,
+        })
+    }
+
+    fn op_leaf(label: &str) -> PlanTree<Operation> {
+        PlanTree::Leaf {
+            meta: PlanMeta::default(),
+            node: command_op(label),
+        }
+    }
+
+    fn op_branch(label: &str) -> PlanTree<Operation> {
+        PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(PlanNodeId::PlanItem {
+                    plan_id: PlanId::Path(PathBuf::from("test.lusid")),
+                    item_id: label.into(),
+                }),
+                ..PlanMeta::default()
+            },
             children: vec![
-                ViewTree::Leaf {
-                    view: view("res-a"),
-                },
-                ViewTree::Leaf {
-                    view: view("res-b"),
-                },
+                op_leaf(&format!("{label}-1")),
+                op_leaf(&format!("{label}-2")),
             ],
+        }
+    }
+
+    /// Build an `AppView` whose atoms tree has two sibling resource leaves under
+    /// one branch. Used as the common starting shape for transition tests.
+    fn app_view_with_two_leaves() -> AppView {
+        let tree = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![resource_leaf("/a"), resource_leaf("/b")],
         };
         AppView::default()
             .update(AppUpdate::ResourcesStart)
@@ -934,7 +1035,7 @@ mod tests {
         let v = v
             .update(AppUpdate::ResourceStatesNodeComplete {
                 index: 1,
-                node: view("state-a"),
+                state: file_state(),
             })
             .unwrap();
         assert!(matches!(leaf_state(&v, 1), LeafState::Probed { .. }));
@@ -942,7 +1043,7 @@ mod tests {
         let v = v
             .update(AppUpdate::ResourceChangesNode {
                 index: 1,
-                node: Some(view("change-a")),
+                change: Some(apt_change()),
             })
             .unwrap();
         assert!(matches!(
@@ -954,7 +1055,7 @@ mod tests {
         let v = v
             .update(AppUpdate::OperationsNode {
                 index: 1,
-                operations: ViewTree::Leaf { view: view("op-a") },
+                operations: op_leaf("op-a"),
             })
             .unwrap();
         assert!(matches!(
@@ -970,12 +1071,12 @@ mod tests {
             .unwrap()
             .update(AppUpdate::ResourceStatesNodeComplete {
                 index: 1,
-                node: view("state-a"),
+                state: file_state(),
             })
             .unwrap()
             .update(AppUpdate::ResourceChangesNode {
                 index: 1,
-                node: None,
+                change: None,
             })
             .unwrap();
         assert!(matches!(leaf_state(&v, 1), LeafState::NoChange { .. }));
@@ -987,7 +1088,7 @@ mod tests {
         let err = app_view_with_two_leaves()
             .update(AppUpdate::ResourceChangesNode {
                 index: 1,
-                node: None,
+                change: None,
             })
             .unwrap_err();
         assert!(
@@ -1009,12 +1110,12 @@ mod tests {
             .unwrap()
             .update(AppUpdate::ResourceStatesNodeComplete {
                 index: 1,
-                node: view("s"),
+                state: file_state(),
             })
             .unwrap()
             .update(AppUpdate::OperationsNode {
                 index: 1,
-                operations: ViewTree::Leaf { view: view("op") },
+                operations: op_leaf("op"),
             })
             .unwrap_err();
         assert!(
@@ -1036,23 +1137,23 @@ mod tests {
             .unwrap()
             .update(AppUpdate::ResourceStatesNodeComplete {
                 index: 1,
-                node: view("s"),
+                state: file_state(),
             })
             .unwrap()
             .update(AppUpdate::ResourceChangesNode {
                 index: 1,
-                node: Some(view("c")),
+                change: Some(apt_change()),
             })
             .unwrap()
             .update(AppUpdate::OperationsNode {
                 index: 1,
-                operations: ViewTree::Leaf { view: view("op") },
+                operations: op_leaf("op"),
             })
             .unwrap();
         let err = v
             .update(AppUpdate::OperationsNode {
                 index: 1,
-                operations: ViewTree::Leaf { view: view("op2") },
+                operations: op_leaf("op2"),
             })
             .unwrap_err();
         assert!(matches!(
@@ -1095,12 +1196,12 @@ mod tests {
             .unwrap()
             .update(AppUpdate::ResourceStatesNodeComplete {
                 index: 1,
-                node: view("s"),
+                state: file_state(),
             })
             .unwrap()
             .update(AppUpdate::ResourceChangesNode {
                 index: 1,
-                node: None,
+                change: None,
             })
             .unwrap();
         let changes = v.resource_changes_view().unwrap();
@@ -1116,7 +1217,7 @@ mod tests {
             .unwrap()
             .update(AppUpdate::ResourceChangesNode {
                 index: 1,
-                node: None,
+                change: None,
             })
             .unwrap_err();
         assert!(
@@ -1138,17 +1239,17 @@ mod tests {
             .unwrap()
             .update(AppUpdate::ResourceStatesNodeComplete {
                 index: 1,
-                node: view("s"),
+                state: file_state(),
             })
             .unwrap()
             .update(AppUpdate::ResourceChangesNode {
                 index: 1,
-                node: None,
+                change: None,
             })
             .unwrap()
             .update(AppUpdate::OperationsNode {
                 index: 1,
-                operations: ViewTree::Leaf { view: view("op") },
+                operations: op_leaf("op"),
             })
             .unwrap_err();
         assert!(
@@ -1205,7 +1306,7 @@ mod tests {
         let v = v
             .update(AppUpdate::ResourceStatesNodeComplete {
                 index: 1,
-                node: view("st"),
+                state: file_state(),
             })
             .unwrap();
         // Probed: states=Complete, changes/ops still NotStarted.
@@ -1225,7 +1326,7 @@ mod tests {
         let v = v
             .update(AppUpdate::ResourceChangesNode {
                 index: 1,
-                node: Some(view("ch")),
+                change: Some(apt_change()),
             })
             .unwrap();
         // Changed { ops: None }: changes=Complete, ops still NotStarted.
@@ -1241,7 +1342,7 @@ mod tests {
         let v = v
             .update(AppUpdate::OperationsNode {
                 index: 1,
-                operations: ViewTree::Leaf { view: view("op") },
+                operations: op_leaf("op"),
             })
             .unwrap();
         // Changed { ops: Some }: ops slot is the spliced subtree's root.
@@ -1260,41 +1361,30 @@ mod tests {
     /// order, not arena-index order.
     #[test]
     fn ops_splice_indices_are_stable_across_arrivals() {
-        let advance_to_changed = |v: AppView, idx: usize, label: &str| -> AppView {
+        let advance_to_changed = |v: AppView, idx: usize| -> AppView {
             v.update(AppUpdate::ResourceStatesNodeStart { index: idx })
                 .unwrap()
                 .update(AppUpdate::ResourceStatesNodeComplete {
                     index: idx,
-                    node: view(&format!("s-{label}")),
+                    state: file_state(),
                 })
                 .unwrap()
                 .update(AppUpdate::ResourceChangesNode {
                     index: idx,
-                    node: Some(view(&format!("c-{label}"))),
+                    change: Some(apt_change()),
                 })
                 .unwrap()
-        };
-        let ops_subtree = |label: &str| ViewTree::Branch {
-            view: view(&format!("ops-{label}")),
-            children: vec![
-                ViewTree::Leaf {
-                    view: view(&format!("op-{label}-1")),
-                },
-                ViewTree::Leaf {
-                    view: view(&format!("op-{label}-2")),
-                },
-            ],
         };
 
         // Leaf at arena index 2 gets ops first (so leaf 2's children are
         // appended to the tail).
         let v = app_view_with_two_leaves();
-        let v = advance_to_changed(v, 1, "a");
-        let v = advance_to_changed(v, 2, "b");
+        let v = advance_to_changed(v, 1);
+        let v = advance_to_changed(v, 2);
         let v = v
             .update(AppUpdate::OperationsNode {
                 index: 2,
-                operations: ops_subtree("b"),
+                operations: op_branch("b"),
             })
             .unwrap();
         let before = v.operations_tree_view().unwrap();
@@ -1308,7 +1398,7 @@ mod tests {
         let v = v
             .update(AppUpdate::OperationsNode {
                 index: 1,
-                operations: ops_subtree("a"),
+                operations: op_branch("a"),
             })
             .unwrap();
         let after = v.operations_tree_view().unwrap();
@@ -1335,26 +1425,30 @@ mod tests {
 
     #[test]
     fn progress_reports_each_stage() {
+        let params = PlanTree::Leaf {
+            meta: PlanMeta::default(),
+            node: ResourceParams::Apt(AptParams::Package {
+                package: "p".into(),
+            }),
+        };
         let v = AppView::default();
         assert_eq!(v.progress(), PipelineProgress::AwaitingParams);
 
         let v = v
             .update(AppUpdate::ResourceParams {
-                resource_params: ViewTree::Leaf { view: view("p") },
+                resource_params: params,
             })
             .unwrap();
         assert_eq!(v.progress(), PipelineProgress::AwaitingResources);
 
+        let tree = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![resource_leaf("/a")],
+        };
         let v = v
             .update(AppUpdate::ResourcesStart)
             .unwrap()
-            .update(AppUpdate::ResourcesNode {
-                index: 0,
-                tree: ViewTree::Branch {
-                    view: view("b"),
-                    children: vec![ViewTree::Leaf { view: view("res") }],
-                },
-            })
+            .update(AppUpdate::ResourcesNode { index: 0, tree })
             .unwrap();
         assert_eq!(v.progress(), PipelineProgress::AwaitingStates);
 
@@ -1366,7 +1460,7 @@ mod tests {
         let v = v
             .update(AppUpdate::ResourceStatesNodeComplete {
                 index: 1,
-                node: view("s"),
+                state: ResourceState::Apt(AptState::NotInstalled),
             })
             .unwrap();
         assert_eq!(v.progress(), PipelineProgress::Probing);
@@ -1374,7 +1468,7 @@ mod tests {
         let v = v
             .update(AppUpdate::ResourceChangesNode {
                 index: 1,
-                node: Some(view("c")),
+                change: Some(apt_change()),
             })
             .unwrap();
         assert_eq!(v.progress(), PipelineProgress::SomeResolved);
@@ -1382,7 +1476,7 @@ mod tests {
         let v = v
             .update(AppUpdate::OperationsNode {
                 index: 1,
-                operations: ViewTree::Leaf { view: view("op") },
+                operations: op_leaf("op"),
             })
             .unwrap();
         assert_eq!(v.progress(), PipelineProgress::SomeOpsExpanded);
@@ -1390,7 +1484,7 @@ mod tests {
         let v = v
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
-                operations: vec![view("op")],
+                operations: vec![command_op("op")],
             })
             .unwrap();
         assert_eq!(v.progress(), PipelineProgress::Applying);

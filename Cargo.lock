@@ -2648,6 +2648,10 @@ dependencies = [
 name = "lusid-apply-stdio"
 version = "0.1.0"
 dependencies = [
+ "lusid-operation",
+ "lusid-plan",
+ "lusid-resource",
+ "lusid-tree",
  "lusid-view",
  "serde",
  "thiserror 2.0.18",
@@ -2766,6 +2770,7 @@ dependencies = [
  "lusid-view",
  "rimu",
  "rimu-interop",
+ "serde",
  "thiserror 2.0.18",
  "tracing",
  "url",
@@ -2873,6 +2878,7 @@ dependencies = [
 name = "lusid-tree"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "thiserror 2.0.18",
 ]
 
@@ -5741,6 +5747,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

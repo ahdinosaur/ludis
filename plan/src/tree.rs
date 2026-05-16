@@ -5,6 +5,7 @@ use lusid_causality::CausalityMeta;
 use lusid_operation::Operation;
 use lusid_tree::{FlatTree, FlatTreeNode, Tree};
 use lusid_view::{Render, ViewTree};
+use serde::{Deserialize, Serialize};
 
 use crate::PlanNodeId;
 
@@ -25,11 +26,18 @@ pub type PlanTree<Node> = Tree<Node, PlanMeta>;
 /// reads `meta.handlers` from the atoms tree at apply time, so a dropped
 /// `handlers` vector silently disables `on_change` for that plan item with no
 /// other symptom.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlanMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<PlanNodeId>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requires: Vec<PlanNodeId>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_by: Vec<PlanNodeId>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handlers: Vec<Operation>,
 }
 
