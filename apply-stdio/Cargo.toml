@@ -8,6 +8,5 @@ lusid-operation = { path = "../operation", version = "0.1" }
 lusid-plan = { path = "../plan", version = "0.1" }
 lusid-resource = { path = "../resource", version = "0.1" }
 lusid-tree = { path = "../tree", version = "0.1" }
-lusid-view = { path = "../view", version = "0.1" }
 serde.workspace = true
 thiserror.workspace = true

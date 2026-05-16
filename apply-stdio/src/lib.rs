@@ -38,183 +38,20 @@
 //!
 //! ## State model
 //!
-//! [`LeafState`] captures each atom's lifecycle. The four per-stage trees the
-//! TUI navigates (resources / states / changes / operations) are projections
-//! of the same underlying leaf states, built on demand via
-//! [`AppView::resources_view`] and friends. [`PipelineProgress`] is a coarse
-//! classification of the whole apply derived from one leaf walk.
-//!
-//! ## FlatViewTree
-//!
-//! Arena-backed view of the atoms tree, parallel to
-//! [`lusid_tree::FlatTree`](lusid_tree::FlatTree) but storing
-//! [`lusid_view::View`]s. Returned by the projection methods on [`AppView`]
-//! so the TUI can render with simple text widgets. Arena slots are
-//! `Vec<Option<Node>>`; missing children / out-of-bounds indices are
-//! tolerated (lenient rendering). Subtrees are appended; "replace subtree
-//! at index" recursively clears the old children before writing the new.
+//! [`LeafState`] captures each atom's lifecycle, carrying structured domain
+//! payloads (no rendering at this layer). The four per-stage projections the
+//! TUI navigates (resources / states / changes / operations) are built on
+//! demand via [`AppView::resources_view`] and friends; each returns a
+//! [`ProjectedTree`] whose leaves carry [`Lifecycle<T>`] over the relevant
+//! domain type. [`PipelineProgress`] is a coarse classification of the whole
+//! apply derived from one leaf walk.
 
 use lusid_operation::Operation;
-use lusid_plan::{PlanMeta, PlanNodeId, PlanTree};
+use lusid_plan::{PlanMeta, PlanTree};
 use lusid_resource::{Resource, ResourceChange, ResourceParams, ResourceState};
 use lusid_tree::Tree;
-use lusid_view::{Fragment, Render, View, ViewTree};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-/// Per-leaf progress marker, rendered with an emoji prefix:
-/// 🟩 not-started, ⌛ in-flight, ✅ + the finished view.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub enum ViewNode {
-    #[default]
-    NotStarted,
-    Started,
-    Complete(View),
-}
-
-impl Render for ViewNode {
-    fn render(&self) -> View {
-        match self {
-            ViewNode::NotStarted => View::Span("🟩".into()),
-            ViewNode::Started => View::Span("⌛".into()),
-            ViewNode::Complete(view) => {
-                View::Fragment(Fragment::new(vec![View::Span("✅".into()), view.clone()]))
-            }
-        }
-    }
-}
-
-/// Arena entry. Branch children are indices into the containing
-/// [`FlatViewTree`]; leaves carry a [`ViewNode`] progress marker directly
-/// (not a [`View`]), since leaves are the nodes that advance through the
-/// "not started → started → complete" lifecycle.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum FlatViewTreeNode {
-    Branch { view: View, children: Vec<usize> },
-    Leaf { view: ViewNode },
-}
-
-/// Arena-backed view tree, root fixed at index `0`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct FlatViewTree {
-    nodes: Vec<Option<FlatViewTreeNode>>,
-}
-
-#[derive(Debug, Error)]
-pub enum FlatViewTreeError {
-    #[error("index {0} is out of bounds")]
-    IndexOutOfBounds(usize),
-
-    #[error("node at index {0} is None")]
-    NodeMissing(usize),
-}
-
-impl FlatViewTree {
-    /// The root index is always zero.
-    pub const fn root_index() -> usize {
-        0
-    }
-
-    /// Get a node by index, with error handling.
-    pub fn get(&self, index: usize) -> Result<&FlatViewTreeNode, FlatViewTreeError> {
-        let node = self
-            .nodes
-            .get(index)
-            .ok_or(FlatViewTreeError::IndexOutOfBounds(index))?;
-        node.as_ref().ok_or(FlatViewTreeError::NodeMissing(index))
-    }
-
-    /// Build a flat tree by appending a completed ViewTree (children are appended).
-    pub fn from_view_tree_completed(view_tree: ViewTree) -> Self {
-        let mut nodes = Vec::<Option<FlatViewTreeNode>>::new();
-        append_view_tree_nodes(&mut nodes, view_tree);
-        FlatViewTree { nodes }
-    }
-
-    /// Replace the subtree at `root_index` with a completed `view_tree`.
-    pub fn replace_subtree_completed(&mut self, root_index: usize, view_tree: ViewTree) {
-        replace_view_tree_nodes(&mut self.nodes, Some(view_tree), root_index);
-    }
-}
-
-/// Append a (completed) view tree into a flat arena, returning the root index.
-/// Root is at index 0 if this is the first append.
-fn append_view_tree_nodes(nodes: &mut Vec<Option<FlatViewTreeNode>>, view_tree: ViewTree) -> usize {
-    match view_tree {
-        ViewTree::Leaf { view } => {
-            let index = nodes.len();
-            nodes.push(Some(FlatViewTreeNode::Leaf {
-                view: ViewNode::Complete(view),
-            }));
-            index
-        }
-        ViewTree::Branch { view, children } => {
-            let index = nodes.len();
-            nodes.push(Some(FlatViewTreeNode::Branch {
-                view,
-                children: Vec::new(),
-            }));
-            let mut child_indices = Vec::with_capacity(children.len());
-            for child in children {
-                let child_index = append_view_tree_nodes(nodes, child);
-                child_indices.push(child_index);
-            }
-            if let Some(FlatViewTreeNode::Branch { children, .. }) = nodes[index].as_mut() {
-                *children = child_indices;
-            }
-            index
-        }
-    }
-}
-
-/// Replace the subtree at `root_index` in-place with `view_tree` (or remove if None).
-fn replace_view_tree_nodes(
-    nodes: &mut Vec<Option<FlatViewTreeNode>>,
-    view_tree: Option<ViewTree>,
-    root_index: usize,
-) {
-    // Recursively remove previous children under this root (if it is a branch).
-    if let Some(Some(FlatViewTreeNode::Branch { children, .. })) = nodes.get(root_index) {
-        for child in children.clone() {
-            replace_view_tree_nodes(nodes, None, child);
-        }
-    }
-
-    match view_tree {
-        None => {
-            if root_index < nodes.len() {
-                nodes[root_index] = None;
-            } else {
-                // If out-of-bounds, extend and set None for clarity.
-                nodes.resize(root_index + 1, None);
-                nodes[root_index] = None;
-            }
-        }
-        Some(ViewTree::Leaf { view }) => {
-            if root_index >= nodes.len() {
-                nodes.resize(root_index + 1, None);
-            }
-            nodes[root_index] = Some(FlatViewTreeNode::Leaf {
-                view: ViewNode::Complete(view),
-            });
-        }
-        Some(ViewTree::Branch { view, children }) => {
-            // Append all children and attach to branch.
-            let mut child_indices = Vec::with_capacity(children.len());
-            for child in children {
-                let child_index = append_view_tree_nodes(nodes, child);
-                child_indices.push(child_index);
-            }
-            if root_index >= nodes.len() {
-                nodes.resize(root_index + 1, None);
-            }
-            nodes[root_index] = Some(FlatViewTreeNode::Branch {
-                view,
-                children: child_indices,
-            });
-        }
-    }
-}
 
 /// Protocol message from `lusid-apply` to the TUI.
 ///
@@ -305,7 +142,7 @@ pub enum AppUpdate {
 /// TUI renders the tail of these in the per-operation pane.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationView {
-    pub label: View,
+    pub label: Operation,
     pub stdout: String,
     pub stderr: String,
     pub is_complete: bool,
@@ -313,7 +150,7 @@ pub struct OperationView {
 }
 
 impl OperationView {
-    fn new(label: View) -> Self {
+    fn new(label: Operation) -> Self {
         Self {
             label,
             stdout: String::new(),
@@ -337,29 +174,30 @@ impl OperationView {
 /// The lifecycle is per-leaf; events for different leaves interleave because
 /// the apply loop probes each epoch's atoms in parallel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum LeafState {
     Planned {
-        resource: View,
+        resource: Resource,
     },
     Probing {
-        resource: View,
+        resource: Resource,
     },
     Probed {
-        resource: View,
-        state: View,
+        resource: Resource,
+        state: ResourceState,
     },
     NoChange {
-        resource: View,
-        state: View,
+        resource: Resource,
+        state: ResourceState,
     },
     Changed {
-        resource: View,
-        state: View,
-        change: View,
+        resource: Resource,
+        state: ResourceState,
+        change: ResourceChange,
         /// Populated when `OperationsNode` arrives. The `u64` is a monotonic
         /// arrival counter used to pin splice order during the operations
         /// projection so arena indices stay stable across renders.
-        ops: Option<(ViewTree, u64)>,
+        ops: Option<(PlanTree<Operation>, u64)>,
     },
 }
 
@@ -376,7 +214,7 @@ impl LeafState {
         }
     }
 
-    fn resource(&self) -> &View {
+    pub fn resource(&self) -> &Resource {
         match self {
             LeafState::Planned { resource }
             | LeafState::Probing { resource }
@@ -387,28 +225,200 @@ impl LeafState {
     }
 }
 
-/// Arena tree of resource atoms. Root index is 0. Branches carry rendered
-/// `PlanNodeId` labels; leaves carry per-atom state. The per-stage views
-/// shown in the TUI are derived from this tree.
+/// Arena tree of resource atoms. Root index is 0. Branches carry the
+/// planner's [`PlanMeta`] (id / requires / required_by / handlers); leaves
+/// carry per-atom state. The per-stage projections shown in the TUI are
+/// derived from this tree.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ResourcesTree {
-    nodes: Vec<Option<ResourcesNode>>,
+    pub nodes: Vec<Option<ResourcesNode>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum ResourcesNode {
-    Branch { view: View, children: Vec<usize> },
-    Leaf { state: LeafState },
+    Branch {
+        meta: PlanMeta,
+        children: Vec<usize>,
+    },
+    Leaf {
+        state: LeafState,
+    },
 }
 
 impl ResourcesTree {
     /// Iterate over every live leaf's state, in arena order.
-    fn leaves(&self) -> impl Iterator<Item = &LeafState> {
+    pub fn leaves(&self) -> impl Iterator<Item = &LeafState> {
         self.nodes.iter().filter_map(|n| match n.as_ref()? {
             ResourcesNode::Leaf { state } => Some(state),
             ResourcesNode::Branch { .. } => None,
         })
     }
+}
+
+/// Per-stage lifecycle marker for a [`ProjectedTree`] leaf. Tracks
+/// pre-event / in-flight / completed phases parallel to [`LeafState`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Lifecycle<T> {
+    NotStarted,
+    Started,
+    Complete(T),
+}
+
+impl<T> Lifecycle<T> {
+    pub fn as_complete(&self) -> Option<&T> {
+        match self {
+            Lifecycle::Complete(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
+/// Arena node in a [`ProjectedTree`]. Branches carry the source [`PlanMeta`];
+/// leaves carry a [`Lifecycle`] over the relevant domain payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
+pub enum ProjectedNode<T> {
+    Branch {
+        meta: PlanMeta,
+        children: Vec<usize>,
+    },
+    Leaf {
+        lifecycle: Lifecycle<T>,
+    },
+}
+
+/// Arena-backed projection of the atoms tree, parameterised by the per-leaf
+/// payload type (one of `ResourceParams`, `Resource`, `ResourceState`,
+/// `ResourceChange`, `Operation`). Slots are `Vec<Option<Node>>`; missing
+/// children / out-of-bounds indices are tolerated (lenient rendering).
+/// Subtrees are appended; "replace subtree at index" recursively clears the
+/// old children before writing the new.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProjectedTree<T> {
+    nodes: Vec<Option<ProjectedNode<T>>>,
+}
+
+#[derive(Debug, Error)]
+pub enum ProjectedTreeError {
+    #[error("index {0} is out of bounds")]
+    IndexOutOfBounds(usize),
+
+    #[error("node at index {0} is None")]
+    NodeMissing(usize),
+}
+
+impl<T> ProjectedTree<T> {
+    pub const fn root_index() -> usize {
+        0
+    }
+
+    pub fn nodes(&self) -> &[Option<ProjectedNode<T>>] {
+        &self.nodes
+    }
+
+    pub fn get(&self, index: usize) -> Result<&ProjectedNode<T>, ProjectedTreeError> {
+        let slot = self
+            .nodes
+            .get(index)
+            .ok_or(ProjectedTreeError::IndexOutOfBounds(index))?;
+        slot.as_ref().ok_or(ProjectedTreeError::NodeMissing(index))
+    }
+}
+
+impl<T: Clone> ProjectedTree<T> {
+    /// Replace the subtree at `root_index` with a [`PlanTree<T>`]; each leaf
+    /// becomes `Lifecycle::Complete(node)` and each branch keeps its meta.
+    /// Pre-existing descendants are recursively tombstoned.
+    fn splice_plan_subtree(&mut self, root_index: usize, subtree: PlanTree<T>) {
+        if let Some(Some(ProjectedNode::Branch { children, .. })) = self.nodes.get(root_index) {
+            for child in children.clone() {
+                tombstone_subtree(&mut self.nodes, child);
+            }
+        }
+        replace_with_plan_subtree(&mut self.nodes, root_index, subtree);
+    }
+}
+
+fn tombstone_subtree<T>(nodes: &mut Vec<Option<ProjectedNode<T>>>, root_index: usize) {
+    if let Some(Some(ProjectedNode::Branch { children, .. })) = nodes.get(root_index) {
+        for child in children.clone() {
+            tombstone_subtree(nodes, child);
+        }
+    }
+    if root_index < nodes.len() {
+        nodes[root_index] = None;
+    }
+}
+
+fn replace_with_plan_subtree<T>(
+    nodes: &mut Vec<Option<ProjectedNode<T>>>,
+    root_index: usize,
+    subtree: PlanTree<T>,
+) {
+    match subtree {
+        Tree::Leaf { meta: _, node } => {
+            if root_index >= nodes.len() {
+                nodes.resize_with(root_index + 1, || None);
+            }
+            nodes[root_index] = Some(ProjectedNode::Leaf {
+                lifecycle: Lifecycle::Complete(node),
+            });
+        }
+        Tree::Branch { meta, children } => {
+            let mut child_indices = Vec::with_capacity(children.len());
+            for child in children {
+                let child_index = append_plan_subtree(nodes, child);
+                child_indices.push(child_index);
+            }
+            if root_index >= nodes.len() {
+                nodes.resize_with(root_index + 1, || None);
+            }
+            nodes[root_index] = Some(ProjectedNode::Branch {
+                meta,
+                children: child_indices,
+            });
+        }
+    }
+}
+
+fn append_plan_subtree<T>(
+    nodes: &mut Vec<Option<ProjectedNode<T>>>,
+    subtree: PlanTree<T>,
+) -> usize {
+    match subtree {
+        Tree::Leaf { meta: _, node } => {
+            let index = nodes.len();
+            nodes.push(Some(ProjectedNode::Leaf {
+                lifecycle: Lifecycle::Complete(node),
+            }));
+            index
+        }
+        Tree::Branch { meta, children } => {
+            let index = nodes.len();
+            nodes.push(Some(ProjectedNode::Branch {
+                meta,
+                children: Vec::new(),
+            }));
+            let mut child_indices = Vec::with_capacity(children.len());
+            for child in children {
+                let child_index = append_plan_subtree(nodes, child);
+                child_indices.push(child_index);
+            }
+            if let Some(ProjectedNode::Branch { children, .. }) = nodes[index].as_mut() {
+                *children = child_indices;
+            }
+            index
+        }
+    }
+}
+
+/// Build a fully-Complete [`ProjectedTree<T>`] from a [`PlanTree<T>`]. Used
+/// for inputs that arrive whole (resource_params).
+fn project_plan_tree<T>(tree: PlanTree<T>) -> ProjectedTree<T> {
+    let mut nodes = Vec::new();
+    append_plan_subtree(&mut nodes, tree);
+    ProjectedTree { nodes }
 }
 
 /// Coarse pipeline progress derived from the `AppView`'s data. One traversal
@@ -427,12 +437,12 @@ pub enum PipelineProgress {
 }
 
 /// TUI state. Per-leaf lifecycle lives in `resources`; the four per-stage
-/// views (resources / resource_states / resource_changes / operations_tree)
-/// are projected from it on demand. `operations_epochs` is the live apply
+/// projections (resources / resource_states / resource_changes / operations_tree)
+/// are produced from it on demand. `operations_epochs` is the live apply
 /// pane, untouched by the projection.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppView {
-    pub resource_params: Option<FlatViewTree>,
+    pub resource_params: Option<ProjectedTree<ResourceParams>>,
     pub resources: Option<ResourcesTree>,
     pub operations_epochs: Vec<Vec<OperationView>>,
     /// Whether any leaf has reached `Changed`. Also set by `ApplyComplete`'s
@@ -482,9 +492,7 @@ impl AppView {
         use AppUpdate::*;
         match update {
             ResourceParams { resource_params } => {
-                self.resource_params = Some(FlatViewTree::from_view_tree_completed(
-                    plan_tree_to_view_tree(resource_params),
-                ));
+                self.resource_params = Some(project_plan_tree(resource_params));
             }
 
             // The full atoms tree arrives as one `ResourcesNode { index: 0 }`
@@ -504,31 +512,29 @@ impl AppView {
                 })?;
             }
             ResourceStatesNodeComplete { index, state } => {
-                let view = state.render();
                 self.transition_leaf("ResourceStatesNodeComplete", index, |prev| match prev {
                     LeafState::Probing { resource } => Ok(LeafState::Probed {
                         resource: resource.clone(),
-                        state: view.clone(),
+                        state: state.clone(),
                     }),
                     other => Err(other.name()),
                 })?;
             }
             ResourceChangesNode { index, change } => {
                 let is_change = change.is_some();
-                let change_view = change.as_ref().map(Render::render);
-                self.transition_leaf("ResourceChangesNode", index, |state| match state {
+                self.transition_leaf("ResourceChangesNode", index, |prev| match prev {
                     LeafState::Probed {
                         resource,
                         state: probed_state,
-                    } => match &change_view {
+                    } => match &change {
                         None => Ok(LeafState::NoChange {
                             resource: resource.clone(),
                             state: probed_state.clone(),
                         }),
-                        Some(view) => Ok(LeafState::Changed {
+                        Some(change) => Ok(LeafState::Changed {
                             resource: resource.clone(),
                             state: probed_state.clone(),
-                            change: view.clone(),
+                            change: change.clone(),
                             ops: None,
                         }),
                     },
@@ -539,9 +545,8 @@ impl AppView {
                 }
             }
             OperationsNode { index, operations } => {
-                let ops_view = plan_tree_to_view_tree(operations);
                 let seq = self.ops_seq_counter;
-                self.transition_leaf("OperationsNode", index, |state| match state {
+                self.transition_leaf("OperationsNode", index, |prev| match prev {
                     LeafState::Changed {
                         resource,
                         state: probed_state,
@@ -551,7 +556,7 @@ impl AppView {
                         resource: resource.clone(),
                         state: probed_state.clone(),
                         change: change.clone(),
-                        ops: Some((ops_view.clone(), seq)),
+                        ops: Some((operations.clone(), seq)),
                     }),
                     other => Err(other.name()),
                 })?;
@@ -570,12 +575,8 @@ impl AppView {
                         expected: self.operations_epochs.len(),
                     });
                 }
-                self.operations_epochs.push(
-                    operations
-                        .into_iter()
-                        .map(|op| OperationView::new(op.render()))
-                        .collect(),
-                );
+                self.operations_epochs
+                    .push(operations.into_iter().map(OperationView::new).collect());
             }
 
             OperationApplyStart { index: (e, o) } => {
@@ -663,7 +664,7 @@ impl AppView {
             .ok_or(AppViewError::OperationIndexOutOfBounds(e, o))
     }
 
-    pub fn resource_params(&self) -> Option<&FlatViewTree> {
+    pub fn resource_params(&self) -> Option<&ProjectedTree<ResourceParams>> {
         self.resource_params.as_ref()
     }
 
@@ -715,47 +716,38 @@ impl AppView {
         }
     }
 
-    /// Project the atoms tree as a `FlatViewTree` where each leaf renders its
-    /// resource view. Branches pass through unchanged.
-    pub fn resources_view(&self) -> Option<FlatViewTree> {
+    /// Project the atoms tree so every leaf is the atom's [`Resource`].
+    /// Always-Complete: the whole tree arrives at once.
+    pub fn resources_view(&self) -> Option<ProjectedTree<Resource>> {
         let tree = self.resources.as_ref()?;
         Some(project(tree, |state| {
-            Some(FlatViewTreeNode::Leaf {
-                view: ViewNode::Complete(state.resource().clone()),
-            })
+            Some(Lifecycle::Complete(state.resource().clone()))
         }))
     }
 
     /// Project per-leaf probe progress: `NotStarted` -> `Started` -> the
-    /// probed state view.
-    pub fn resource_states_view(&self) -> Option<FlatViewTree> {
+    /// probed state value.
+    pub fn resource_states_view(&self) -> Option<ProjectedTree<ResourceState>> {
         let tree = self.resources.as_ref()?;
-        Some(project(tree, |state| {
-            let view = match state {
-                LeafState::Planned { .. } => ViewNode::NotStarted,
-                LeafState::Probing { .. } => ViewNode::Started,
-                LeafState::Probed { state, .. }
-                | LeafState::NoChange { state, .. }
-                | LeafState::Changed { state, .. } => ViewNode::Complete(state.clone()),
-            };
-            Some(FlatViewTreeNode::Leaf { view })
+        Some(project(tree, |state| match state {
+            LeafState::Planned { .. } => Some(Lifecycle::NotStarted),
+            LeafState::Probing { .. } => Some(Lifecycle::Started),
+            LeafState::Probed { state, .. }
+            | LeafState::NoChange { state, .. }
+            | LeafState::Changed { state, .. } => Some(Lifecycle::Complete(state.clone())),
         }))
     }
 
-    /// Project per-leaf computed changes. `NoChange` leaves are pruned (slot
-    /// becomes `None`); pre-resolution leaves render `NotStarted`.
-    pub fn resource_changes_view(&self) -> Option<FlatViewTree> {
+    /// Project per-leaf computed changes. `NoChange` leaves are pruned;
+    /// pre-resolution leaves render `NotStarted`.
+    pub fn resource_changes_view(&self) -> Option<ProjectedTree<ResourceChange>> {
         let tree = self.resources.as_ref()?;
         Some(project(tree, |state| match state {
             LeafState::Planned { .. } | LeafState::Probing { .. } | LeafState::Probed { .. } => {
-                Some(FlatViewTreeNode::Leaf {
-                    view: ViewNode::NotStarted,
-                })
+                Some(Lifecycle::NotStarted)
             }
             LeafState::NoChange { .. } => None,
-            LeafState::Changed { change, .. } => Some(FlatViewTreeNode::Leaf {
-                view: ViewNode::Complete(change.clone()),
-            }),
+            LeafState::Changed { change, .. } => Some(Lifecycle::Complete(change.clone())),
         }))
     }
 
@@ -764,21 +756,20 @@ impl AppView {
     /// in. Splicing happens in `ops_seq` (arrival) order so the appended
     /// arena region stays stable across renders even when ops events arrive
     /// out of arena-index order.
-    pub fn operations_tree_view(&self) -> Option<FlatViewTree> {
+    pub fn operations_tree_view(&self) -> Option<ProjectedTree<Operation>> {
         let resources = self.resources.as_ref()?;
 
         // Pass 1: build the base arena. Splice-target slots get a placeholder
-        // leaf that pass 2 overwrites; `NoChange` slots are pruned outright.
-        let mut tree = project(resources, |state| match state {
+        // `NotStarted` leaf that pass 2 overwrites; `NoChange` slots are
+        // pruned outright.
+        let mut tree: ProjectedTree<Operation> = project(resources, |state| match state {
             LeafState::NoChange { .. } => None,
-            _ => Some(FlatViewTreeNode::Leaf {
-                view: ViewNode::NotStarted,
-            }),
+            _ => Some(Lifecycle::NotStarted),
         });
 
         // Pass 2: collect splice targets, sort by arrival order so appended
         // arena indices stay stable across renders, then splice.
-        let mut splice_targets: Vec<(usize, &ViewTree, u64)> = resources
+        let mut splice_targets: Vec<(usize, &PlanTree<Operation>, u64)> = resources
             .nodes
             .iter()
             .enumerate()
@@ -795,39 +786,39 @@ impl AppView {
             .collect();
         splice_targets.sort_by_key(|(_, _, seq)| *seq);
         for (idx, subtree, _) in splice_targets {
-            tree.replace_subtree_completed(idx, subtree.clone());
+            tree.splice_plan_subtree(idx, subtree.clone());
         }
         Some(tree)
     }
 }
 
-/// Walk `resources` once, building a parallel `FlatViewTree` arena. Branches
-/// always pass through their `view` and child indices; leaves are mapped via
-/// `leaf_to_node` (returning `None` prunes the slot).
-fn project<F>(resources: &ResourcesTree, leaf_to_node: F) -> FlatViewTree
+/// Walk `resources` once, building a parallel [`ProjectedTree`] arena.
+/// Branches always pass through their meta and child indices; leaves are
+/// mapped via `leaf_to_lifecycle` (returning `None` prunes the slot).
+fn project<T, F>(resources: &ResourcesTree, leaf_to_lifecycle: F) -> ProjectedTree<T>
 where
-    F: Fn(&LeafState) -> Option<FlatViewTreeNode>,
+    F: Fn(&LeafState) -> Option<Lifecycle<T>>,
 {
     let nodes = resources
         .nodes
         .iter()
         .map(|slot| match slot {
             None => None,
-            Some(ResourcesNode::Branch { view, children }) => Some(FlatViewTreeNode::Branch {
-                view: view.clone(),
+            Some(ResourcesNode::Branch { meta, children }) => Some(ProjectedNode::Branch {
+                meta: meta.clone(),
                 children: children.clone(),
             }),
-            Some(ResourcesNode::Leaf { state }) => leaf_to_node(state),
+            Some(ResourcesNode::Leaf { state }) => {
+                leaf_to_lifecycle(state).map(|lifecycle| ProjectedNode::Leaf { lifecycle })
+            }
         })
         .collect();
-    FlatViewTree { nodes }
+    ProjectedTree { nodes }
 }
 
 /// Build a `ResourcesTree` from the producer's nested `PlanTree<Resource>`.
-/// Each branch takes its label from `meta.id` (rendered, or `.` if anonymous);
-/// every leaf starts in `Planned { resource: <rendered Resource> }`. Branch
-/// labels and leaf views are rendered once here so the lifecycle pane and the
-/// projection methods can read `View`s without touching the structured tree.
+/// Branches carry their `PlanMeta` through; every leaf starts in
+/// `LeafState::Planned`.
 fn build_resources_tree(tree: PlanTree<Resource>) -> ResourcesTree {
     let mut nodes = Vec::new();
     append_resources_tree_nodes(&mut nodes, tree);
@@ -842,16 +833,14 @@ fn append_resources_tree_nodes(
         Tree::Leaf { meta: _, node } => {
             let index = nodes.len();
             nodes.push(Some(ResourcesNode::Leaf {
-                state: LeafState::Planned {
-                    resource: node.render(),
-                },
+                state: LeafState::Planned { resource: node },
             }));
             index
         }
         Tree::Branch { meta, children } => {
             let index = nodes.len();
             nodes.push(Some(ResourcesNode::Branch {
-                view: plan_meta_label(&meta),
+                meta,
                 children: Vec::new(),
             }));
             let child_indices: Vec<usize> = children
@@ -862,72 +851,6 @@ fn append_resources_tree_nodes(
                 *children = child_indices;
             }
             index
-        }
-    }
-}
-
-/// Render a `PlanMeta`'s id to a `View` label, or `.` when the branch is
-/// anonymous. Mirrors `lusid_plan::render_plan_tree`'s branch labelling.
-fn plan_meta_label(meta: &PlanMeta) -> View {
-    meta.id
-        .as_ref()
-        .map(PlanNodeId::render)
-        .unwrap_or_else(|| ".".render())
-}
-
-/// Render a `PlanTree<Node>` to a `ViewTree`. Branch labels come from
-/// [`plan_meta_label`]; leaf views from each node's [`Render`] impl.
-fn plan_tree_to_view_tree<Node: Render>(tree: PlanTree<Node>) -> ViewTree {
-    match tree {
-        Tree::Branch { meta, children } => ViewTree::Branch {
-            view: plan_meta_label(&meta),
-            children: children.into_iter().map(plan_tree_to_view_tree).collect(),
-        },
-        Tree::Leaf { meta: _, node } => ViewTree::Leaf {
-            view: node.render(),
-        },
-    }
-}
-
-/// Lenient conversion to nested ViewTree:
-/// - Skips missing or invalid children
-/// - If the root is missing, returns a single-node tree with "?".
-impl From<FlatViewTree> for Option<ViewTree> {
-    fn from(value: FlatViewTree) -> Self {
-        fn build(tree: &mut [Option<FlatViewTreeNode>], index: usize) -> Option<ViewTree> {
-            if index >= tree.len() {
-                return None;
-            }
-            let node = tree[index].take()?;
-            match node {
-                FlatViewTreeNode::Leaf { view } => {
-                    let view = view.render();
-                    Some(ViewTree::Leaf { view })
-                }
-                FlatViewTreeNode::Branch { view, children } => {
-                    let children: Vec<_> = children
-                        .iter()
-                        .filter_map(|child| build(tree, *child))
-                        .collect();
-                    if children.is_empty() {
-                        return None;
-                    }
-                    Some(ViewTree::Branch { view, children })
-                }
-            }
-        }
-
-        let mut nodes = value.nodes;
-        build(&mut nodes, 0)
-    }
-}
-
-impl std::fmt::Display for FlatViewTree {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(tree) = Option::<ViewTree>::from(self.clone()) {
-            tree.fmt(f)
-        } else {
-            write!(f, "<empty>")
         }
     }
 }
@@ -1021,6 +944,13 @@ mod tests {
         {
             Some(ResourcesNode::Leaf { state }) => state,
             other => panic!("expected leaf at {idx}, got {other:?}"),
+        }
+    }
+
+    fn leaf_lifecycle<'a, T>(tree: &'a ProjectedTree<T>, idx: usize) -> &'a Lifecycle<T> {
+        match tree.nodes[idx].as_ref().unwrap() {
+            ProjectedNode::Leaf { lifecycle } => lifecycle,
+            _ => panic!("expected leaf at {idx}"),
         }
     }
 
@@ -1265,33 +1195,26 @@ mod tests {
     }
 
     /// One leaf walks the whole lifecycle while we check every projection
-    /// produces the cell from the design's mapping table at each step.
+    /// produces the right cell at each step.
     #[test]
     fn projection_table_matches_design() {
-        let leaf_view = |tree: &FlatViewTree, idx: usize| -> ViewNode {
-            match tree.nodes[idx].as_ref().unwrap() {
-                FlatViewTreeNode::Leaf { view } => view.clone(),
-                _ => panic!("expected leaf at {idx}"),
-            }
-        };
-
         let v = app_view_with_two_leaves();
         // Planned: resources=Complete, states/changes/ops=NotStarted.
         assert!(matches!(
-            leaf_view(&v.resources_view().unwrap(), 1),
-            ViewNode::Complete(_)
+            leaf_lifecycle(&v.resources_view().unwrap(), 1),
+            Lifecycle::Complete(_)
         ));
         assert!(matches!(
-            leaf_view(&v.resource_states_view().unwrap(), 1),
-            ViewNode::NotStarted
+            leaf_lifecycle(&v.resource_states_view().unwrap(), 1),
+            Lifecycle::NotStarted
         ));
         assert!(matches!(
-            leaf_view(&v.resource_changes_view().unwrap(), 1),
-            ViewNode::NotStarted
+            leaf_lifecycle(&v.resource_changes_view().unwrap(), 1),
+            Lifecycle::NotStarted
         ));
         assert!(matches!(
-            leaf_view(&v.operations_tree_view().unwrap(), 1),
-            ViewNode::NotStarted
+            leaf_lifecycle(&v.operations_tree_view().unwrap(), 1),
+            Lifecycle::NotStarted
         ));
 
         let v = v
@@ -1299,8 +1222,8 @@ mod tests {
             .unwrap();
         // Probing: states=Started, others same.
         assert!(matches!(
-            leaf_view(&v.resource_states_view().unwrap(), 1),
-            ViewNode::Started
+            leaf_lifecycle(&v.resource_states_view().unwrap(), 1),
+            Lifecycle::Started
         ));
 
         let v = v
@@ -1311,16 +1234,16 @@ mod tests {
             .unwrap();
         // Probed: states=Complete, changes/ops still NotStarted.
         assert!(matches!(
-            leaf_view(&v.resource_states_view().unwrap(), 1),
-            ViewNode::Complete(_)
+            leaf_lifecycle(&v.resource_states_view().unwrap(), 1),
+            Lifecycle::Complete(_)
         ));
         assert!(matches!(
-            leaf_view(&v.resource_changes_view().unwrap(), 1),
-            ViewNode::NotStarted
+            leaf_lifecycle(&v.resource_changes_view().unwrap(), 1),
+            Lifecycle::NotStarted
         ));
         assert!(matches!(
-            leaf_view(&v.operations_tree_view().unwrap(), 1),
-            ViewNode::NotStarted
+            leaf_lifecycle(&v.operations_tree_view().unwrap(), 1),
+            Lifecycle::NotStarted
         ));
 
         let v = v
@@ -1331,12 +1254,12 @@ mod tests {
             .unwrap();
         // Changed { ops: None }: changes=Complete, ops still NotStarted.
         assert!(matches!(
-            leaf_view(&v.resource_changes_view().unwrap(), 1),
-            ViewNode::Complete(_)
+            leaf_lifecycle(&v.resource_changes_view().unwrap(), 1),
+            Lifecycle::Complete(_)
         ));
         assert!(matches!(
-            leaf_view(&v.operations_tree_view().unwrap(), 1),
-            ViewNode::NotStarted
+            leaf_lifecycle(&v.operations_tree_view().unwrap(), 1),
+            Lifecycle::NotStarted
         ));
 
         let v = v
@@ -1346,11 +1269,11 @@ mod tests {
             })
             .unwrap();
         // Changed { ops: Some }: ops slot is the spliced subtree's root.
-        // The op subtree here is a Leaf, so the slot becomes a Leaf with the
-        // Complete(view) variant per replace_subtree_completed.
+        // The op subtree is a Leaf, so the slot becomes a Leaf with the
+        // Complete(op) variant per splice_plan_subtree.
         assert!(matches!(
-            leaf_view(&v.operations_tree_view().unwrap(), 1),
-            ViewNode::Complete(_)
+            leaf_lifecycle(&v.operations_tree_view().unwrap(), 1),
+            Lifecycle::Complete(_)
         ));
     }
 
@@ -1389,7 +1312,7 @@ mod tests {
             .unwrap();
         let before = v.operations_tree_view().unwrap();
         let b_children_before: Vec<usize> = match before.nodes[2].as_ref().unwrap() {
-            FlatViewTreeNode::Branch { children, .. } => children.clone(),
+            ProjectedNode::Branch { children, .. } => children.clone(),
             _ => panic!("leaf 2 should now be a spliced branch"),
         };
 
@@ -1404,7 +1327,7 @@ mod tests {
         let after = v.operations_tree_view().unwrap();
 
         let b_children_after: Vec<usize> = match after.nodes[2].as_ref().unwrap() {
-            FlatViewTreeNode::Branch { children, .. } => children.clone(),
+            ProjectedNode::Branch { children, .. } => children.clone(),
             _ => panic!("leaf 2 should still be a spliced branch"),
         };
         assert_eq!(
@@ -1412,7 +1335,7 @@ mod tests {
             "leaf 2's child indices stay stable across the second splice",
         );
         let a_children_after: Vec<usize> = match after.nodes[1].as_ref().unwrap() {
-            FlatViewTreeNode::Branch { children, .. } => children.clone(),
+            ProjectedNode::Branch { children, .. } => children.clone(),
             _ => panic!("leaf 1 should now be a spliced branch"),
         };
         assert!(

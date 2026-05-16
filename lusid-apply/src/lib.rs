@@ -203,8 +203,8 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     emit(AppUpdate::ResourcesComplete).await?;
 
     // Build the arena once. `FlatTree::from` walks in pre-order, matching
-    // `enumerate_atoms` below and the indices the TUI's `FlatViewTree`
-    // assigns when it consumes the `ResourcesNode { index: 0, tree }` event
+    // `enumerate_atoms` below and the indices the consumer's `ResourcesTree`
+    // assigns when it folds the `ResourcesNode { index: 0, tree }` event
     // above.
     let atoms_flat: PlanFlatTree<Resource> = atoms_nested.clone().into();
     let parent_of: HashMap<usize, usize> = build_parent_of(&atoms_flat);

@@ -4,8 +4,8 @@
 //! [`lusid-apply-stdio`](lusid_apply_stdio)), and draws:
 //!
 //! - a top "pipeline" strip showing which stage the apply is currently in
-//! - a main pane for the currently-selected stage's
-//!   [`FlatViewTree`] (tree navigation with collapse/expand/selection)
+//! - a main pane that walks the currently-selected stage's projection
+//!   (tree navigation with collapse/expand/selection)
 //! - an "operations apply" pane during execution that flat-lists each
 //!   operation and shows its streaming stdout/stderr
 //! - a separate stderr page accumulating the full apply stderr buffer
@@ -19,16 +19,18 @@
 #![allow(clippy::collapsible_if)]
 
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use lusid_apply_stdio::{
-    AppUpdate, AppView, AppViewError, FlatViewTree, FlatViewTreeNode, OperationView,
-    PipelineProgress, ViewNode,
+    AppUpdate, AppView, AppViewError, Lifecycle, OperationView, PipelineProgress, ProjectedNode,
+    ProjectedTree,
 };
 use lusid_cmd::CommandError;
+use lusid_plan::PlanMeta;
 use lusid_ssh::SshError;
 use ratatui::{
     CompletedFrame, DefaultTerminal, Frame,
@@ -644,29 +646,40 @@ impl TuiApp {
     /// Build the projected tree for the current stage and borrow the
     /// matching `TreeState` field. The projection is owned (allocated per
     /// call); the state borrow is disjoint from `app_view`, so this compiles
-    /// despite returning both from `&mut self`.
-    fn tree_and_state_for_stage(&mut self) -> Option<(FlatViewTree, &mut TreeState)> {
+    /// despite returning both from `&mut self`. The stage's typed projection
+    /// is collapsed to a [`StringTree`] so per-stage projections share one
+    /// downstream rendering path while each domain payload's `Display` impl
+    /// still authors its own text.
+    fn tree_and_state_for_stage(&mut self) -> Option<(StringTree, &mut TreeState)> {
         match self.stage {
             PipelineStage::ResourceParams => self
                 .app_view
                 .resource_params()
-                .cloned()
+                .map(StringTree::from_projection)
                 .map(|tree| (tree, &mut self.params_state)),
             PipelineStage::Resources => self
                 .app_view
                 .resources_view()
+                .as_ref()
+                .map(StringTree::from_projection)
                 .map(|tree| (tree, &mut self.resources_state)),
             PipelineStage::ResourceStates => self
                 .app_view
                 .resource_states_view()
+                .as_ref()
+                .map(StringTree::from_projection)
                 .map(|tree| (tree, &mut self.states_state)),
             PipelineStage::ResourceChanges => self
                 .app_view
                 .resource_changes_view()
+                .as_ref()
+                .map(StringTree::from_projection)
                 .map(|tree| (tree, &mut self.changes_state)),
             PipelineStage::OperationsTree => self
                 .app_view
                 .operations_tree_view()
+                .as_ref()
+                .map(StringTree::from_projection)
                 .map(|tree| (tree, &mut self.operations_state)),
             PipelineStage::OperationsEpochs => None,
         }
@@ -815,40 +828,73 @@ fn draw_main(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
 
 fn draw_main_pipeline(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
     match app.stage {
-        PipelineStage::ResourceParams => match app.app_view.resource_params().cloned() {
-            Some(tree) => draw_tree(frame, area, "resource params", &tree, &mut app.params_state),
+        PipelineStage::ResourceParams => match app.app_view.resource_params() {
+            Some(tree) => {
+                let stringified = StringTree::from_projection(tree);
+                draw_tree(
+                    frame,
+                    area,
+                    "resource params",
+                    &stringified,
+                    &mut app.params_state,
+                );
+            }
             None => draw_placeholder(frame, area, "Waiting for resource params..."),
         },
 
         PipelineStage::Resources => match app.app_view.resources_view() {
-            Some(tree) => draw_tree(frame, area, "resources", &tree, &mut app.resources_state),
+            Some(tree) => {
+                let stringified = StringTree::from_projection(&tree);
+                draw_tree(
+                    frame,
+                    area,
+                    "resources",
+                    &stringified,
+                    &mut app.resources_state,
+                );
+            }
             None => draw_placeholder(frame, area, "Resources are not available yet."),
         },
 
         PipelineStage::ResourceStates => match app.app_view.resource_states_view() {
-            Some(tree) => draw_tree(frame, area, "resource states", &tree, &mut app.states_state),
+            Some(tree) => {
+                let stringified = StringTree::from_projection(&tree);
+                draw_tree(
+                    frame,
+                    area,
+                    "resource states",
+                    &stringified,
+                    &mut app.states_state,
+                );
+            }
             None => draw_placeholder(frame, area, "Resource states are not available yet."),
         },
 
         PipelineStage::ResourceChanges => match app.app_view.resource_changes_view() {
-            Some(tree) => draw_tree(
-                frame,
-                area,
-                "resource changes",
-                &tree,
-                &mut app.changes_state,
-            ),
+            Some(tree) => {
+                let stringified = StringTree::from_projection(&tree);
+                draw_tree(
+                    frame,
+                    area,
+                    "resource changes",
+                    &stringified,
+                    &mut app.changes_state,
+                );
+            }
             None => draw_placeholder(frame, area, "Resource changes are not available yet."),
         },
 
         PipelineStage::OperationsTree => match app.app_view.operations_tree_view() {
-            Some(tree) => draw_tree(
-                frame,
-                area,
-                "operations tree",
-                &tree,
-                &mut app.operations_state,
-            ),
+            Some(tree) => {
+                let stringified = StringTree::from_projection(&tree);
+                draw_tree(
+                    frame,
+                    area,
+                    "operations tree",
+                    &stringified,
+                    &mut app.operations_state,
+                );
+            }
             None => draw_placeholder(frame, area, "Operations tree is not available yet."),
         },
 
@@ -1052,7 +1098,7 @@ fn draw_tree(
     frame: &mut ratatui::Frame<'_>,
     area: Rect,
     title: &str,
-    tree: &FlatViewTree,
+    tree: &StringTree,
     state: &mut TreeState,
 ) {
     let rows = build_visible_rows(tree, state);
@@ -1114,24 +1160,17 @@ struct TreeRow {
     label: String,
 }
 
-fn build_visible_rows(tree: &FlatViewTree, state: &TreeState) -> Vec<TreeRow> {
+fn build_visible_rows(tree: &StringTree, state: &TreeState) -> Vec<TreeRow> {
     let mut out = Vec::new();
     let mut visited = HashSet::new();
 
-    build_visible_rows_rec(
-        tree,
-        FlatViewTree::root_index(),
-        0,
-        state,
-        &mut out,
-        &mut visited,
-    );
+    build_visible_rows_rec(tree, StringTree::ROOT, 0, state, &mut out, &mut visited);
 
     out
 }
 
 fn build_visible_rows_rec(
-    tree: &FlatViewTree,
+    tree: &StringTree,
     index: usize,
     depth: usize,
     state: &TreeState,
@@ -1142,29 +1181,22 @@ fn build_visible_rows_rec(
         return;
     }
 
-    let node = match tree.get(index) {
-        Ok(node) => node,
-        Err(_) => return,
+    let Some(node) = tree.get(index) else {
+        return;
     };
 
     match node {
-        FlatViewTreeNode::Leaf { view } => {
-            let label = match view {
-                ViewNode::NotStarted => "not started".to_string(),
-                ViewNode::Started => "in progress".to_string(),
-                ViewNode::Complete(v) => v.to_string(),
-            };
-
+        StringNode::Leaf { label } => {
             out.push(TreeRow {
                 index,
                 depth,
                 is_branch: false,
                 is_expanded: false,
-                label,
+                label: label.clone(),
             });
         }
 
-        FlatViewTreeNode::Branch { view, children } => {
+        StringNode::Branch { label, children } => {
             let is_expanded = state.is_expanded(index);
 
             out.push(TreeRow {
@@ -1172,7 +1204,7 @@ fn build_visible_rows_rec(
                 depth,
                 is_branch: true,
                 is_expanded,
-                label: view.to_string(),
+                label: label.clone(),
             });
 
             if is_expanded {
@@ -1189,7 +1221,7 @@ fn selected_row_index(rows: &[TreeRow], state: &TreeState) -> Option<usize> {
     rows.iter().position(|r| r.index == selected_node)
 }
 
-fn tree_move_selection(tree: &FlatViewTree, state: &mut TreeState, delta: i32) {
+fn tree_move_selection(tree: &StringTree, state: &mut TreeState, delta: i32) {
     let rows = build_visible_rows(tree, state);
 
     if rows.is_empty() {
@@ -1207,4 +1239,61 @@ fn tree_move_selection(tree: &FlatViewTree, state: &mut TreeState, delta: i32) {
     };
 
     state.selected_node = Some(rows[next_row].index);
+}
+
+/// Flattened, string-only view of a [`ProjectedTree`] used by the TUI's tree
+/// rendering and navigation. Each per-stage projection has its own payload
+/// type; collapsing to strings here lets one set of `draw_tree` /
+/// `build_visible_rows` / `tree_move_selection` helpers cover every stage.
+#[derive(Debug, Clone)]
+struct StringTree {
+    nodes: Vec<Option<StringNode>>,
+}
+
+#[derive(Debug, Clone)]
+enum StringNode {
+    Branch { label: String, children: Vec<usize> },
+    Leaf { label: String },
+}
+
+impl StringTree {
+    const ROOT: usize = 0;
+
+    fn get(&self, index: usize) -> Option<&StringNode> {
+        self.nodes.get(index).and_then(Option::as_ref)
+    }
+
+    /// Convert each branch's `PlanMeta` to its `id` label (`.` for anonymous
+    /// branches) and each leaf's `Lifecycle<T>` to the relevant text (the
+    /// payload's `Display` for `Complete`; "not started" / "in progress" for
+    /// the pre-completion phases).
+    fn from_projection<T: Display>(projection: &ProjectedTree<T>) -> Self {
+        let nodes = projection
+            .nodes()
+            .iter()
+            .map(|slot| {
+                slot.as_ref().map(|node| match node {
+                    ProjectedNode::Branch { meta, children } => StringNode::Branch {
+                        label: plan_meta_label(meta),
+                        children: children.clone(),
+                    },
+                    ProjectedNode::Leaf { lifecycle } => StringNode::Leaf {
+                        label: match lifecycle {
+                            Lifecycle::NotStarted => "not started".to_string(),
+                            Lifecycle::Started => "in progress".to_string(),
+                            Lifecycle::Complete(value) => value.to_string(),
+                        },
+                    },
+                })
+            })
+            .collect();
+        Self { nodes }
+    }
+}
+
+fn plan_meta_label(meta: &PlanMeta) -> String {
+    meta.id
+        .as_ref()
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| ".".to_string())
 }
