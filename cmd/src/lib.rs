@@ -31,7 +31,7 @@ use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
 use std::str::FromStr;
 use tokio::io::AsyncReadExt;
-use tokio::process::{Child, ChildStderr, ChildStdout, Command as BaseCommand};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command as BaseCommand};
 
 use thiserror::Error;
 
@@ -65,6 +65,9 @@ pub enum CommandError {
 
     #[error("failed to read stderr")]
     ReadStderr(#[source] tokio::io::Error),
+
+    #[error("unable to capture stdin")]
+    NoStdin,
 }
 
 #[derive(Debug)]
@@ -220,6 +223,7 @@ impl Command {
 pub struct CommandOutput {
     pub stdout: ChildStdout,
     pub stderr: ChildStderr,
+    pub stdin: ChildStdin,
     pub status: Pin<Box<dyn Future<Output = Result<ExitStatus, CommandError>> + Send + 'static>>,
 }
 
@@ -245,6 +249,7 @@ impl Command {
 
         let stdout = child.stdout.take().ok_or(CommandError::NoStdout)?;
         let stderr = child.stderr.take().ok_or(CommandError::NoStderr)?;
+        let stdin = child.stdin.take().ok_or(CommandError::NoStdin)?;
 
         let command_str = self.to_string();
         let status = Box::pin(async move {
@@ -257,6 +262,7 @@ impl Command {
         Ok(CommandOutput {
             stdout,
             stderr,
+            stdin,
             status,
         })
     }

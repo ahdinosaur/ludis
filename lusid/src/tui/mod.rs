@@ -49,7 +49,7 @@ use ratatui::{
 use serde_json::Error as SerdeJsonError;
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader},
     sync::mpsc::{UnboundedReceiver, unbounded_channel},
 };
 
@@ -99,15 +99,20 @@ pub enum TuiError {
 /// `"local apply"`, `"dev parse"`), so the operator can confirm at a glance
 /// which command they're watching.
 ///
+/// `stdin` is the apply child's stdin handle, held for the lifetime of the
+/// apply so per-epoch confirm acks can be written back.
+///
 /// Generic over the IO and wait types so the same function works for a
 /// subprocess (`lusid-cmd`) and an SSH command handle (`lusid-ssh`).
-pub async fn tui<Stdout, Stderr, Wait, WaitError>(
+pub async fn tui<Stdin, Stdout, Stderr, Wait, WaitError>(
     subcommand: &str,
+    _stdin: Stdin,
     stdout: Stdout,
     stderr: Stderr,
     wait: Pin<Box<Wait>>,
 ) -> Result<(), TuiError>
 where
+    Stdin: AsyncWrite + Unpin,
     Stdout: AsyncRead + Unpin,
     Stderr: AsyncRead + Unpin,
     Wait: Future<Output = Result<(), WaitError>>,

@@ -397,9 +397,9 @@ async fn cmd_local_apply(
         "local apply"
     };
     if use_tui {
-        tui(subcommand, output.stdout, output.stderr, wait).await?;
+        tui(subcommand, output.stdin, output.stdout, output.stderr, wait).await?;
     } else {
-        plain(output.stdout, output.stderr, wait).await?;
+        plain(output.stdin, output.stdout, output.stderr, wait).await?;
     }
 
     Ok(())
@@ -576,11 +576,14 @@ async fn cmd_remote_apply(
         command = format!("sudo -n {command}");
     }
 
-    // 7. Stream apply output through the TUI. Mirror cmd_dev_apply's
-    //    pattern: the `async move { handle.channel.wait()... }` future
-    //    field-captures `handle.channel`, leaving `handle.stdout`/
-    //    `handle.stderr` borrowable in the surrounding scope.
+    // 7. Stream apply output through the TUI. The `async move {
+    //    handle.channel.wait()... }` future field-captures
+    //    `handle.channel`, leaving `handle.stdout`/`handle.stderr`
+    //    borrowable in the surrounding scope. `stdin` is grabbed before
+    //    that move so the renderer keeps a writer for confirm acks
+    //    while the wait future owns the channel.
     let mut handle = ssh.command(&command).await?;
+    let stdin = Box::pin(handle.channel.stdin());
     let wait = Box::pin(async move {
         handle.channel.wait().await?;
         Ok::<_, SshError>(())
@@ -591,9 +594,16 @@ async fn cmd_remote_apply(
         "remote apply"
     };
     let apply_result = if use_tui {
-        tui(subcommand, &mut handle.stdout, &mut handle.stderr, wait).await
+        tui(
+            subcommand,
+            stdin,
+            &mut handle.stdout,
+            &mut handle.stderr,
+            wait,
+        )
+        .await
     } else {
-        plain(&mut handle.stdout, &mut handle.stderr, wait).await
+        plain(stdin, &mut handle.stdout, &mut handle.stderr, wait).await
     };
 
     // 8. Best-effort post-cleanup. Never shadows apply_result.
@@ -983,6 +993,7 @@ async fn cmd_dev_apply(
     }
 
     let mut handle = ssh.command(&command).await?;
+    let stdin = Box::pin(handle.channel.stdin());
     let wait = Box::pin(async move {
         handle.channel.wait().await?;
         Ok::<_, SshError>(())
@@ -990,9 +1001,16 @@ async fn cmd_dev_apply(
 
     let subcommand = if parse_only { "dev parse" } else { "dev apply" };
     if use_tui {
-        tui(subcommand, &mut handle.stdout, &mut handle.stderr, wait).await?;
+        tui(
+            subcommand,
+            stdin,
+            &mut handle.stdout,
+            &mut handle.stderr,
+            wait,
+        )
+        .await?;
     } else {
-        plain(&mut handle.stdout, &mut handle.stderr, wait).await?;
+        plain(stdin, &mut handle.stdout, &mut handle.stderr, wait).await?;
     }
 
     if let Err(err) = ssh.disconnect().await {

@@ -12,19 +12,24 @@ use std::pin::Pin;
 use lusid_apply_stdio::{AppUpdate, AppView, LeafState, Phase, ResourcesNode};
 use lusid_render::Render;
 use lusid_tree::Tree;
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 
 use super::TuiError;
 
 /// Drive plain-log mode. Same signature shape as [`super::tui`]: reads JSON
 /// `AppUpdate`s from `stdout`, raw stderr lines from `stderr`, races the
 /// `wait` future. Returns when the child exits and both streams drain.
-pub async fn plain<Stdout, Stderr, Wait, WaitError>(
+///
+/// `stdin` mirrors [`super::tui`]'s parameter; plain mode has no interactive
+/// confirm so it never writes acks.
+pub async fn plain<Stdin, Stdout, Stderr, Wait, WaitError>(
+    _stdin: Stdin,
     stdout: Stdout,
     stderr: Stderr,
     wait: Pin<Box<Wait>>,
 ) -> Result<(), TuiError>
 where
+    Stdin: AsyncWrite + Unpin,
     Stdout: AsyncRead + Unpin,
     Stderr: AsyncRead + Unpin,
     Wait: Future<Output = Result<(), WaitError>>,
