@@ -802,7 +802,7 @@ mod tests {
         assert_eq!(map.get(&2), Some(&0));
         assert_eq!(map.get(&3), Some(&0));
         assert_eq!(map.get(&5), Some(&2));
-        assert!(map.get(&0).is_none(), "branch indices are not keys");
+        assert!(!map.contains_key(&0), "branch indices are not keys");
     }
 
     #[test]

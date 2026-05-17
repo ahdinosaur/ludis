@@ -1054,7 +1054,7 @@ mod tests {
         }
     }
 
-    fn leaf_lifecycle<'a, T>(tree: &'a ProjectedTree<T>, idx: usize) -> &'a Lifecycle<T> {
+    fn leaf_lifecycle<T>(tree: &ProjectedTree<T>, idx: usize) -> &Lifecycle<T> {
         match tree.nodes[idx].as_ref().unwrap() {
             ProjectedNode::Leaf { lifecycle } => lifecycle,
             _ => panic!("expected leaf at {idx}"),
