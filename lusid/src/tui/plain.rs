@@ -174,6 +174,19 @@ pub(crate) fn digest(update: &AppUpdate, app: &AppView) -> Option<String> {
             None => Some(format!("[ok] op {e}.{o}")),
             Some(msg) => Some(format!("[err] op {e}.{o}: {msg}")),
         },
+        // Plain mode auto-acks via --yes upstream (the CLI refuses non-TTY
+        // apply without --yes), so a producer-side `EpochReady` here is
+        // strictly informational; surface it as a one-liner.
+        AppUpdate::EpochReady {
+            resource_epoch,
+            summary,
+        } => Some(format!(
+            "[epoch {} ready] {} atom(s), {} changed, {} handler(s) pending",
+            resource_epoch + 1,
+            summary.atoms_total,
+            summary.atoms_changed,
+            summary.handlers_pending,
+        )),
         AppUpdate::ApplyComplete { had_changes } => {
             let n = count_changed_leaves(app);
             // Producer is authoritative on the boolean; the count is a hint.

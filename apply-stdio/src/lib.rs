@@ -155,11 +155,138 @@ pub enum AppUpdate {
         error: Option<String>,
     },
 
+    /// Emitted between Phase A's probe/change-computation and the first op
+    /// for a resource epoch, but only when the epoch has at least one atom
+    /// change or one handler queued (empty epochs skip emission to avoid
+    /// prompt fatigue). The producer then blocks reading one line of
+    /// [`AckAction`] JSON from stdin before running any op in this epoch.
+    /// With `--yes`, the producer skips both the emission and the read.
+    EpochReady {
+        resource_epoch: usize,
+        summary: EpochSummary,
+    },
+
     /// Final marker. Carries `had_changes` so the TUI can show the right
     /// "complete" message ("No changes" vs "Apply complete").
     ApplyComplete {
         had_changes: bool,
     },
+}
+
+/// Reverse-direction ack written one line per [`AppUpdate::EpochReady`] by the
+/// consumer to the producer's stdin. The producer reads it as
+/// `{"action": "apply"}` / `{"action": "abort"}`. EOF, parse error, or
+/// `Abort` halts the apply at this epoch boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "lowercase")]
+pub enum AckAction {
+    Apply,
+    Abort,
+}
+
+/// Coarse classification of an atom change shown in the confirm prompt's
+/// summary. Mapped from the structured [`ResourceChange`] by the producer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChangeKind {
+    Added,
+    Removed,
+    Modified,
+}
+
+impl ChangeKind {
+    /// Classify a [`ResourceChange`] into the coarse `Added` / `Removed` /
+    /// `Modified` buckets the confirm prompt shows. "Added" is reserved for
+    /// changes that introduce new state on the target (install a package,
+    /// create a file/symlink/dir/user/group); "Removed" for those that delete
+    /// it; everything else (writes-over-existing, mode/owner adjustments,
+    /// vcs updates) is "Modified".
+    pub fn classify(change: &ResourceChange) -> Self {
+        use ChangeKind::*;
+        use lusid_resource::apt::AptChange;
+        use lusid_resource::apt_repo::AptRepoChange;
+        use lusid_resource::aur::AurChange;
+        use lusid_resource::command::CommandChange;
+        use lusid_resource::directory::DirectoryChange;
+        use lusid_resource::file::FileChange;
+        use lusid_resource::flatpak::FlatpakChange;
+        use lusid_resource::flatpak_remote::FlatpakRemoteChange;
+        use lusid_resource::git::GitChange;
+        use lusid_resource::group::GroupChange;
+        use lusid_resource::pacman::PacmanChange;
+        use lusid_resource::podman::PodmanChange;
+        use lusid_resource::user::UserChange;
+
+        match change {
+            ResourceChange::Apt(AptChange::Install { .. }) => Added,
+            ResourceChange::AptRepo(AptRepoChange::Install { .. }) => Added,
+            ResourceChange::Aur(AurChange::Install { .. }) => Added,
+            ResourceChange::Pacman(PacmanChange::Install { .. }) => Added,
+            ResourceChange::Flatpak(FlatpakChange::Install { .. }) => Added,
+            ResourceChange::Flatpak(FlatpakChange::Uninstall { .. }) => Removed,
+            ResourceChange::FlatpakRemote(FlatpakRemoteChange::Add { .. }) => Added,
+            ResourceChange::FlatpakRemote(FlatpakRemoteChange::Modify { .. }) => Modified,
+            ResourceChange::FlatpakRemote(FlatpakRemoteChange::Remove { .. }) => Removed,
+            ResourceChange::File(FileChange::Write { before: None, .. }) => Added,
+            ResourceChange::File(FileChange::Write {
+                before: Some(_), ..
+            }) => Modified,
+            ResourceChange::File(FileChange::CreateSymlink { .. }) => Added,
+            ResourceChange::File(FileChange::Remove { .. }) => Removed,
+            ResourceChange::File(FileChange::ChangeMode { .. }) => Modified,
+            ResourceChange::File(FileChange::ChangeOwner { .. }) => Modified,
+            ResourceChange::Directory(DirectoryChange::Create { .. }) => Added,
+            ResourceChange::Directory(DirectoryChange::CreateSymlink { .. }) => Added,
+            ResourceChange::Directory(DirectoryChange::CopyTree { .. }) => Added,
+            ResourceChange::Directory(DirectoryChange::Remove { .. }) => Removed,
+            ResourceChange::Directory(DirectoryChange::ChangeMode { .. }) => Modified,
+            ResourceChange::Directory(DirectoryChange::ChangeOwner { .. }) => Modified,
+            ResourceChange::Command(CommandChange::Install { .. }) => Added,
+            ResourceChange::Command(CommandChange::Uninstall { .. }) => Removed,
+            ResourceChange::Git(GitChange::Clone { .. }) => Added,
+            ResourceChange::Git(GitChange::Checkout { .. }) => Modified,
+            ResourceChange::Git(GitChange::Pull { .. }) => Modified,
+            // Note(cc): `SystemdChange` is currently a single-variant
+            // struct shape, so this wildcard is exhaustive in practice.
+            // If `SystemdChange` grows variants (start/stop/restart) some
+            // would belong in Added/Removed; narrow the match then.
+            ResourceChange::Systemd(_) => Modified,
+            ResourceChange::Podman(PodmanChange::Create { .. }) => Added,
+            ResourceChange::Podman(PodmanChange::Start { .. }) => Modified,
+            ResourceChange::Podman(PodmanChange::Stop { .. }) => Modified,
+            ResourceChange::Podman(PodmanChange::Recreate { .. }) => Modified,
+            ResourceChange::Podman(PodmanChange::Remove { .. }) => Removed,
+            ResourceChange::User(UserChange::Create { .. }) => Added,
+            ResourceChange::User(UserChange::Modify { .. }) => Modified,
+            ResourceChange::User(UserChange::Delete { .. }) => Removed,
+            ResourceChange::Group(GroupChange::Create { .. }) => Added,
+            ResourceChange::Group(GroupChange::Modify { .. }) => Modified,
+            ResourceChange::Group(GroupChange::Delete { .. }) => Removed,
+        }
+    }
+}
+
+/// One row in [`EpochSummary::change_labels`]: a per-atom one-liner so the
+/// consumer can list "what's about to apply" without re-rendering the full
+/// `ResourceChange` tree itself. `atom_id` is a short human label (typically
+/// the atom's resource Display).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeLabel {
+    pub atom_id: String,
+    pub kind: ChangeKind,
+    pub summary: String,
+}
+
+/// Payload for [`AppUpdate::EpochReady`]: counts to size the prompt header
+/// plus a (possibly truncated) list of per-atom one-liners. `truncated_count`
+/// is the number of additional change labels not included in `change_labels`
+/// (zero when the list is complete).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpochSummary {
+    pub atoms_total: usize,
+    pub atoms_changed: usize,
+    pub handlers_pending: usize,
+    pub change_labels: Vec<ChangeLabel>,
+    pub truncated_count: usize,
 }
 
 /// Which phase of a resource epoch an [`AppUpdate::OperationsApplyEpochAdded`]
@@ -506,6 +633,11 @@ pub struct AppView {
     pub had_changes: bool,
     /// True after `ApplyComplete`.
     pub done: bool,
+    /// Set to `Some((resource_epoch, summary))` on each
+    /// [`AppUpdate::EpochReady`] and cleared the next time the producer makes
+    /// progress for that epoch (the next `OperationsApplyEpochAdded`, or
+    /// `ApplyComplete`). Consumers consult this to show the confirm prompt.
+    pub pending_epoch: Option<(usize, EpochSummary)>,
     /// Monotonic counter stamped on each successful `OperationsNode` event
     /// so the operations projection can splice in arrival order.
     ops_seq_counter: u64,
@@ -651,6 +783,29 @@ impl AppView {
                     self.operation_epoch_meta.len(),
                     "operations_epochs and operation_epoch_meta must stay parallel",
                 );
+                // The acknowledged epoch is now running; drop the prompt
+                // state so the UI footer goes back to status-only.
+                if let Some((pending_epoch, _)) = &self.pending_epoch
+                    && *pending_epoch == resource_epoch
+                {
+                    self.pending_epoch = None;
+                }
+            }
+
+            EpochReady {
+                resource_epoch,
+                summary,
+            } => {
+                // The producer emits at most one EpochReady per resource
+                // epoch, and only after the prior epoch has acked. If a
+                // second one lands while one is already pending, the
+                // protocol is desynced - flag it loudly in debug builds.
+                debug_assert!(
+                    self.pending_epoch.is_none(),
+                    "EpochReady for epoch {resource_epoch} arrived while {pending:?} was pending",
+                    pending = self.pending_epoch.as_ref().map(|(e, _)| e),
+                );
+                self.pending_epoch = Some((resource_epoch, summary));
             }
 
             OperationApplyStart { index: (e, o) } => {
@@ -688,6 +843,7 @@ impl AppView {
             ApplyComplete { had_changes } => {
                 self.had_changes = self.had_changes || had_changes;
                 self.done = true;
+                self.pending_epoch = None;
             }
         }
         Ok(self)
@@ -1661,6 +1817,152 @@ mod tests {
             v.operation_epoch_meta(2).is_none(),
             "out-of-range returns None"
         );
+    }
+
+    fn change_label(atom: &str) -> ChangeLabel {
+        ChangeLabel {
+            atom_id: atom.into(),
+            kind: ChangeKind::Modified,
+            summary: format!("change {atom}"),
+        }
+    }
+
+    #[test]
+    fn epoch_ready_sets_pending_until_first_op_for_that_epoch() {
+        let summary = EpochSummary {
+            atoms_total: 2,
+            atoms_changed: 1,
+            handlers_pending: 0,
+            change_labels: vec![change_label("/etc/foo")],
+            truncated_count: 0,
+        };
+        let v = AppView::default()
+            .update(AppUpdate::EpochReady {
+                resource_epoch: 0,
+                summary: summary.clone(),
+            })
+            .unwrap();
+        let pending = v.pending_epoch.as_ref().expect("pending set");
+        assert_eq!(pending.0, 0);
+        assert_eq!(pending.1.atoms_changed, 1);
+
+        // First op for the same resource_epoch clears the prompt state.
+        let v = v
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::A,
+                operations: vec![command_op("op")],
+            })
+            .unwrap();
+        assert!(v.pending_epoch.is_none(), "running clears the prompt");
+    }
+
+    /// An op event for a *different* resource_epoch (rare: empty epoch
+    /// pre-ack landed between EpochReady and the matching epoch) must not
+    /// clear the prompt. Otherwise the user would see "ready" disappear
+    /// without acking the right epoch.
+    #[test]
+    fn epoch_ready_pending_survives_op_for_other_epoch() {
+        let summary = EpochSummary {
+            atoms_total: 1,
+            atoms_changed: 1,
+            handlers_pending: 0,
+            change_labels: vec![],
+            truncated_count: 0,
+        };
+        let v = AppView::default()
+            .update(AppUpdate::EpochReady {
+                resource_epoch: 2,
+                summary,
+            })
+            .unwrap()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 1,
+                phase: Phase::A,
+                operations: vec![command_op("op")],
+            })
+            .unwrap();
+        assert!(v.pending_epoch.is_some());
+        assert_eq!(v.pending_epoch.as_ref().unwrap().0, 2);
+    }
+
+    #[test]
+    fn apply_complete_clears_pending() {
+        let summary = EpochSummary {
+            atoms_total: 1,
+            atoms_changed: 1,
+            handlers_pending: 0,
+            change_labels: vec![],
+            truncated_count: 0,
+        };
+        let v = AppView::default()
+            .update(AppUpdate::EpochReady {
+                resource_epoch: 0,
+                summary,
+            })
+            .unwrap()
+            .update(AppUpdate::ApplyComplete { had_changes: false })
+            .unwrap();
+        assert!(v.pending_epoch.is_none());
+    }
+
+    #[test]
+    fn ack_action_round_trips_through_envelope() {
+        let apply_line = serde_json::to_string(&AckAction::Apply).unwrap();
+        assert_eq!(apply_line, r#"{"action":"apply"}"#);
+        let abort_line = serde_json::to_string(&AckAction::Abort).unwrap();
+        assert_eq!(abort_line, r#"{"action":"abort"}"#);
+
+        let back: AckAction = serde_json::from_str(&apply_line).unwrap();
+        assert_eq!(back, AckAction::Apply);
+        let back: AckAction = serde_json::from_str(&abort_line).unwrap();
+        assert_eq!(back, AckAction::Abort);
+    }
+
+    #[test]
+    fn epoch_ready_app_update_round_trips() {
+        let original = AppUpdate::EpochReady {
+            resource_epoch: 1,
+            summary: EpochSummary {
+                atoms_total: 3,
+                atoms_changed: 2,
+                handlers_pending: 1,
+                change_labels: vec![
+                    ChangeLabel {
+                        atom_id: "Apt::Install(nginx)".into(),
+                        kind: ChangeKind::Added,
+                        summary: "install nginx".into(),
+                    },
+                    ChangeLabel {
+                        atom_id: "File::Remove(/tmp/x)".into(),
+                        kind: ChangeKind::Removed,
+                        summary: "remove /tmp/x".into(),
+                    },
+                ],
+                truncated_count: 5,
+            },
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let back: AppUpdate = serde_json::from_str(&json).unwrap();
+        match back {
+            AppUpdate::EpochReady {
+                resource_epoch,
+                summary,
+            } => {
+                assert_eq!(resource_epoch, 1);
+                assert_eq!(summary.atoms_total, 3);
+                assert_eq!(summary.atoms_changed, 2);
+                assert_eq!(summary.handlers_pending, 1);
+                assert_eq!(summary.change_labels.len(), 2);
+                assert_eq!(summary.change_labels[0].atom_id, "Apt::Install(nginx)");
+                assert_eq!(summary.change_labels[0].kind, ChangeKind::Added);
+                assert_eq!(summary.change_labels[1].kind, ChangeKind::Removed);
+                assert_eq!(summary.truncated_count, 5);
+            }
+            other => panic!("expected EpochReady, got {other:?}"),
+        }
     }
 
     /// A rejected `OperationsApplyEpochAdded` must not advance either

@@ -7,6 +7,9 @@
 //!   plan or its declared targets are wrong.
 //! - `2` on IO / context / system / JSON-parameter errors - the operator's
 //!   environment is wrong.
+//! - `130` on user abort at a per-epoch confirm prompt (mirrors the SIGINT
+//!   convention so shells / CI can distinguish "operator said no" from
+//!   "something broke").
 
 use clap::Parser;
 use lusid_plan::PlanId;
@@ -62,6 +65,13 @@ struct Cli {
     #[arg(long = "parse-only")]
     parse_only: bool,
 
+    /// Skip the per-epoch confirm prompt; auto-ack every epoch as Apply.
+    /// Without this flag, the apply pauses before each non-empty epoch
+    /// emits `EpochReady` and reads one line of [`AckAction`] JSON from
+    /// stdin to decide whether to proceed.
+    #[arg(long = "yes", short = 'y')]
+    yes: bool,
+
     /// Log level (e.g., trace, debug, info, warn, error). Default: info.
     #[arg(long = "log", default_value = "info")]
     log: String,
@@ -86,6 +96,7 @@ async fn main() {
         secrets_dir: cli.secrets_dir,
         guest_mode: cli.guest_mode,
         parse_only: cli.parse_only,
+        yes: cli.yes,
     };
 
     if let Err(err) = apply(options).await {
@@ -97,9 +108,10 @@ async fn main() {
 /// Map [`ApplyError`] to a process exit code. `1` means the plan or its
 /// declared targets are wrong (validation, cycles, missing secrets, bad
 /// host-paths, probe / apply failures); `2` means the operator's
-/// environment is wrong (IO, context, system inspection, JSON parameters).
-/// Kept as an exhaustive `match` so new error variants force a deliberate
-/// classification.
+/// environment is wrong (IO, context, system inspection, JSON parameters);
+/// `130` means the operator aborted the per-epoch confirm prompt (mirrors
+/// the SIGINT convention). Kept as an exhaustive `match` so new error
+/// variants force a deliberate classification.
 fn exit_code(error: &ApplyError) -> i32 {
     match error {
         ApplyError::Context(_)
@@ -117,6 +129,8 @@ fn exit_code(error: &ApplyError) -> i32 {
         | ApplyError::OperationApply(_)
         | ApplyError::Secrets(_)
         | ApplyError::HostPathValidation(_) => 1,
+
+        ApplyError::AbortedByUser { .. } => 130,
     }
 }
 

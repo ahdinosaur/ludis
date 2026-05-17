@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use lusid_apply_stdio::{AppUpdate, Phase};
+use lusid_apply_stdio::{AckAction, AppUpdate, ChangeKind, ChangeLabel, EpochSummary, Phase};
 use lusid_causality::{EpochError, compute_epochs};
 use lusid_ctx::{Context, ContextError};
 use lusid_operation::{Operation, OperationApplyError};
@@ -27,7 +27,7 @@ use rimu_interop::{ToRimuError, to_rimu};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Inputs for [`apply`]. `root_path` is the lusid working-dir root passed to
 /// [`Context::create`]; `plan_id` selects a plan; `params_json` is an
@@ -59,6 +59,12 @@ pub struct ApplyOptions {
     /// no operations. Emits `ResourceParams`, `ResourcesStart`, `ResourcesNode`,
     /// `ResourcesComplete` and exits without running the per-epoch loop.
     pub parse_only: bool,
+    /// Skip the per-epoch confirm prompt: every epoch is treated as if the
+    /// consumer had acked `Apply`. When `false`, the per-epoch loop emits
+    /// [`AppUpdate::EpochReady`] before each non-empty epoch's ops and reads
+    /// one line of [`AckAction`] JSON from stdin. Ignored when `parse_only`
+    /// is set (no per-epoch loop runs).
+    pub yes: bool,
 }
 
 #[derive(Error, Debug)]
@@ -104,6 +110,36 @@ pub enum ApplyError {
 
     #[error("host-path validation failed: {0}")]
     HostPathValidation(#[from] HostPathValidationError),
+
+    /// Operator rejected the per-epoch confirm prompt (sent `{"action": "abort"}`),
+    /// or stdin closed / produced a malformed ack. The producer treats any of
+    /// these as an abort and exits without running the in-progress epoch's ops.
+    /// Earlier epochs that have already run on the target stay applied; the
+    /// message advises a re-run to retry from this epoch.
+    #[error(
+        "{}",
+        format_aborted_by_user(*resource_epoch, *total)
+    )]
+    AbortedByUser { resource_epoch: usize, total: usize },
+}
+
+/// Build the operator-facing message for [`ApplyError::AbortedByUser`]. The
+/// "earlier epochs ran" suffix is dropped at epoch 0 so the message doesn't
+/// claim work happened when none did; at epoch 1 only one prior epoch ran,
+/// so we singularise to avoid the "epochs 1 through 1" awkwardness.
+fn format_aborted_by_user(resource_epoch: usize, total: usize) -> String {
+    let one_based = resource_epoch + 1;
+    let prior_summary = match resource_epoch {
+        0 => "no earlier epochs ran".to_string(),
+        1 => "epoch 1 has already been applied to the target".to_string(),
+        prior_count => {
+            format!("epochs 1 through {prior_count} have already been applied to the target")
+        }
+    };
+    format!(
+        "aborted at resource epoch {one_based} of {total}; {prior_summary}. \
+         Re-run to retry from this epoch."
+    )
 }
 
 /// Run the full apply pipeline, streaming [`AppUpdate`]s to stdout as it
@@ -121,6 +157,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         secrets_dir,
         guest_mode,
         parse_only,
+        yes,
     } = options;
 
     let mut ctx = Context::create(&root_path)?;
@@ -259,6 +296,10 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     let latest_epoch_by_branch: BTreeMap<usize, usize> =
         build_latest_epoch_by_branch(&atom_epochs, &parent_of, &atoms_flat);
 
+    // Per-epoch confirm: a reader over stdin that produces one [`AckAction`]
+    // per `EpochReady`. With `yes` we skip both the emit and the read.
+    let mut ack_reader = AckReader::new(yes);
+
     // Process each resource epoch in causality order.
     //
     // Within each epoch:
@@ -283,6 +324,8 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
             "processing resource epoch"
         );
 
+        let atoms_total = atoms.len();
+
         // Phase A: probe states in parallel, then walk results sequentially
         // to emit events, compute changes, collect op subtrees, and mark
         // each changed atom's nearest handler-bearing ancestor.
@@ -297,6 +340,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         let probed = futures_util::future::try_join_all(probes).await?;
 
         let mut atom_op_subtrees: Vec<PlanTree<Operation>> = Vec::new();
+        let mut change_labels: Vec<ChangeLabel> = Vec::new();
         for (idx, resource, state) in probed {
             emit(AppUpdate::ResourceStatesNodeComplete {
                 index: idx,
@@ -306,11 +350,16 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
             let change = resource.change(&state);
 
-            if change.is_some() {
+            if let Some(change) = &change {
                 had_changes = true;
                 if let Some(branch_idx) = nearest_handler_ancestor(idx, &parent_of, &atoms_flat) {
                     changed_branches.insert(branch_idx);
                 }
+                change_labels.push(ChangeLabel {
+                    atom_id: resource.to_string(),
+                    kind: ChangeKind::classify(change),
+                    summary: change.to_string(),
+                });
             }
 
             emit(AppUpdate::ResourceChangesNode {
@@ -333,6 +382,44 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
                 .await?;
 
                 atom_op_subtrees.extend(scoped);
+            }
+        }
+
+        // Count handler-bearing plan-item branches whose latest atom landed
+        // in this epoch and which have at least one descendant change marked
+        // (possibly from an earlier epoch). These are the Phase B handlers
+        // queued for after Phase A.
+        let handlers_pending = latest_epoch_by_branch
+            .iter()
+            .filter(|(branch_idx, latest)| {
+                **latest == resource_epoch_idx && changed_branches.contains(branch_idx)
+            })
+            .count();
+
+        let atoms_changed = change_labels.len();
+
+        // Per-epoch confirm gate. Empty epochs (no atom changes AND no
+        // handlers pending) skip the prompt to reduce fatigue: nothing in
+        // them mutates the target, so the operator never has to ack a no-op.
+        if atoms_changed > 0 || handlers_pending > 0 {
+            let summary =
+                build_epoch_summary(atoms_total, atoms_changed, handlers_pending, change_labels);
+            emit(AppUpdate::EpochReady {
+                resource_epoch: resource_epoch_idx,
+                summary,
+            })
+            .await?;
+
+            match ack_reader.next_ack().await {
+                AckAction::Apply => {}
+                AckAction::Abort => {
+                    info!(epoch = resource_epoch_idx, "aborted by user");
+                    emit(AppUpdate::ApplyComplete { had_changes }).await?;
+                    return Err(ApplyError::AbortedByUser {
+                        resource_epoch: resource_epoch_idx,
+                        total: epochs_count,
+                    });
+                }
             }
         }
 
@@ -600,6 +687,95 @@ fn enumerate_atoms<T>(tree: PlanTree<T>) -> PlanTree<(usize, T)> {
     walk(tree, &mut 0)
 }
 
+/// Cap on the number of [`ChangeLabel`]s the producer includes in an
+/// [`EpochSummary`]. Beyond this the count survives via
+/// `truncated_count`, so the consumer can show "and N more". Sized for a
+/// reasonable terminal screen of "what's about to apply".
+const MAX_CHANGE_LABELS: usize = 16;
+
+/// Build an [`EpochSummary`] for the confirm prompt, truncating
+/// `change_labels` at [`MAX_CHANGE_LABELS`] so a wide-fanout epoch can't
+/// produce an unbounded wire payload.
+fn build_epoch_summary(
+    atoms_total: usize,
+    atoms_changed: usize,
+    handlers_pending: usize,
+    mut change_labels: Vec<ChangeLabel>,
+) -> EpochSummary {
+    let truncated_count = change_labels.len().saturating_sub(MAX_CHANGE_LABELS);
+    if change_labels.len() > MAX_CHANGE_LABELS {
+        change_labels.truncate(MAX_CHANGE_LABELS);
+    }
+    EpochSummary {
+        atoms_total,
+        atoms_changed,
+        handlers_pending,
+        change_labels,
+        truncated_count,
+    }
+}
+
+/// Source of [`AckAction`]s for the per-epoch confirm prompt. `yes` mode
+/// short-circuits every read to `Apply`; otherwise the next line on the
+/// wrapped reader is parsed. EOF, parse failure, or any IO error returns
+/// `Abort` so the producer treats a broken / closed channel as a deliberate
+/// refusal.
+///
+/// Generic over its line source so tests can drive it from in-memory bytes
+/// instead of process-wide [`tokio::io::stdin`]; the production constructor
+/// wraps stdin.
+struct AckReader<R> {
+    yes: bool,
+    lines: tokio::io::Lines<R>,
+}
+
+impl AckReader<BufReader<tokio::io::Stdin>> {
+    fn new(yes: bool) -> Self {
+        AckReader::from_reader(yes, BufReader::new(tokio::io::stdin()))
+    }
+}
+
+impl<R> AckReader<R>
+where
+    R: AsyncBufReadExt + Unpin,
+{
+    fn from_reader(yes: bool, reader: R) -> Self {
+        Self {
+            yes,
+            lines: reader.lines(),
+        }
+    }
+
+    async fn next_ack(&mut self) -> AckAction {
+        if self.yes {
+            return AckAction::Apply;
+        }
+        match self.lines.next_line().await {
+            Ok(Some(line)) => parse_ack(&line),
+            // EOF or read failure: parent closed stdin or the channel
+            // collapsed. Treat as deliberate abort - never assume consent.
+            Ok(None) | Err(_) => AckAction::Abort,
+        }
+    }
+}
+
+/// Parse a single ack line. Malformed JSON or an unknown action becomes
+/// `Abort`; spec is "explicit consent required, anything else is no".
+///
+/// Surfaces the rejection at `warn!` so an operator wondering "why did my
+/// apply abort?" can grep the stderr for the malformed line; without this
+/// the producer would silently treat garbage as a deliberate no.
+fn parse_ack(line: &str) -> AckAction {
+    let trimmed = line.trim();
+    match serde_json::from_str::<AckAction>(trimmed) {
+        Ok(action) => action,
+        Err(err) => {
+            warn!(line = %trimmed, error = %err, "unrecognized ack on stdin, treating as Abort");
+            AckAction::Abort
+        }
+    }
+}
+
 /// Serializes access to stdout across the apply. Operation stdout/stderr are
 /// drained concurrently via `tokio::try_join!`, so without a mutex two
 /// `emit()` calls can interleave - one task's JSON can land between another's
@@ -827,5 +1003,128 @@ mod tests {
     fn build_atom_epoch_map_is_empty_for_no_epochs() {
         let epochs: Vec<Vec<(usize, Resource)>> = vec![];
         assert!(build_atom_epoch_map(&epochs).is_empty());
+    }
+
+    #[test]
+    fn parse_ack_accepts_apply_and_abort() {
+        assert_eq!(parse_ack(r#"{"action":"apply"}"#), AckAction::Apply);
+        assert_eq!(parse_ack(r#"{"action":"abort"}"#), AckAction::Abort);
+        // Trailing whitespace must not break parsing (newline-delimited
+        // protocol leaves a `\n` only if the producer didn't strip it).
+        assert_eq!(parse_ack(r#" {"action":"apply"} "#), AckAction::Apply);
+    }
+
+    #[test]
+    fn parse_ack_treats_malformed_input_as_abort() {
+        // Anything that isn't a recognized ack falls to Abort; the producer
+        // never assumes consent from a garbled line.
+        for bad in &[
+            "",
+            "{}",
+            r#"{"action":"maybe"}"#,
+            "apply",
+            "{not json",
+            r#"{"action":42}"#,
+        ] {
+            assert_eq!(parse_ack(bad), AckAction::Abort, "input: {bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn ack_reader_yes_always_returns_apply() {
+        // With yes=true the reader returns Apply without ever inspecting
+        // its line source - empty buffer here would otherwise EOF to Abort,
+        // so this assertion checks the yes short-circuit is honored.
+        let empty: &[u8] = b"";
+        let mut reader = AckReader::from_reader(true, empty);
+        assert_eq!(reader.next_ack().await, AckAction::Apply);
+        assert_eq!(reader.next_ack().await, AckAction::Apply);
+    }
+
+    #[tokio::test]
+    async fn ack_reader_reads_each_line_in_order() {
+        let input: &[u8] = b"{\"action\":\"apply\"}\n{\"action\":\"abort\"}\n";
+        let mut reader = AckReader::from_reader(false, input);
+        assert_eq!(reader.next_ack().await, AckAction::Apply);
+        assert_eq!(reader.next_ack().await, AckAction::Abort);
+        // Past EOF -> Abort.
+        assert_eq!(reader.next_ack().await, AckAction::Abort);
+    }
+
+    #[tokio::test]
+    async fn ack_reader_eof_returns_abort() {
+        // Parent closed stdin without sending any ack: treat as abort
+        // rather than block forever or assume consent.
+        let empty: &[u8] = b"";
+        let mut reader = AckReader::from_reader(false, empty);
+        assert_eq!(reader.next_ack().await, AckAction::Abort);
+    }
+
+    #[tokio::test]
+    async fn ack_reader_malformed_line_returns_abort_then_continues() {
+        // A garbage line aborts that prompt; the reader stays usable for
+        // subsequent prompts (a follow-up apply ack still parses cleanly).
+        let input: &[u8] = b"garbage\n{\"action\":\"apply\"}\n";
+        let mut reader = AckReader::from_reader(false, input);
+        assert_eq!(reader.next_ack().await, AckAction::Abort);
+        assert_eq!(reader.next_ack().await, AckAction::Apply);
+    }
+
+    #[test]
+    fn build_epoch_summary_truncates_long_change_lists() {
+        let labels: Vec<ChangeLabel> = (0..MAX_CHANGE_LABELS + 5)
+            .map(|i| ChangeLabel {
+                atom_id: format!("/etc/foo-{i}"),
+                kind: ChangeKind::Modified,
+                summary: "modify".into(),
+            })
+            .collect();
+        let total_labels = labels.len();
+        let summary = build_epoch_summary(20, total_labels, 0, labels);
+        assert_eq!(summary.change_labels.len(), MAX_CHANGE_LABELS);
+        assert_eq!(summary.truncated_count, 5);
+        // atoms_changed mirrors the producer's count, not the truncated
+        // list length, so the consumer can report "5 changes (showing 16)".
+        assert_eq!(summary.atoms_changed, total_labels);
+    }
+
+    #[test]
+    fn build_epoch_summary_under_cap_keeps_everything() {
+        let labels = vec![ChangeLabel {
+            atom_id: "/etc/foo".into(),
+            kind: ChangeKind::Modified,
+            summary: "modify".into(),
+        }];
+        let summary = build_epoch_summary(1, 1, 0, labels);
+        assert_eq!(summary.change_labels.len(), 1);
+        assert_eq!(summary.truncated_count, 0);
+    }
+
+    #[test]
+    fn format_aborted_by_user_handles_epoch_zero() {
+        // Abort at the first epoch: don't claim earlier work happened.
+        let msg = format_aborted_by_user(0, 3);
+        assert!(msg.contains("resource epoch 1 of 3"));
+        assert!(msg.contains("no earlier epochs ran"));
+        assert!(!msg.contains("epochs 1"));
+    }
+
+    #[test]
+    fn format_aborted_by_user_singularises_single_prior_epoch() {
+        // Abort at epoch 1 (0-indexed) of 3: exactly one prior epoch ran,
+        // so the message is singular rather than "epochs 1 through 1".
+        let msg = format_aborted_by_user(1, 3);
+        assert!(msg.contains("resource epoch 2 of 3"));
+        assert!(msg.contains("epoch 1 has already been applied"));
+        assert!(!msg.contains("through"));
+    }
+
+    #[test]
+    fn format_aborted_by_user_lists_prior_epochs() {
+        // Abort at epoch 2 (0-indexed) of 4: epochs 1 and 2 (one-based)
+        // already ran. Use "through" for prose clarity rather than `..`.
+        let msg = format_aborted_by_user(2, 4);
+        assert!(msg.contains("resource epoch 3 of 4"));
+        assert!(msg.contains("epochs 1 through 2"));
     }
 }

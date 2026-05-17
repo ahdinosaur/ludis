@@ -33,7 +33,7 @@ use std::pin::Pin;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use lusid_apply_stdio::{
-    AppUpdate, AppView, AppViewError, LeafState, OperationView, Phase, ResourcesNode,
+    AckAction, AppUpdate, AppView, AppViewError, LeafState, OperationView, Phase, ResourcesNode,
 };
 use lusid_cmd::CommandError;
 use lusid_plan::{PlanMeta, PlanNodeId};
@@ -49,7 +49,7 @@ use ratatui::{
 use serde_json::Error as SerdeJsonError;
 use thiserror::Error;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     sync::mpsc::{UnboundedReceiver, unbounded_channel},
 };
 
@@ -88,6 +88,12 @@ pub enum TuiError {
 
     #[error("failed to join task: {0}")]
     TaskJoin(#[from] tokio::task::JoinError),
+
+    #[error("failed to write ack to apply stdin: {0}")]
+    WriteAck(#[source] tokio::io::Error),
+
+    #[error("failed to serialize ack: {0}")]
+    SerializeAck(#[source] SerdeJsonError),
 }
 
 /// Drive the TUI. Reads `stdout` line-by-line as JSON `AppUpdate`s and
@@ -106,7 +112,7 @@ pub enum TuiError {
 /// subprocess (`lusid-cmd`) and an SSH command handle (`lusid-ssh`).
 pub async fn tui<Stdin, Stdout, Stderr, Wait, WaitError>(
     subcommand: &str,
-    _stdin: Stdin,
+    mut stdin: Stdin,
     stdout: Stdout,
     stderr: Stderr,
     wait: Pin<Box<Wait>>,
@@ -172,6 +178,10 @@ where
             }
         }
 
+        if let Some(ack) = app.pending_ack.take() {
+            write_ack(&mut stdin, ack).await?;
+        }
+
         if should_quit {
             break;
         }
@@ -181,6 +191,19 @@ where
         None => Ok(()),
         Some(result) => result,
     }
+}
+
+/// Serialize an [`AckAction`] as one JSON line and flush. Called at most
+/// once per `EpochReady` after the operator presses an accept/reject key.
+async fn write_ack<W>(stdin: &mut W, ack: AckAction) -> Result<(), TuiError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut bytes = serde_json::to_vec(&ack).map_err(TuiError::SerializeAck)?;
+    bytes.push(b'\n');
+    stdin.write_all(&bytes).await.map_err(TuiError::WriteAck)?;
+    stdin.flush().await.map_err(TuiError::WriteAck)?;
+    Ok(())
 }
 
 struct TerminalSession {
@@ -380,6 +403,11 @@ struct TuiApp {
     /// `s` toggle hint and the side-by-side fallback. 0 until the first
     /// frame draws.
     last_detail_width: u16,
+
+    /// Set by `handle_event` when the operator answers a per-epoch confirm
+    /// prompt. The main loop drains it into the apply child's stdin after
+    /// each event so the keypress and the wire write stay in lockstep.
+    pending_ack: Option<AckAction>,
 }
 
 impl TuiApp {
@@ -398,6 +426,7 @@ impl TuiApp {
             stderr_view_height: 0,
             side_by_side: false,
             last_detail_width: 0,
+            pending_ack: None,
         }
     }
 
@@ -416,6 +445,26 @@ impl TuiApp {
         };
         if modifiers != KeyModifiers::NONE && modifiers != KeyModifiers::SHIFT {
             return Ok(false);
+        }
+
+        // While a per-epoch confirm is on screen, intercept the y/n/Enter/Esc
+        // keys before they reach the page handler. Other keys (j/k, page
+        // switches, q, ...) pass through so the operator can scroll the tree
+        // / detail pane to inspect what they're about to ack.
+        if self.app_view.pending_epoch.is_some() {
+            match code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    self.pending_ack = Some(AckAction::Apply);
+                    self.app_view.pending_epoch = None;
+                    return Ok(false);
+                }
+                KeyCode::Char('n') | KeyCode::Esc => {
+                    self.pending_ack = Some(AckAction::Abort);
+                    self.app_view.pending_epoch = None;
+                    return Ok(false);
+                }
+                _ => {}
+            }
         }
 
         match self.page {
@@ -921,6 +970,33 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
                 "  (Enter to apply, Esc to clear)",
                 Style::default().fg(Color::DarkGray),
             ),
+        ])
+    } else if let Some((epoch, summary)) = app.app_view.pending_epoch.as_ref() {
+        let total = app
+            .app_view
+            .resource_epochs_total()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "?".into());
+        let head = format!(
+            "Epoch {}/{total} · {} atoms, {} handlers · ",
+            epoch + 1,
+            summary.atoms_changed,
+            summary.handlers_pending,
+        );
+        Line::from(vec![
+            Span::styled(head, Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "↵/y apply",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                "n/Esc abort",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  ? help", Style::default().fg(Color::DarkGray)),
         ])
     } else {
         let hint = footer_hint(app);
