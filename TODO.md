@@ -580,7 +580,7 @@ cargo test --workspace
 
 ## Task 10 — `PipelineInfo` event + Phase grouping on `OperationsApplyEpochAdded`
 
-**Status:** pending
+**Status:** done f0a9da5
 
 **Goal:** Ship the total resource-epoch count once at startup (for the header strip) and tag every operation epoch with its resource epoch + Phase (A/B).
 
