@@ -9,7 +9,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use lusid_apply_stdio::{AppUpdate, AppView, LeafState, ResourcesNode};
+use lusid_apply_stdio::{AppUpdate, AppView, LeafState, Phase, ResourcesNode};
 use lusid_render::Render;
 use lusid_tree::Tree;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -100,9 +100,6 @@ pub(crate) fn digest(update: &AppUpdate, app: &AppView) -> Option<String> {
     match update {
         AppUpdate::ResourceParams { resource_params } => {
             let n = count_tree_leaves(resource_params);
-            // Note(cc): Task 10 adds `PipelineInfo` carrying the epoch count;
-            // the spec wants "across N epochs" here. Until that lands the
-            // information isn't on the wire, so leave the shorter form.
             Some(format!("parsed plan: {n} items"))
         }
         AppUpdate::ResourcesStart | AppUpdate::ResourcesComplete => None,
@@ -110,6 +107,12 @@ pub(crate) fn digest(update: &AppUpdate, app: &AppView) -> Option<String> {
             let n = count_tree_leaves(tree);
             Some(format!("expanded to {n} atoms"))
         }
+        AppUpdate::PipelineInfo {
+            resource_epochs_total,
+            ..
+        } => Some(format!(
+            "scheduled {resource_epochs_total} resource epoch(s)"
+        )),
         AppUpdate::ResourceStatesNodeStart { index } => {
             let id = leaf_label(app, *index);
             Some(format!("[probe] #{index} {id}"))
@@ -137,11 +140,19 @@ pub(crate) fn digest(update: &AppUpdate, app: &AppView) -> Option<String> {
         }
         AppUpdate::OperationsApplyEpochAdded {
             epoch_index,
+            resource_epoch,
+            phase,
             operations,
-        } => Some(format!(
-            "[epoch] #{epoch_index}: {} operation(s)",
-            operations.len()
-        )),
+        } => {
+            let phase_tag = match phase {
+                Phase::A => 'A',
+                Phase::B => 'B',
+            };
+            Some(format!(
+                "[epoch] #{epoch_index} (resource {resource_epoch} phase {phase_tag}): {} operation(s)",
+                operations.len()
+            ))
+        }
         AppUpdate::OperationApplyStart { index: (e, o) } => Some(format!("[op] {e}.{o} start")),
         AppUpdate::OperationApplyStdout {
             index: (e, o),

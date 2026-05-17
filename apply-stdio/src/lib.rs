@@ -46,6 +46,8 @@
 //! domain type. [`PipelineProgress`] is a coarse classification of the whole
 //! apply derived from one leaf walk.
 
+use std::collections::HashMap;
+
 use lusid_operation::Operation;
 use lusid_plan::{PlanMeta, PlanTree};
 use lusid_resource::{Resource, ResourceChange, ResourceParams, ResourceState};
@@ -67,6 +69,19 @@ pub enum AppUpdate {
     /// handler counts without re-rendering at the producer.
     ResourceParams {
         resource_params: PlanTree<ResourceParams>,
+    },
+
+    /// Once-per-apply summary emitted after `ResourcesComplete` and before any
+    /// per-epoch event (including under `--parse-only`): the total number of
+    /// resource epochs, and a mapping from each leaf (atom) arena index in the
+    /// shipped [`ResourcesTree`] to the resource epoch it runs in. Branch
+    /// arena slots are not keys; consumers should fall back to walking the
+    /// tree for branch-level epoch annotations. Consumers use it to size the
+    /// epoch header strip and to render per-atom epoch tags without re-running
+    /// `compute_epochs`.
+    PipelineInfo {
+        resource_epochs_total: usize,
+        atom_epoch: HashMap<usize, usize>,
     },
 
     /// Begin filling in the atoms tree - the resource atoms produced by
@@ -106,8 +121,18 @@ pub enum AppUpdate {
 
     /// One internal operation epoch's merged op list, appended to the apply
     /// pane. The TUI grows `operations_epochs` as these arrive.
+    ///
+    /// `resource_epoch` identifies which outer resource epoch this internal
+    /// op epoch belongs to; `phase` distinguishes Phase A (atom change ops)
+    /// from Phase B (`on_change` handlers). Multiple `OperationsApplyEpochAdded`
+    /// events can share a `resource_epoch` value. `epoch_index` is strictly
+    /// contiguous from 0 across the apply (incremented per emitted event;
+    /// empty resource epochs / empty phases produce no event and so do not
+    /// consume an index).
     OperationsApplyEpochAdded {
         epoch_index: usize,
+        resource_epoch: usize,
+        phase: Phase,
         operations: Vec<Operation>,
     },
 
@@ -135,6 +160,26 @@ pub enum AppUpdate {
     ApplyComplete {
         had_changes: bool,
     },
+}
+
+/// Which phase of a resource epoch an [`AppUpdate::OperationsApplyEpochAdded`]
+/// belongs to. Phase A is the change ops produced by the epoch's atoms;
+/// Phase B is the `on_change` handlers fired after Phase A completes for any
+/// handler-bearing plan-item branch whose latest atom landed in this epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Phase {
+    A,
+    B,
+}
+
+/// Per-internal-op-epoch metadata stored on [`AppView`] in parallel to
+/// [`AppView::operations_epochs`]. Indexed by `epoch_index` (the global,
+/// monotonically increasing counter shipped on each
+/// [`AppUpdate::OperationsApplyEpochAdded`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationEpochMeta {
+    pub resource_epoch: usize,
+    pub phase: Phase,
 }
 
 /// One operation's live state during the apply phase. `stdout`/`stderr` are
@@ -445,6 +490,16 @@ pub struct AppView {
     pub resource_params: Option<ProjectedTree<ResourceParams>>,
     pub resources: Option<ResourcesTree>,
     pub operations_epochs: Vec<Vec<OperationView>>,
+    /// Per-internal-op-epoch metadata (resource_epoch, phase) parallel to
+    /// `operations_epochs`. Same length as that vec after each
+    /// `OperationsApplyEpochAdded` is folded.
+    pub operation_epoch_meta: Vec<OperationEpochMeta>,
+    /// Total resource-epoch count, set by `PipelineInfo`. `None` until that
+    /// event arrives; consumers should display `?` until then.
+    pub resource_epochs_total: Option<usize>,
+    /// Leaf (atom) arena index -> resource epoch, set by `PipelineInfo`.
+    /// Branch arena slots are not keys. Empty until that event arrives.
+    pub atom_epoch: HashMap<usize, usize>,
     /// Whether any leaf has reached `Changed`. Also set by `ApplyComplete`'s
     /// payload (the producer's authoritative bit) so a dropped per-leaf event
     /// doesn't leave this false. Once true, stays true.
@@ -493,6 +548,14 @@ impl AppView {
         match update {
             ResourceParams { resource_params } => {
                 self.resource_params = Some(project_plan_tree(resource_params));
+            }
+
+            PipelineInfo {
+                resource_epochs_total,
+                atom_epoch,
+            } => {
+                self.resource_epochs_total = Some(resource_epochs_total);
+                self.atom_epoch = atom_epoch;
             }
 
             // The full atoms tree arrives as one `ResourcesNode { index: 0 }`
@@ -567,6 +630,8 @@ impl AppView {
 
             OperationsApplyEpochAdded {
                 epoch_index,
+                resource_epoch,
+                phase,
                 operations,
             } => {
                 if self.operations_epochs.len() != epoch_index {
@@ -577,6 +642,15 @@ impl AppView {
                 }
                 self.operations_epochs
                     .push(operations.into_iter().map(OperationView::new).collect());
+                self.operation_epoch_meta.push(OperationEpochMeta {
+                    resource_epoch,
+                    phase,
+                });
+                debug_assert_eq!(
+                    self.operations_epochs.len(),
+                    self.operation_epoch_meta.len(),
+                    "operations_epochs and operation_epoch_meta must stay parallel",
+                );
             }
 
             OperationApplyStart { index: (e, o) } => {
@@ -686,6 +760,27 @@ impl AppView {
             Some(ResourcesNode::Branch { meta, .. }) => Some(meta),
             _ => None,
         }
+    }
+
+    /// Total resource-epoch count, set by `PipelineInfo`. `None` until the
+    /// event arrives.
+    pub fn resource_epochs_total(&self) -> Option<usize> {
+        self.resource_epochs_total
+    }
+
+    /// Resource epoch the atom at `arena_index` runs in. `None` if
+    /// `PipelineInfo` hasn't arrived yet or the index isn't a leaf in the
+    /// shipped atoms tree.
+    pub fn epoch_of_atom(&self, arena_index: usize) -> Option<usize> {
+        self.atom_epoch.get(&arena_index).copied()
+    }
+
+    /// Per-internal-op-epoch metadata (`resource_epoch` + `phase`) for the
+    /// given `epoch_index` (the counter shipped on each
+    /// `OperationsApplyEpochAdded`). `None` if no such epoch has been folded
+    /// yet.
+    pub fn operation_epoch_meta(&self, epoch_index: usize) -> Option<&OperationEpochMeta> {
+        self.operation_epoch_meta.get(epoch_index)
     }
 
     /// Classify the pipeline's coarse stage from the leaf set in a single
@@ -1419,6 +1514,8 @@ mod tests {
         let v = v
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::A,
                 operations: vec![command_op("op")],
             })
             .unwrap();
@@ -1511,5 +1608,96 @@ mod tests {
     fn plan_item_meta_returns_none_before_resources_arrive() {
         let v = AppView::default();
         assert!(v.plan_item_meta(0).is_none());
+    }
+
+    #[test]
+    fn pipeline_info_populates_total_and_atom_epoch_map() {
+        let v = AppView::default();
+        assert_eq!(v.resource_epochs_total(), None);
+        assert!(v.epoch_of_atom(0).is_none());
+
+        let atom_epoch: HashMap<usize, usize> = [(1, 0), (2, 1), (3, 2)].into_iter().collect();
+        let v = v
+            .update(AppUpdate::PipelineInfo {
+                resource_epochs_total: 3,
+                atom_epoch: atom_epoch.clone(),
+            })
+            .unwrap();
+
+        assert_eq!(v.resource_epochs_total(), Some(3));
+        assert_eq!(v.epoch_of_atom(1), Some(0));
+        assert_eq!(v.epoch_of_atom(2), Some(1));
+        assert_eq!(v.epoch_of_atom(3), Some(2));
+        assert_eq!(v.epoch_of_atom(99), None);
+    }
+
+    #[test]
+    fn operations_apply_epoch_added_records_resource_epoch_and_phase() {
+        let v = AppView::default()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 1,
+                phase: Phase::A,
+                operations: vec![command_op("op-a")],
+            })
+            .unwrap()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 1,
+                resource_epoch: 1,
+                phase: Phase::B,
+                operations: vec![command_op("op-b")],
+            })
+            .unwrap();
+
+        let a = v.operation_epoch_meta(0).expect("phase A meta");
+        assert_eq!(a.resource_epoch, 1);
+        assert_eq!(a.phase, Phase::A);
+
+        let b = v.operation_epoch_meta(1).expect("phase B meta");
+        assert_eq!(b.resource_epoch, 1);
+        assert_eq!(b.phase, Phase::B);
+
+        assert!(
+            v.operation_epoch_meta(2).is_none(),
+            "out-of-range returns None"
+        );
+    }
+
+    /// A rejected `OperationsApplyEpochAdded` must not advance either
+    /// `operations_epochs` or `operation_epoch_meta`; otherwise the parallel
+    /// invariant between the two vecs drifts on the next valid event.
+    #[test]
+    fn non_monotonic_epoch_index_does_not_push_meta() {
+        let v = AppView::default()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::A,
+                operations: vec![command_op("op")],
+            })
+            .unwrap();
+        assert_eq!(v.operations_epochs.len(), 1);
+        assert_eq!(v.operation_epoch_meta.len(), 1);
+
+        // Re-emit epoch_index 0 — the fold expects 1 next.
+        let err = v
+            .clone()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 1,
+                phase: Phase::B,
+                operations: vec![command_op("op2")],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AppViewError::NonMonotonicEpochIndex {
+                got: 0,
+                expected: 1,
+            }
+        ));
+
+        // Original view's parallel-vec invariant is untouched.
+        assert_eq!(v.operations_epochs.len(), v.operation_epoch_meta.len());
     }
 }

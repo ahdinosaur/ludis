@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use lusid_apply_stdio::AppUpdate;
+use lusid_apply_stdio::{AppUpdate, Phase};
 use lusid_causality::{EpochError, compute_epochs};
 use lusid_ctx::{Context, ContextError};
 use lusid_operation::{Operation, OperationApplyError};
@@ -223,9 +223,11 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     let epochs_count = atom_epochs.len();
     info!(epochs = epochs_count, "scheduled resource epochs");
 
-    // TODO(Task 10): emit `PipelineInfo { resource_epochs_total, atom_epoch }`
-    // here so consumers see the total epoch count + per-atom epoch mapping
-    // under both `--parse-only` and full apply.
+    emit(AppUpdate::PipelineInfo {
+        resource_epochs_total: epochs_count,
+        atom_epoch: build_atom_epoch_map(&atom_epochs),
+    })
+    .await?;
 
     if parse_only {
         info!("parse-only: skipping per-epoch apply loop");
@@ -316,7 +318,15 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
             }
         }
 
-        apply_op_phase(atom_op_subtrees, &mut op_epoch_counter, &mut ctx, &redactor).await?;
+        apply_op_phase(
+            atom_op_subtrees,
+            resource_epoch_idx,
+            Phase::A,
+            &mut op_epoch_counter,
+            &mut ctx,
+            &redactor,
+        )
+        .await?;
 
         // Phase B: collect handlers for branches whose latest epoch is this
         // one and which had at least one atom change during apply.
@@ -339,7 +349,15 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
                 node: op,
             }));
         }
-        apply_op_phase(handler_leaves, &mut op_epoch_counter, &mut ctx, &redactor).await?;
+        apply_op_phase(
+            handler_leaves,
+            resource_epoch_idx,
+            Phase::B,
+            &mut op_epoch_counter,
+            &mut ctx,
+            &redactor,
+        )
+        .await?;
     }
 
     if !had_changes {
@@ -356,13 +374,18 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 /// epochs, merge same-family ops within each, and execute sequentially.
 /// `op_epoch_counter` advances per internal op-epoch so Phase A and Phase B
 /// calls within the same resource epoch keep emitting strictly-increasing
-/// `OperationsApplyEpochAdded.epoch_index` values.
+/// `OperationsApplyEpochAdded.epoch_index` values. `resource_epoch` and
+/// `phase` are stamped on every emitted `OperationsApplyEpochAdded` so the
+/// consumer can group ops by outer epoch and separate Phase A change ops from
+/// Phase B handlers.
 ///
 /// Returns early on the first operation failure, after emitting
 /// `OperationApplyComplete { error: Some(..) }` so the TUI can surface
 /// which op failed.
 async fn apply_op_phase(
     subtrees: Vec<PlanTree<Operation>>,
+    resource_epoch: usize,
+    phase: Phase,
     op_epoch_counter: &mut usize,
     ctx: &mut Context,
     redactor: &Redactor,
@@ -383,6 +406,8 @@ async fn apply_op_phase(
 
         emit(AppUpdate::OperationsApplyEpochAdded {
             epoch_index: *op_epoch_counter,
+            resource_epoch,
+            phase,
             operations: merged.clone(),
         })
         .await?;
@@ -490,6 +515,22 @@ fn nearest_handler_ancestor(
         cur = parent_of.get(&idx).copied();
     }
     None
+}
+
+/// Flatten `compute_epochs` output to a `leaf_arena_index -> resource_epoch`
+/// map for the wire's `PipelineInfo` payload. Only leaves are keys; branch
+/// arena slots are absent. Every leaf in the original atoms tree appears
+/// exactly once, since `compute_epochs` partitions the leaves across epochs.
+fn build_atom_epoch_map(epochs: &[Vec<(usize, Resource)>]) -> HashMap<usize, usize> {
+    epochs
+        .iter()
+        .enumerate()
+        .flat_map(|(epoch_idx, atoms)| {
+            atoms
+                .iter()
+                .map(move |(atom_idx, _)| (*atom_idx, epoch_idx))
+        })
+        .collect()
 }
 
 /// For every handler-bearing plan-item branch reachable from any leaf in
@@ -738,5 +779,35 @@ mod tests {
         )]];
         let latest = build_latest_epoch_by_branch(&epochs, &parent_of, &flat);
         assert!(latest.is_empty());
+    }
+
+    fn file_resource(path: &str) -> Resource {
+        Resource::File(FileResource::Present {
+            path: FilePath::new(path),
+        })
+    }
+
+    #[test]
+    fn build_atom_epoch_map_records_each_leaf_with_its_epoch() {
+        // Two leaves in epoch 0, one in epoch 2, empty epoch 1.
+        let epochs: Vec<Vec<(usize, Resource)>> = vec![
+            vec![(2, file_resource("/a")), (3, file_resource("/b"))],
+            vec![],
+            vec![(5, file_resource("/c"))],
+        ];
+
+        let map = build_atom_epoch_map(&epochs);
+
+        assert_eq!(map.len(), 3, "every leaf is represented exactly once");
+        assert_eq!(map.get(&2), Some(&0));
+        assert_eq!(map.get(&3), Some(&0));
+        assert_eq!(map.get(&5), Some(&2));
+        assert!(map.get(&0).is_none(), "branch indices are not keys");
+    }
+
+    #[test]
+    fn build_atom_epoch_map_is_empty_for_no_epochs() {
+        let epochs: Vec<Vec<(usize, Resource)>> = vec![];
+        assert!(build_atom_epoch_map(&epochs).is_empty());
     }
 }
