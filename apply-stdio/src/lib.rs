@@ -676,6 +676,18 @@ impl AppView {
         }
     }
 
+    /// Plan-item metadata for a branch in the atoms tree: id, requires,
+    /// required_by, and on_change handlers.
+    ///
+    /// Returns `None` if no `ResourcesNode` has been folded yet, the index is
+    /// out of range, the slot has been tombstoned, or the slot is a leaf.
+    pub fn plan_item_meta(&self, branch_arena_index: usize) -> Option<&PlanMeta> {
+        match self.resources.as_ref()?.nodes.get(branch_arena_index)? {
+            Some(ResourcesNode::Branch { meta, .. }) => Some(meta),
+            _ => None,
+        }
+    }
+
     /// Classify the pipeline's coarse stage from the leaf set in a single
     /// walk. Used by follow-mode advancement and the feedback line.
     pub fn progress(&self) -> PipelineProgress {
@@ -1425,5 +1437,79 @@ mod tests {
             .unwrap();
         assert!(v.had_changes);
         assert!(v.done);
+    }
+
+    /// A branch with `id`, `requires`, `required_by`, and an `on_change`
+    /// handler folds through `ResourcesNode` and is then readable via
+    /// `plan_item_meta(branch_arena_index)`. The arena index mirrors the
+    /// pre-order walk of the original `PlanTree<Resource>`.
+    #[test]
+    fn plan_item_meta_round_trips_through_resources_node() {
+        let plan_item_id = PlanNodeId::PlanItem {
+            plan_id: PlanId::Path(PathBuf::from("test.lusid")),
+            item_id: "nginx-config".into(),
+        };
+        let upstream_id = PlanNodeId::PlanItem {
+            plan_id: PlanId::Path(PathBuf::from("test.lusid")),
+            item_id: "nginx-install".into(),
+        };
+        let downstream_id = PlanNodeId::PlanItem {
+            plan_id: PlanId::Path(PathBuf::from("test.lusid")),
+            item_id: "nginx-reload".into(),
+        };
+        let plan_item_branch = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(plan_item_id.clone()),
+                requires: vec![upstream_id.clone()],
+                required_by: vec![downstream_id.clone()],
+                handlers: vec![command_op("systemctl reload nginx")],
+            },
+            children: vec![resource_leaf("/etc/nginx/nginx.conf")],
+        };
+        let root = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![plan_item_branch],
+        };
+
+        let v = AppView::default()
+            .update(AppUpdate::ResourcesStart)
+            .unwrap()
+            .update(AppUpdate::ResourcesNode {
+                index: 0,
+                tree: root,
+            })
+            .unwrap()
+            .update(AppUpdate::ResourcesComplete)
+            .unwrap();
+
+        // Arena indices (pre-order): 0=root, 1=plan-item branch, 2=leaf.
+        let root_meta = v.plan_item_meta(0).expect("root meta");
+        assert!(root_meta.id.is_none());
+        assert!(root_meta.requires.is_empty());
+        assert!(root_meta.required_by.is_empty());
+        assert!(root_meta.handlers.is_empty());
+
+        let meta = v.plan_item_meta(1).expect("plan-item meta");
+        assert_eq!(meta.id.as_ref(), Some(&plan_item_id));
+        assert_eq!(meta.requires, vec![upstream_id]);
+        assert_eq!(meta.required_by, vec![downstream_id]);
+        assert_eq!(meta.handlers.len(), 1);
+        assert!(
+            matches!(
+                meta.handlers[0],
+                Operation::Command(CommandOperation { ref command, .. }) if command == "systemctl reload nginx",
+            ),
+            "handler {:?}",
+            meta.handlers[0],
+        );
+
+        assert!(v.plan_item_meta(2).is_none(), "leaf index returns None");
+        assert!(v.plan_item_meta(99).is_none(), "out-of-range returns None");
+    }
+
+    #[test]
+    fn plan_item_meta_returns_none_before_resources_arrive() {
+        let v = AppView::default();
+        assert!(v.plan_item_meta(0).is_none());
     }
 }
