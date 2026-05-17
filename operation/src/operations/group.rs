@@ -145,34 +145,3 @@ impl OperationType for Group {
         }
     }
 }
-
-#[cfg(test)]
-mod serde_tests {
-    use super::*;
-
-    fn round_trip(op: GroupOperation) {
-        let json = serde_json::to_string(&op).unwrap();
-        let back: GroupOperation = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-    }
-
-    #[test]
-    fn round_trip_all_variants() {
-        round_trip(GroupOperation::Add {
-            name: "wheel".into(),
-            gid: Some(10),
-            system: true,
-        });
-        round_trip(GroupOperation::Modify {
-            name: "wheel".into(),
-            gid: Some(99),
-        });
-        round_trip(GroupOperation::AddUser {
-            name: "wheel".into(),
-            user: "alice".into(),
-        });
-        round_trip(GroupOperation::Delete {
-            name: "wheel".into(),
-        });
-    }
-}

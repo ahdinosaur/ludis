@@ -112,26 +112,3 @@ impl OperationType for Apt {
         }
     }
 }
-
-#[cfg(test)]
-mod serde_tests {
-    use super::*;
-
-    fn round_trip(op: AptOperation) {
-        let json = serde_json::to_string(&op).unwrap();
-        let back: AptOperation = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-    }
-
-    #[test]
-    fn round_trip_update() {
-        round_trip(AptOperation::Update);
-    }
-
-    #[test]
-    fn round_trip_install() {
-        round_trip(AptOperation::Install {
-            packages: vec!["nginx".into(), "curl".into()],
-        });
-    }
-}

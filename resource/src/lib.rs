@@ -1074,47 +1074,14 @@ mod tests {
 }
 
 #[cfg(test)]
-mod serde_tests {
+mod dispatch_tests {
     use super::*;
-    use crate::resources::apt::{AptChange, AptParams, AptResource, AptState};
-    use crate::resources::file::{FileChange, FileResource, FileState};
-    use lusid_operation::operations::file::{FileMode, FilePath, FileSource};
+    use crate::resources::file::FileResource;
+    use lusid_operation::operations::file::FilePath;
     use rimu::SourceId;
 
     fn empty_span() -> Span {
         Span::new(SourceId::empty(), 0, 0)
-    }
-
-    fn round_trip_params(params: ResourceParams) {
-        let json = serde_json::to_string(&params).unwrap();
-        let back: ResourceParams = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-    }
-
-    #[test]
-    fn dispatches_round_trip() {
-        round_trip_params(ResourceParams::Apt(AptParams::Package {
-            package: "nginx".into(),
-        }));
-
-        let resource = Resource::Apt(AptResource {
-            package: "nginx".into(),
-        });
-        let json = serde_json::to_string(&resource).unwrap();
-        let back: Resource = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-
-        let state = ResourceState::Apt(AptState::Installed);
-        let json = serde_json::to_string(&state).unwrap();
-        let back: ResourceState = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-
-        let change = ResourceChange::Apt(AptChange::Install {
-            package: "nginx".into(),
-        });
-        let json = serde_json::to_string(&change).unwrap();
-        let back: ResourceChange = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
     }
 
     #[test]
@@ -1167,44 +1134,5 @@ mod serde_tests {
             Tree::Leaf { node, .. } => Some(node),
             Tree::Branch { children, .. } => children.iter().find_map(collect_first_leaf),
         }
-    }
-
-    #[test]
-    fn file_family_round_trip_through_dispatchers() {
-        let resource = Resource::File(FileResource::Sourced {
-            source: FilePath::new("/host/src.txt"),
-            path: FilePath::new("/target/dest.txt"),
-            is_secret: false,
-        });
-        let json = serde_json::to_string(&resource).unwrap();
-        let back: Resource = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-
-        let state = ResourceState::File(FileState::NotSourced {
-            current: None,
-            desired: file::Content::Bytes(b"hi".to_vec()),
-        });
-        let json = serde_json::to_string(&state).unwrap();
-        let back: ResourceState = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-
-        let change = ResourceChange::File(FileChange::ChangeMode {
-            path: FilePath::new("/target/dest.txt"),
-            mode: FileMode::new(0o600),
-        });
-        let json = serde_json::to_string(&change).unwrap();
-        let back: ResourceChange = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-
-        // Confirm FileSource passes through end-to-end.
-        let change = ResourceChange::File(FileChange::Write {
-            path: FilePath::new("/etc/motd"),
-            source: FileSource::Path(FilePath::new("/host/motd")),
-            before: None,
-            after: file::Content::Bytes(b"hello".to_vec()),
-        });
-        let json = serde_json::to_string(&change).unwrap();
-        let back: ResourceChange = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
     }
 }

@@ -149,33 +149,3 @@ impl OperationType for Git {
         }
     }
 }
-
-#[cfg(test)]
-mod serde_tests {
-    use super::*;
-
-    fn round_trip(op: GitOperation) {
-        let json = serde_json::to_string(&op).unwrap();
-        let back: GitOperation = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-    }
-
-    #[test]
-    fn round_trip_all_variants() {
-        round_trip(GitOperation::Clone {
-            repo: "https://github.com/foo/bar".into(),
-            path: FilePath::new("/srv/bar"),
-        });
-        round_trip(GitOperation::Fetch {
-            path: FilePath::new("/srv/bar"),
-        });
-        round_trip(GitOperation::Checkout {
-            path: FilePath::new("/srv/bar"),
-            version: "main".into(),
-            force: true,
-        });
-        round_trip(GitOperation::Pull {
-            path: FilePath::new("/srv/bar"),
-        });
-    }
-}

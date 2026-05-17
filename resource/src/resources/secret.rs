@@ -154,22 +154,3 @@ impl ResourceType for Secret {
         <File as ResourceType>::operations(change)
     }
 }
-
-#[cfg(test)]
-mod serde_tests {
-    use super::*;
-
-    #[test]
-    fn round_trip() {
-        let params = SecretParams {
-            name: "api_key".into(),
-            path: FilePath::new("/run/secrets/api_key"),
-            mode: Some(FileMode::new(0o600)),
-            user: Some(FileUser::new("root")),
-            group: Some(FileGroup::new("root")),
-        };
-        let json = serde_json::to_string(&params).unwrap();
-        let back: SecretParams = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-    }
-}

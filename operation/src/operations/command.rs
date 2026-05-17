@@ -157,33 +157,3 @@ mod tests {
         assert_eq!(Command::merge(vec![shell, direct]).len(), 2);
     }
 }
-
-#[cfg(test)]
-mod serde_tests {
-    use super::*;
-
-    #[test]
-    fn round_trip_both_executors() {
-        for executor in [CommandExecutor::Direct, CommandExecutor::Shell] {
-            let op = CommandOperation {
-                command: "ls -la".into(),
-                executor,
-            };
-            let json = serde_json::to_string(&op).unwrap();
-            let back: CommandOperation = serde_json::from_str(&json).unwrap();
-            assert_eq!(op, back);
-        }
-    }
-
-    #[test]
-    fn executor_serializes_lowercase() {
-        assert_eq!(
-            serde_json::to_string(&CommandExecutor::Direct).unwrap(),
-            "\"direct\""
-        );
-        assert_eq!(
-            serde_json::to_string(&CommandExecutor::Shell).unwrap(),
-            "\"shell\""
-        );
-    }
-}

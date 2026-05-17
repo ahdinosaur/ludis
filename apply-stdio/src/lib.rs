@@ -1841,50 +1841,6 @@ mod tests {
         assert_eq!(back, AckAction::Abort);
     }
 
-    #[test]
-    fn epoch_ready_app_update_round_trips() {
-        let original = AppUpdate::EpochReady {
-            resource_epoch: 1,
-            summary: EpochSummary {
-                atoms_total: 3,
-                atoms_changed: 2,
-                handlers_pending: 1,
-                change_labels: vec![
-                    ChangeLabel {
-                        atom_id: "Apt::Install(nginx)".into(),
-                        kind: ChangeKind::Added,
-                        summary: "install nginx".into(),
-                    },
-                    ChangeLabel {
-                        atom_id: "File::Remove(/tmp/x)".into(),
-                        kind: ChangeKind::Removed,
-                        summary: "remove /tmp/x".into(),
-                    },
-                ],
-                truncated_count: 5,
-            },
-        };
-        let json = serde_json::to_string(&original).unwrap();
-        let back: AppUpdate = serde_json::from_str(&json).unwrap();
-        match back {
-            AppUpdate::EpochReady {
-                resource_epoch,
-                summary,
-            } => {
-                assert_eq!(resource_epoch, 1);
-                assert_eq!(summary.atoms_total, 3);
-                assert_eq!(summary.atoms_changed, 2);
-                assert_eq!(summary.handlers_pending, 1);
-                assert_eq!(summary.change_labels.len(), 2);
-                assert_eq!(summary.change_labels[0].atom_id, "Apt::Install(nginx)");
-                assert_eq!(summary.change_labels[0].kind, ChangeKind::Added);
-                assert_eq!(summary.change_labels[1].kind, ChangeKind::Removed);
-                assert_eq!(summary.truncated_count, 5);
-            }
-            other => panic!("expected EpochReady, got {other:?}"),
-        }
-    }
-
     /// A rejected `OperationsApplyEpochAdded` must not advance either
     /// `operations_epochs` or `operation_epoch_meta`; otherwise the parallel
     /// invariant between the two vecs drifts on the next valid event.

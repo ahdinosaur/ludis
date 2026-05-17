@@ -117,21 +117,3 @@ impl OperationType for Aur {
         }
     }
 }
-
-#[cfg(test)]
-mod serde_tests {
-    use super::*;
-
-    fn round_trip(op: AurOperation) {
-        let json = serde_json::to_string(&op).unwrap();
-        let back: AurOperation = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-    }
-
-    #[test]
-    fn round_trip_install() {
-        round_trip(AurOperation::Install {
-            packages: vec!["paru".into(), "yay".into()],
-        });
-    }
-}

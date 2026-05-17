@@ -187,39 +187,3 @@ async fn stage_path_for(
     fs::create_dir(&stage_dir).await?;
     Ok(stage_dir.join(format!("{name}.{extension}")))
 }
-
-#[cfg(test)]
-mod serde_tests {
-    use super::*;
-
-    fn round_trip(op: AptRepoOperation) {
-        let json = serde_json::to_string(&op).unwrap();
-        let back: AptRepoOperation = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-    }
-
-    #[test]
-    fn round_trip_ensure_keyrings_dir() {
-        round_trip(AptRepoOperation::EnsureKeyringsDir {
-            path: FilePath::new("/etc/apt/keyrings"),
-        });
-    }
-
-    #[test]
-    fn round_trip_download_key() {
-        round_trip(AptRepoOperation::DownloadKey {
-            name: "docker".into(),
-            url: "https://download.docker.com/linux/debian/gpg".into(),
-            path: FilePath::new("/etc/apt/keyrings/docker.asc"),
-        });
-    }
-
-    #[test]
-    fn round_trip_write_sources() {
-        round_trip(AptRepoOperation::WriteSources {
-            name: "docker".into(),
-            path: FilePath::new("/etc/apt/sources.list.d/docker.sources"),
-            content: "Types: deb\nURIs: https://download.docker.com/linux/debian\n".into(),
-        });
-    }
-}

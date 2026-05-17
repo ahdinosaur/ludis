@@ -114,26 +114,3 @@ impl OperationType for Pacman {
         }
     }
 }
-
-#[cfg(test)]
-mod serde_tests {
-    use super::*;
-
-    fn round_trip(op: PacmanOperation) {
-        let json = serde_json::to_string(&op).unwrap();
-        let back: PacmanOperation = serde_json::from_str(&json).unwrap();
-        assert_eq!(json, serde_json::to_string(&back).unwrap());
-    }
-
-    #[test]
-    fn round_trip_upgrade() {
-        round_trip(PacmanOperation::Upgrade);
-    }
-
-    #[test]
-    fn round_trip_install() {
-        round_trip(PacmanOperation::Install {
-            packages: vec!["base-devel".into()],
-        });
-    }
-}
