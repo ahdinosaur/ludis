@@ -545,7 +545,7 @@ echo "" | cargo run -p lusid -- --config examples/nginx-cluster/lusid.toml --no-
 
 ## Task 9 — Plan-item metadata on `ResourcesNode`
 
-**Status:** pending
+**Status:** done 1b4c05d
 
 **Goal:** Ship structured per-plan-item metadata (id, requires, required_by, on_change handlers) over the wire as part of `ResourcesNode`. After Phase 0, this is just including `PlanMeta` in the wire payload.
 
