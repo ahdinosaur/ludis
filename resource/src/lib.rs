@@ -2,7 +2,7 @@
 //! and the conventions for adding a new resource.
 
 use std::fmt::Display;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use crate::resources::*;
 
@@ -320,7 +320,12 @@ impl Display for ResourceChange {
 impl ResourceParams {
     /// Expand params into resource atoms and lift each per-type tree into the
     /// top-level [`Resource`] dispatcher.
-    pub fn resources(self) -> Vec<CausalityTree<Resource>> {
+    ///
+    /// `secrets_dir` is consulted when expanding `@resource/file` so any
+    /// `FileResource::Sourced` atom whose source lies under that directory
+    /// is tagged `is_secret`. Downstream `state`/`change` honour the tag by
+    /// shipping [`file::Content::Redacted`] rather than raw bytes.
+    pub fn resources(self, secrets_dir: &Path) -> Vec<CausalityTree<Resource>> {
         fn typed<R: ResourceType>(
             params: R::Params,
             map: impl Fn(R::Resource) -> Resource + Copy,
@@ -335,7 +340,10 @@ impl ResourceParams {
             ResourceParams::Apt(params) => typed::<Apt>(params, Resource::Apt),
             ResourceParams::AptRepo(params) => typed::<AptRepo>(params, Resource::AptRepo),
             ResourceParams::Aur(params) => typed::<Aur>(params, Resource::Aur),
-            ResourceParams::File(params) => typed::<File>(params, Resource::File),
+            ResourceParams::File(params) => typed::<File>(params, Resource::File)
+                .into_iter()
+                .map(|tree| tree.map(|r| mark_file_secret_source(r, secrets_dir)))
+                .collect(),
             ResourceParams::Directory(params) => typed::<Directory>(params, Resource::Directory),
             ResourceParams::Flatpak(params) => typed::<Flatpak>(params, Resource::Flatpak),
             ResourceParams::FlatpakRemote(params) => {
@@ -345,11 +353,31 @@ impl ResourceParams {
             ResourceParams::Podman(params) => typed::<Podman>(params, Resource::Podman),
             ResourceParams::Command(params) => typed::<Command>(params, Resource::Command),
             ResourceParams::Git(params) => typed::<Git>(params, Resource::Git),
+            // `@resource/secret` lowers to `FileResource::Secret`, which is
+            // always redacted in `state`; the path-based `is_secret` flag is
+            // not consulted for that variant.
             ResourceParams::Secret(params) => typed::<Secret>(params, Resource::File),
             ResourceParams::Systemd(params) => typed::<Systemd>(params, Resource::Systemd),
             ResourceParams::User(params) => typed::<User>(params, Resource::User),
             ResourceParams::Group(params) => typed::<Group>(params, Resource::Group),
         }
+    }
+}
+
+/// Stamp `is_secret` on `FileResource::Sourced` atoms whose `source` lives
+/// under `secrets_dir`. Other resource variants pass through untouched.
+fn mark_file_secret_source(resource: Resource, secrets_dir: &Path) -> Resource {
+    match resource {
+        Resource::File(file::FileResource::Sourced {
+            source,
+            path,
+            is_secret: _,
+        }) => Resource::File(file::FileResource::Sourced {
+            is_secret: file::is_secret_source(&source, secrets_dir),
+            source,
+            path,
+        }),
+        other => other,
     }
 }
 
@@ -1000,6 +1028,11 @@ mod serde_tests {
     use crate::resources::apt::{AptChange, AptParams, AptResource, AptState};
     use crate::resources::file::{FileChange, FileResource, FileState};
     use lusid_operation::operations::file::{FileMode, FilePath, FileSource};
+    use rimu::SourceId;
+
+    fn empty_span() -> Span {
+        Span::new(SourceId::empty(), 0, 0)
+    }
 
     fn round_trip_params(params: ResourceParams) {
         let json = serde_json::to_string(&params).unwrap();
@@ -1034,16 +1067,72 @@ mod serde_tests {
     }
 
     #[test]
+    fn resources_tag_is_secret_when_source_under_secrets_dir() {
+        let params = ResourceParams::File(FileParams::Sourced {
+            source: FilePath::new("/proj/secrets/api.txt"),
+            source_span: empty_span(),
+            path: FilePath::new("/target/dest.txt"),
+            mode: None,
+            user: None,
+            group: None,
+        });
+        let trees = params.resources(Path::new("/proj/secrets"));
+        // Walk the first tree's leaves; the leading atom is `Sourced`.
+        let leaf = collect_first_leaf(&trees[0]).expect("at least one leaf");
+        match leaf {
+            Resource::File(FileResource::Sourced { is_secret, .. }) => {
+                assert!(*is_secret, "source under secrets_dir should mark is_secret");
+            }
+            other => panic!("expected File::Sourced, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resources_leaves_is_secret_false_when_source_outside_secrets_dir() {
+        let params = ResourceParams::File(FileParams::Sourced {
+            source: FilePath::new("/proj/files/app.conf"),
+            source_span: empty_span(),
+            path: FilePath::new("/target/app.conf"),
+            mode: None,
+            user: None,
+            group: None,
+        });
+        let trees = params.resources(Path::new("/proj/secrets"));
+        let leaf = collect_first_leaf(&trees[0]).expect("at least one leaf");
+        match leaf {
+            Resource::File(FileResource::Sourced { is_secret, .. }) => {
+                assert!(
+                    !is_secret,
+                    "source outside secrets_dir should leave is_secret false"
+                );
+            }
+            other => panic!("expected File::Sourced, got {other:?}"),
+        }
+    }
+
+    fn collect_first_leaf(tree: &CausalityTree<Resource>) -> Option<&Resource> {
+        use lusid_tree::Tree;
+        match tree {
+            Tree::Leaf { node, .. } => Some(node),
+            Tree::Branch { children, .. } => children.iter().find_map(collect_first_leaf),
+        }
+    }
+
+    #[test]
     fn file_family_round_trip_through_dispatchers() {
         let resource = Resource::File(FileResource::Sourced {
             source: FilePath::new("/host/src.txt"),
             path: FilePath::new("/target/dest.txt"),
+            is_secret: false,
         });
         let json = serde_json::to_string(&resource).unwrap();
         let back: Resource = serde_json::from_str(&json).unwrap();
         assert_eq!(json, serde_json::to_string(&back).unwrap());
 
-        let state = ResourceState::File(FileState::NotSourced);
+        let state = ResourceState::File(FileState::NotSourced {
+            current: None,
+            desired: file::Content::Bytes(b"hi".to_vec()),
+        });
         let json = serde_json::to_string(&state).unwrap();
         let back: ResourceState = serde_json::from_str(&json).unwrap();
         assert_eq!(json, serde_json::to_string(&back).unwrap());
@@ -1060,6 +1149,8 @@ mod serde_tests {
         let change = ResourceChange::File(FileChange::Write {
             path: FilePath::new("/etc/motd"),
             source: FileSource::Path(FilePath::new("/host/motd")),
+            before: None,
+            after: file::Content::Bytes(b"hello".to_vec()),
         });
         let json = serde_json::to_string(&change).unwrap();
         let back: ResourceChange = serde_json::from_str(&json).unwrap();

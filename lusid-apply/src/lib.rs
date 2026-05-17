@@ -131,6 +131,16 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     // an identity is supplied - without one, there's no key to decrypt with
     // so the directory's existence is irrelevant.
     let secrets_dir = secrets_dir.unwrap_or_else(|| root_path.join("secrets"));
+    // The is_secret tag on file resources compares against this dir by
+    // lexical prefix; the comparison only works if both sides are absolute
+    // and free of `.`/`..`. Canonicalise here so a relative `--root` or
+    // missing canonicalisation upstream doesn't silently void redaction.
+    // Falls through unchanged when the dir doesn't exist yet - no file
+    // source can lie under a missing directory anyway.
+    let secrets_dir_for_mark = match tokio::fs::canonicalize(&secrets_dir).await {
+        Ok(p) => p,
+        Err(_) => secrets_dir.clone(),
+    };
     // Built alongside `Secrets` so it can be cloned into per-operation
     // stdout/stderr scrubbing below. Holds `Arc` clones of the plaintexts,
     // so constructing it here and then moving `secrets` into `ctx` is safe.
@@ -191,10 +201,18 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         .map(|params| params.validate_host_paths());
     futures_util::future::try_join_all(validations).await?;
 
-    // Expand each ResourceParams into a tree of Resource atoms.
+    // Expand each ResourceParams into a tree of Resource atoms. Hand the
+    // resolved secrets dir down so file sources rooted under it are tagged
+    // `is_secret` and downstream state/change ship redacted Content.
+    let secrets_dir_ref = secrets_dir_for_mark.as_path();
     let resources = resource_params_flat
         .map_tree(
-            |node, meta| PlanTree::branch(meta, map_plan_subitems(node, |n| n.resources())),
+            |node, meta| {
+                PlanTree::branch(
+                    meta,
+                    map_plan_subitems(node, |n| n.resources(secrets_dir_ref)),
+                )
+            },
             |_index, _tree| async { Ok::<(), ApplyError>(()) },
         )
         .await?;

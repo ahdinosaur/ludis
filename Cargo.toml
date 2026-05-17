@@ -28,6 +28,7 @@ members = [
 age = "0.11.3"
 age-core = "0.11"
 async-trait = "0.1.89"
+base64 = "0.22"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 displaydoc = "0.2.5"
 indexmap = "2.14.0"

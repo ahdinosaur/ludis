@@ -2792,6 +2792,7 @@ name = "lusid-resource"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures-util",
  "indexmap",
  "lusid-causality",
@@ -2800,6 +2801,7 @@ dependencies = [
  "lusid-fs",
  "lusid-operation",
  "lusid-params",
+ "lusid-tree",
  "rimu",
  "secrecy",
  "serde",
