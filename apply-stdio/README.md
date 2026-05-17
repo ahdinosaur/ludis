@@ -22,16 +22,50 @@ Outline:
 2. `ResourcesStart` / `ResourcesNode { index: 0, tree: PlanTree<Resource> }`
    / `ResourcesComplete` carrying the full atoms tree, one leaf per resource
    atom.
-3. Per resource epoch, interleaved across atoms:
-   - `ResourceStatesNodeStart` / `ResourceStatesNodeComplete { state: ResourceState }`
-     per leaf.
-   - `ResourceChangesNode { change: Option<ResourceChange> }` per leaf;
-     `None` is a no-op leaf.
-   - `OperationsNode { operations: PlanTree<Operation> }` per changed leaf.
-   - `OperationsApplyEpochAdded { operations: Vec<Operation> }` + per-op
-     apply events for Phase A; same events repeated for Phase B's
-     `on_change` handlers.
-4. `ApplyComplete { had_changes }`.
+3. `PipelineInfo { resource_epochs_total, atom_epoch }` - once-per-apply
+   summary emitted after `ResourcesComplete` and before any per-epoch event.
+   Ships the total number of resource epochs and a mapping from each atom
+   arena index to its resource epoch.
+
+   Under `--parse-only` the stream stops here: events (1) through (3) fire,
+   then `lusid-apply` exits without probing target state or running ops.
+4. Per resource epoch, in strict order:
+
+   a. **Probe**: per-atom `ResourceStatesNodeStart` /
+      `ResourceStatesNodeComplete { state: ResourceState }`. Atoms in the
+      same epoch probe in parallel, so their events interleave.
+
+   b. **Diff**: per-atom `ResourceChangesNode { change: Option<ResourceChange> }`.
+      `None` is a no-op leaf and prunes the leaf from later projections.
+
+   c. **Plan ops**: per-changed-atom
+      `OperationsNode { operations: PlanTree<Operation> }`.
+
+   d. **Confirm**: `EpochReady { resource_epoch, summary }` fires after
+      (a)-(c) complete for this epoch, but only if at least one atom changed
+      or a handler is queued (otherwise the epoch is empty and skipped).
+      The producer then blocks reading one line of [`AckAction`] JSON from
+      stdin (`{"action":"apply"}` / `{"action":"abort"}`). `--yes` skips
+      both the emission and the read; EOF or parse error is treated as
+      `Abort` and halts the apply.
+
+   e. **Phase A**:
+      `OperationsApplyEpochAdded { epoch_index, resource_epoch, phase: A, operations }`
+      with merged change ops, then per-op
+      `OperationApplyStart` / `OperationApplyStdout` / `OperationApplyStderr` /
+      `OperationApplyComplete` events.
+
+   f. **Phase B**: same shape with `phase: B`, carrying the `on_change`
+      handlers for any plan-item branch whose latest atom landed in this
+      epoch and which had at least one atom change.
+
+5. `ApplyComplete { had_changes }`. Terminal. `lusid-apply` exits 0
+   immediately after; consumers should flush and close. Exit code is
+   non-zero on `Abort` (`AbortedByUser`) or any apply error.
+
+`epoch_index` on `OperationsApplyEpochAdded` is a global monotonic counter
+across Phase A and Phase B; multiple events can share a `resource_epoch`.
+Empty resource epochs / empty phases emit no event and consume no index.
 
 ## AppView
 
@@ -46,3 +80,8 @@ operations) of the leaf states, built on demand by
 [`AppView::resources_view`](src/lib.rs) and friends. Each projection is a
 `ProjectedTree<T>` over the structured payload `T`; the TUI lowers nodes to
 ratatui text by calling `lusid_render::Render::render`.
+
+`AppView` also surfaces pipeline-level metadata from `PipelineInfo`
+(`resource_epochs_total`, `epoch_of_atom`) and per-op-epoch metadata
+(`resource_epoch`, `phase`) so the Epochs page can group ops without
+re-running `compute_epochs`.

@@ -13,7 +13,7 @@ Lusid takes a `.lusid` plan (written in the **Rimu** language), optionally a par
 3. Validates parameter schemas and values (with span/source error reporting).
 4. Expands ResourceParams into a tree of resource **atoms**. `on_change` operations stay on each plan-item branch's `PlanMeta::handlers`.
 5. Computes dependency **epochs** over the atom tree (topological layers via Kahn's algorithm).
-6. For each epoch in order: probe state for atoms in that epoch, compute changes, expand and apply the change operations (Phase A), then apply `on_change` ops for any plan item whose last atom is in this epoch and which had at least one atom change (Phase B). Streams structured updates as JSON to stdout.
+6. For each epoch in order: probe state for atoms in that epoch, compute changes, then pause for an operator ack (skipped with `--yes` or when the epoch is empty) before applying the change operations (Phase A), then applying `on_change` ops for any plan item whose last atom is in this epoch and which had at least one atom change (Phase B). Streams structured updates as JSON to stdout; reads `AckAction` JSON from stdin at each epoch boundary.
 7. The `lusid` CLI renders a TUI from those updates.
 
 ## Principles
@@ -78,6 +78,8 @@ Implementation notes:
 The `lusid` TUI expects this exact protocol. Avoid printing human text to stdout from `lusid-apply`; use tracing/logging to stderr.
 
 `AppUpdate` variants carry the structured domain types directly (`ResourceParams`, `Resource`, `ResourceState`, `ResourceChange`, `Operation`, `PlanTree<...>`). The receiver lowers them to display text through `lusid-render`. There is no intermediate `View` layer; producer and consumer share the same serde types end to end. Add new payload fields to the matching domain type, not to a wire-shadow struct.
+
+The protocol is bidirectional: at each resource-epoch boundary the producer emits `AppUpdate::EpochReady` and blocks reading one line of `AckAction` JSON (`{"action":"apply"}` / `{"action":"abort"}`) from stdin before running any op. `--yes` skips both the emission and the read. EOF or a parse error halts the apply. The reverse channel sees no other traffic; never write anything else to the child's stdin.
 
 ### Resources, operations, and `on_change` hooks
 
