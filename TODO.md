@@ -629,7 +629,7 @@ cargo test --workspace
 
 ## Task 11 — Redact secrets at domain-type construction
 
-**Status:** in progress
+**Status:** done 3ee03c9
 
 **Goal:** When a file resource's source is a secret (under the secrets directory) or it's an `@resource/secret`, the structured `ResourceChange` / `ResourceState` carries `Content::Redacted { len, sha256 }` instead of the raw bytes.
 
