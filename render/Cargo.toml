@@ -8,4 +8,5 @@ lusid-operation = { path = "../operation", version = "0.1" }
 lusid-plan = { path = "../plan", version = "0.1" }
 lusid-resource = { path = "../resource", version = "0.1" }
 ratatui = "0.30"
+similar = { version = "2", default-features = false, features = ["text"] }
 termtree = "1.0.0"

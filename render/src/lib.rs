@@ -22,9 +22,12 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use termtree::Tree as TermTree;
 
+pub mod diff;
 pub mod operations;
 pub mod plan_id;
 pub mod resources;
+
+pub use diff::{DiffOptions, render_change};
 
 /// Produce a [`RenderedNode`] for a domain value. Mirrors [`std::fmt::Display`]
 /// but the result is structured so consumers can attach styles or transform

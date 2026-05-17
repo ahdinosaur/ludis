@@ -37,7 +37,7 @@ use lusid_apply_stdio::{
 };
 use lusid_cmd::CommandError;
 use lusid_plan::{PlanMeta, PlanNodeId};
-use lusid_render::{Palette as RenderPalette, Render, RenderedNode};
+use lusid_render::{DiffOptions, Palette as RenderPalette, Render, RenderedNode, render_change};
 use lusid_ssh::SshError;
 use ratatui::{
     CompletedFrame, DefaultTerminal, Frame,
@@ -363,6 +363,18 @@ struct TuiApp {
     stderr_scroll: u16,
     stderr_follow: bool,
     stderr_view_height: u16,
+
+    /// `s` toggles side-by-side diff in the detail pane. Honored only when
+    /// the detail pane is at least 140 cols wide; the renderer otherwise
+    /// falls back to unified. State persists across width changes so the
+    /// operator's preference survives a temporary resize below the
+    /// breakpoint.
+    side_by_side: bool,
+
+    /// Detail-pane width captured during the last frame, used to gate the
+    /// `s` toggle hint and the side-by-side fallback. 0 until the first
+    /// frame draws.
+    last_detail_width: u16,
 }
 
 impl TuiApp {
@@ -379,6 +391,8 @@ impl TuiApp {
             stderr_scroll: 0,
             stderr_follow: true,
             stderr_view_height: 0,
+            side_by_side: false,
+            last_detail_width: 0,
         }
     }
 
@@ -466,6 +480,8 @@ impl TuiApp {
                 self.clamp_tree_selection_to_visible();
             }
 
+            KeyCode::Char('s') => self.side_by_side = !self.side_by_side,
+
             KeyCode::Char('g') => {
                 if was_awaiting_g {
                     self.tree_jump_first();
@@ -538,6 +554,8 @@ impl TuiApp {
                     DetailFocus::Detail => DetailFocus::Tree,
                 };
             }
+
+            KeyCode::Char('s') => self.side_by_side = !self.side_by_side,
 
             KeyCode::Char('g') => {
                 if was_awaiting_g {
@@ -908,18 +926,33 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
 }
 
 fn footer_hint(app: &TuiApp) -> String {
+    let s_hint = side_by_side_hint(app);
     match app.page {
-        UiPage::Tree => "j/k move  h/l collapse/expand  Tab focus  / filter  u show-unchanged  \
-             gg/G first/last  1/2/e pages  q quit"
-            .to_string(),
-        UiPage::Epochs => {
+        UiPage::Tree => format!(
+            "j/k move  h/l collapse/expand  Tab focus  / filter  u show-unchanged  \
+             gg/G first/last  {s_hint}  1/2/e pages  q quit",
+        ),
+        UiPage::Epochs => format!(
             "j/k move  h/l collapse/expand  Space toggle  Tab focus  gg/G first/last  \
-             1/2/e pages  q quit"
-                .to_string()
-        }
+             {s_hint}  1/2/e pages  q quit",
+        ),
         UiPage::Stderr => {
             "j/k scroll  PgUp/PgDn page  g/G top/bottom  1/2/e pages  q quit".to_string()
         }
+    }
+}
+
+/// Footer label for the `s` toggle, reflecting both the current setting and
+/// whether the detail pane is wide enough for side-by-side to take effect.
+fn side_by_side_hint(app: &TuiApp) -> &'static str {
+    if app.last_detail_width < 140 {
+        // Below the breakpoint the toggle is a no-op; hide the hint to
+        // avoid implying it does something here.
+        "s side-by-side (≥140 cols)"
+    } else if app.side_by_side {
+        "s unified"
+    } else {
+        "s side-by-side"
     }
 }
 
@@ -1115,10 +1148,14 @@ fn draw_tree_list(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
     frame.render_stateful_widget(widget, area, &mut list_state);
 }
 
-fn draw_detail_pane(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
+fn draw_detail_pane(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
     let render_palette = RenderPalette::default();
+    app.last_detail_width = area.width;
+    let diff_opts = diff_opts_for_pane(area.width, app.side_by_side);
     let text = match app.tree.selected {
-        Some(arena_index) => detail_for_node(&app.app_view, arena_index, &render_palette),
+        Some(arena_index) => {
+            detail_for_node(&app.app_view, arena_index, &render_palette, diff_opts)
+        }
         None => Text::from("(no selection)"),
     };
 
@@ -1134,9 +1171,28 @@ fn draw_detail_pane(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
     frame.render_widget(widget, area);
 }
 
+/// Translate detail-pane width + the operator's `s` toggle into renderer
+/// options. Side-by-side is gated at 140 cols: above the threshold the
+/// toggle takes effect; below, the renderer silently falls back to
+/// unified. Width fed to the renderer is the pane width minus 2 for the
+/// surrounding border so columns don't run past the frame.
+fn diff_opts_for_pane(pane_width: u16, side_by_side: bool) -> DiffOptions {
+    let inner_width = pane_width.saturating_sub(2) as usize;
+    DiffOptions {
+        side_by_side: side_by_side && pane_width >= 140,
+        width: inner_width.max(40),
+        context_lines: 3,
+    }
+}
+
 /// Build the detail content for a given arena index. Branches get
 /// plan-item metadata; leaves get the per-lifecycle content table.
-fn detail_for_node(view: &AppView, arena_index: usize, palette: &RenderPalette) -> Text<'static> {
+fn detail_for_node(
+    view: &AppView,
+    arena_index: usize,
+    palette: &RenderPalette,
+    diff_opts: DiffOptions,
+) -> Text<'static> {
     let Some(resources) = view.resources.as_ref() else {
         return Text::from("(no resources)");
     };
@@ -1145,7 +1201,7 @@ fn detail_for_node(view: &AppView, arena_index: usize, palette: &RenderPalette) 
     };
     match slot {
         ResourcesNode::Branch { meta, children } => detail_for_branch(meta, children, palette),
-        ResourcesNode::Leaf { state } => detail_for_leaf(state, palette),
+        ResourcesNode::Leaf { state } => detail_for_leaf(state, palette, diff_opts),
     }
 }
 
@@ -1190,7 +1246,11 @@ fn detail_for_branch(
     Text::from(lines)
 }
 
-fn detail_for_leaf(state: &LeafState, palette: &RenderPalette) -> Text<'static> {
+fn detail_for_leaf(
+    state: &LeafState,
+    palette: &RenderPalette,
+    diff_opts: DiffOptions,
+) -> Text<'static> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(section_header("Resource"));
     extend_lines(&mut lines, &state.resource().render(), palette);
@@ -1233,7 +1293,7 @@ fn detail_for_leaf(state: &LeafState, palette: &RenderPalette) -> Text<'static> 
             extend_lines(&mut lines, &probed_state.render(), palette);
             lines.push(blank_line());
             lines.push(section_header("Change"));
-            extend_lines(&mut lines, &change.render(), palette);
+            extend_lines(&mut lines, &render_change(change, diff_opts), palette);
             if let Some((ops_tree, _)) = ops {
                 lines.push(blank_line());
                 lines.push(section_header("Operations"));
@@ -1565,10 +1625,12 @@ fn draw_epochs_list(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp, ro
     frame.render_stateful_widget(widget, area, &mut list_state);
 }
 
-fn draw_epochs_detail(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
+fn draw_epochs_detail(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
     let render_palette = RenderPalette::default();
+    app.last_detail_width = area.width;
+    let diff_opts = diff_opts_for_pane(area.width, app.side_by_side);
     let text = match app.epochs.selected {
-        Some(cursor) => detail_for_epochs_cursor(&app.app_view, cursor, &render_palette),
+        Some(cursor) => detail_for_epochs_cursor(&app.app_view, cursor, &render_palette, diff_opts),
         None => Text::from("(no selection)"),
     };
 
@@ -1588,6 +1650,7 @@ fn detail_for_epochs_cursor(
     view: &AppView,
     cursor: EpochsCursor,
     palette: &RenderPalette,
+    diff_opts: DiffOptions,
 ) -> Text<'static> {
     match cursor {
         EpochsCursor::EpochHeader { epoch } => detail_for_epoch_header(view, epoch),
@@ -1596,7 +1659,7 @@ fn detail_for_epochs_cursor(
                 return Text::from("(no resources)");
             };
             match resources.nodes.get(arena_index).and_then(Option::as_ref) {
-                Some(ResourcesNode::Leaf { state }) => detail_for_leaf(state, palette),
+                Some(ResourcesNode::Leaf { state }) => detail_for_leaf(state, palette, diff_opts),
                 _ => Text::from(format!("(no atom at index {arena_index})")),
             }
         }
