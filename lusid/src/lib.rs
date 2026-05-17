@@ -391,8 +391,13 @@ async fn cmd_local_apply(
         output.status.await?;
         Ok::<_, CommandError>(())
     });
+    let subcommand = if parse_only {
+        "local parse"
+    } else {
+        "local apply"
+    };
     if use_tui {
-        tui(output.stdout, output.stderr, wait).await?;
+        tui(subcommand, output.stdout, output.stderr, wait).await?;
     } else {
         plain(output.stdout, output.stderr, wait).await?;
     }
@@ -580,8 +585,13 @@ async fn cmd_remote_apply(
         handle.channel.wait().await?;
         Ok::<_, SshError>(())
     });
+    let subcommand = if parse_only {
+        "remote parse"
+    } else {
+        "remote apply"
+    };
     let apply_result = if use_tui {
-        tui(&mut handle.stdout, &mut handle.stderr, wait).await
+        tui(subcommand, &mut handle.stdout, &mut handle.stderr, wait).await
     } else {
         plain(&mut handle.stdout, &mut handle.stderr, wait).await
     };
@@ -978,8 +988,9 @@ async fn cmd_dev_apply(
         Ok::<_, SshError>(())
     });
 
+    let subcommand = if parse_only { "dev parse" } else { "dev apply" };
     if use_tui {
-        tui(&mut handle.stdout, &mut handle.stderr, wait).await?;
+        tui(subcommand, &mut handle.stdout, &mut handle.stderr, wait).await?;
     } else {
         plain(&mut handle.stdout, &mut handle.stderr, wait).await?;
     }

@@ -675,7 +675,7 @@ cargo clippy --workspace -- -D warnings
 
 ## Task 12 — Tree page
 
-**Status:** pending
+**Status:** in progress
 
 **Goal:** New primary TUI page. Plan-item tree on the left, detail pane on the right. Status badges with the Terraform palette. Responsive layout. Replaces the existing 6-stage pipeline strip.
 

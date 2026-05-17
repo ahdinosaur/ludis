@@ -1,14 +1,12 @@
-//! Ratatui-based TUI for the apply pipeline. [`tui`] consumes the stdout
-//! JSON stream from [`lusid-apply`](lusid_apply) plus its stderr, folds
-//! each [`AppUpdate`] into an [`AppView`] (from
-//! [`lusid-apply-stdio`](lusid_apply_stdio)), and draws:
+//! Ratatui-based TUI for the apply pipeline. Two structural pages:
 //!
-//! - a top "pipeline" strip showing which stage the apply is currently in
-//! - a main pane that walks the currently-selected stage's projection
-//!   (tree navigation with collapse/expand/selection)
-//! - an "operations apply" pane during execution that flat-lists each
-//!   operation and shows its streaming stdout/stderr
-//! - a separate stderr page accumulating the full apply stderr buffer
+//! - **Tree** (`1`): plan-item tree on the left with per-atom status badges,
+//!   detail pane on the right (or stacked vertically below 100 columns).
+//!   This is the default page and the surface most operators spend time on.
+//! - **Stderr** (`e`): apply stderr scrollback.
+//!
+//! An **Epochs** (`2`) page is reserved for Task 13 - it shows a placeholder
+//! until then.
 //!
 //! Input: crossterm events are read on a dedicated OS thread (blocking read)
 //! and forwarded into a tokio mpsc channel so the main select loop stays
@@ -22,6 +20,7 @@
 
 #![allow(clippy::collapsible_if)]
 
+mod palette;
 mod plain;
 
 pub use plain::plain;
@@ -33,13 +32,10 @@ use std::io::IsTerminal;
 use std::pin::Pin;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use lusid_apply_stdio::{
-    AppUpdate, AppView, AppViewError, Lifecycle, OperationView, PipelineProgress, ProjectedNode,
-    ProjectedTree,
-};
+use lusid_apply_stdio::{AppUpdate, AppView, AppViewError, LeafState, Phase, ResourcesNode};
 use lusid_cmd::CommandError;
-use lusid_plan::PlanMeta;
-use lusid_render::Render;
+use lusid_plan::{PlanMeta, PlanNodeId};
+use lusid_render::{Palette as RenderPalette, Render, RenderedNode};
 use lusid_ssh::SshError;
 use ratatui::{
     CompletedFrame, DefaultTerminal, Frame,
@@ -54,6 +50,8 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
     sync::mpsc::{UnboundedReceiver, unbounded_channel},
 };
+
+use crate::tui::palette::{Badge, rollup};
 
 /// True if the current process's stdout is connected to a terminal. The CLI
 /// pairs this with `--no-tui` to choose between [`tui`] and [`plain`]: the
@@ -95,9 +93,14 @@ pub enum TuiError {
 /// resolves when the apply process exits. Returns when the user quits or
 /// the wait future resolves; surfaces the apply's exit error if any.
 ///
+/// `subcommand` is the human label shown in the header strip (e.g.
+/// `"local apply"`, `"dev parse"`), so the operator can confirm at a glance
+/// which command they're watching.
+///
 /// Generic over the IO and wait types so the same function works for a
 /// subprocess (`lusid-cmd`) and an SSH command handle (`lusid-ssh`).
 pub async fn tui<Stdout, Stderr, Wait, WaitError>(
+    subcommand: &str,
     stdout: Stdout,
     stderr: Stderr,
     wait: Pin<Box<Wait>>,
@@ -109,7 +112,7 @@ where
     WaitError: Into<TuiError>,
 {
     let mut terminal = TerminalSession::init();
-    let mut app = TuiApp::new();
+    let mut app = TuiApp::new(subcommand.to_string());
 
     let mut stdout_lines = BufReader::new(stdout).lines();
     let mut stderr_lines = BufReader::new(stderr).lines();
@@ -215,129 +218,66 @@ fn read_events() -> UnboundedReceiver<Event> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UiPage {
-    Main,
+    Tree,
+    Epochs,
     Stderr,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PipelineStage {
-    ResourceParams,
-    Resources,
-    ResourceStates,
-    ResourceChanges,
-    OperationsTree,
-    OperationsEpochs,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum DetailFocus {
+    #[default]
+    Tree,
+    Detail,
 }
 
-impl PipelineStage {
-    const ALL: [PipelineStage; 6] = [
-        PipelineStage::ResourceParams,
-        PipelineStage::Resources,
-        PipelineStage::ResourceStates,
-        PipelineStage::ResourceChanges,
-        PipelineStage::OperationsTree,
-        PipelineStage::OperationsEpochs,
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            PipelineStage::ResourceParams => "resource params",
-            PipelineStage::Resources => "resources",
-            PipelineStage::ResourceStates => "resource states",
-            PipelineStage::ResourceChanges => "resource changes",
-            PipelineStage::OperationsTree => "operations tree",
-            PipelineStage::OperationsEpochs => "operations epochs",
-        }
-    }
-
-    fn index(self) -> usize {
-        PipelineStage::ALL
-            .iter()
-            .position(|s| *s == self)
-            .expect("PipelineStage must be in ALL")
-    }
-
-    fn from_index(index: usize) -> Self {
-        PipelineStage::ALL[index]
-    }
-
-    fn is_available(self, view: &AppView) -> bool {
-        match self {
-            PipelineStage::ResourceParams => view.resource_params().is_some(),
-            PipelineStage::Resources
-            | PipelineStage::ResourceStates
-            | PipelineStage::ResourceChanges
-            | PipelineStage::OperationsTree => {
-                // All four projections are derived from the atoms tree, so
-                // they become available together once the tree is known.
-                view.resources.is_some()
-            }
-            PipelineStage::OperationsEpochs => !view.operations_epochs.is_empty(),
-        }
-    }
-
-    /// Pick the most-advanced stage that has any data yet. Used by "follow"
-    /// mode to advance the visible stage as new data arrives.
-    fn from_app_view(view: &AppView) -> PipelineStage {
-        Self::from_progress(view, view.progress())
-    }
-
-    fn from_progress(view: &AppView, progress: PipelineProgress) -> PipelineStage {
-        match progress {
-            PipelineProgress::Applying => PipelineStage::OperationsEpochs,
-            PipelineProgress::SomeOpsExpanded => PipelineStage::OperationsTree,
-            PipelineProgress::SomeResolved => PipelineStage::ResourceChanges,
-            PipelineProgress::Probing => PipelineStage::ResourceStates,
-            PipelineProgress::AwaitingStates => PipelineStage::Resources,
-            PipelineProgress::AwaitingResources | PipelineProgress::AwaitingParams => {
-                PipelineStage::ResourceParams
-            }
-            PipelineProgress::Done => {
-                // After done, prefer the stage that actually holds content.
-                // `resources` may still be `None` (e.g. an `ApplyComplete`
-                // arriving without prior events), so fall back to whatever
-                // stage we have data for.
-                if !view.operations_epochs.is_empty() {
-                    PipelineStage::OperationsEpochs
-                } else if view.had_changes && view.resources.is_some() {
-                    PipelineStage::ResourceChanges
-                } else if view.resources.is_some() {
-                    PipelineStage::Resources
-                } else {
-                    PipelineStage::ResourceParams
-                }
-            }
-        }
-    }
-}
-
+/// State for the Tree page. `collapsed` is keyed by arena index in the
+/// shipped `ResourcesTree`; `selected` likewise. `filter` dims rows whose
+/// label doesn't substring-match (it doesn't remove them so navigation
+/// stays predictable). `show_unchanged` toggles whether `Ok` (no-change)
+/// leaves remain visible.
 #[derive(Debug, Default, Clone)]
-struct TreeState {
+struct TreePageState {
     collapsed: HashSet<usize>,
-    selected_node: Option<usize>,
+    selected: Option<usize>,
     list_offset: usize,
+    detail_focus: DetailFocus,
+    detail_scroll: u16,
+    show_unchanged: bool,
+    filter: String,
+    filter_editing: bool,
+    /// `gg` chord support: set after the first `g`, reset on any other key.
+    awaiting_g: bool,
 }
 
-impl TreeState {
-    fn toggle(&mut self, node_index: usize) {
-        if self.collapsed.contains(&node_index) {
-            self.collapsed.remove(&node_index);
-        } else {
-            self.collapsed.insert(node_index);
+impl TreePageState {
+    fn new() -> Self {
+        // Default to showing every row so operators see the full atom set
+        // on first load. `u` toggles. The spec leaves the apply-time default
+        // open; defaulting on keeps `Ok` rows visible until the operator
+        // chooses to hide them.
+        Self {
+            show_unchanged: true,
+            ..Self::default()
         }
     }
 
-    fn is_expanded(&self, node_index: usize) -> bool {
-        !self.collapsed.contains(&node_index)
+    fn toggle_collapse(&mut self, arena_index: usize) {
+        if self.collapsed.contains(&arena_index) {
+            self.collapsed.remove(&arena_index);
+        } else {
+            self.collapsed.insert(arena_index);
+        }
+    }
+
+    fn is_expanded(&self, arena_index: usize) -> bool {
+        !self.collapsed.contains(&arena_index)
     }
 
     fn ensure_visible_row(&mut self, selected_row: usize, height: usize) {
         if height == 0 {
             return;
         }
-
         let bottom = self.list_offset + height.saturating_sub(1);
-
         if selected_row < self.list_offset {
             self.list_offset = selected_row;
         } else if selected_row > bottom {
@@ -346,78 +286,17 @@ impl TreeState {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-struct OperationsApplyState {
-    flat_index_to_epoch_operation: Vec<(usize, usize)>,
-    selected_flat: Option<usize>,
-    list_offset: usize,
-}
-
-impl OperationsApplyState {
-    fn rebuild_index(&mut self, epochs: &[Vec<OperationView>]) {
-        self.flat_index_to_epoch_operation.clear();
-
-        for (epoch_index, operations) in epochs.iter().enumerate() {
-            for (operation_index, _) in operations.iter().enumerate() {
-                self.flat_index_to_epoch_operation
-                    .push((epoch_index, operation_index));
-            }
-        }
-
-        if self.flat_index_to_epoch_operation.is_empty() {
-            self.selected_flat = None;
-            self.list_offset = 0;
-        } else {
-            let sel = self
-                .selected_flat
-                .unwrap_or(0)
-                .min(self.flat_index_to_epoch_operation.len() - 1);
-            self.selected_flat = Some(sel);
-        }
-    }
-
-    fn visible_len(&self) -> usize {
-        self.flat_index_to_epoch_operation.len()
-    }
-
-    fn ensure_visible_row(&mut self, selected_row: usize, height: usize) {
-        if height == 0 {
-            return;
-        }
-
-        let bottom = self.list_offset + height.saturating_sub(1);
-
-        if selected_row < self.list_offset {
-            self.list_offset = selected_row;
-        } else if selected_row > bottom {
-            self.list_offset = selected_row.saturating_sub(height.saturating_sub(1));
-        }
-    }
-}
-
-/// Top-level TUI state. Per-stage `TreeState`s track which nodes the user
-/// has collapsed and which row is selected - kept separate so switching
-/// stages preserves per-stage navigation.
-///
-/// `follow_pipeline` auto-advances the visible stage as new phases arrive;
-/// disabled by the user when they navigate manually.
-///
-/// `stderr_buffer` accumulates *all* stderr (not line-limited) so the user
-/// can scroll back through the full apply log on the dedicated page.
+/// Top-level TUI state. Holds the folded `AppView` from the wire plus
+/// per-page UI state. The header strip's `subcommand` label is the only
+/// thing the operator passes from the CLI; everything else is derived from
+/// the wire.
 #[derive(Debug, Clone)]
 struct TuiApp {
     app_view: AppView,
-    stage: PipelineStage,
-    follow_pipeline: bool,
+    subcommand: String,
     page: UiPage,
 
-    params_state: TreeState,
-    resources_state: TreeState,
-    states_state: TreeState,
-    changes_state: TreeState,
-    operations_state: TreeState,
-
-    operations_apply_state: OperationsApplyState,
+    tree: TreePageState,
 
     child_exited: bool,
 
@@ -432,26 +311,15 @@ struct TuiApp {
 }
 
 impl TuiApp {
-    fn new() -> Self {
+    fn new(subcommand: String) -> Self {
         Self {
             app_view: AppView::default(),
-            stage: PipelineStage::ResourceParams,
-            follow_pipeline: true,
-            page: UiPage::Main,
-
-            params_state: TreeState::default(),
-            resources_state: TreeState::default(),
-            states_state: TreeState::default(),
-            changes_state: TreeState::default(),
-            operations_state: TreeState::default(),
-
-            operations_apply_state: OperationsApplyState::default(),
-
+            subcommand,
+            page: UiPage::Tree,
+            tree: TreePageState::new(),
             child_exited: false,
-
             stderr_buffer: String::new(),
             stderr_lines_count: 0,
-
             stderr_scroll: 0,
             stderr_follow: true,
             stderr_view_height: 0,
@@ -460,84 +328,128 @@ impl TuiApp {
 
     fn apply_update(&mut self, update: AppUpdate) -> Result<(), TuiError> {
         let current = std::mem::take(&mut self.app_view);
-
         self.app_view = current.update(update)?;
-
-        if self.follow_pipeline && self.page == UiPage::Main {
-            let next = PipelineStage::from_app_view(&self.app_view);
-            if next.is_available(&self.app_view) {
-                self.stage = next;
-            }
-        }
-
-        if let Some(epochs) = self.app_view.operations_epochs() {
-            self.operations_apply_state.rebuild_index(epochs);
-        }
-
         Ok(())
     }
 
     fn handle_event(&mut self, event: Event) -> Result<bool, TuiError> {
-        if let Event::Key(KeyEvent {
+        let Event::Key(KeyEvent {
             code, modifiers, ..
         }) = event
-        {
-            if modifiers == KeyModifiers::NONE {
-                match self.page {
-                    UiPage::Main => return Ok(self.handle_event_main(code)),
-                    UiPage::Stderr => return Ok(self.handle_event_stderr(code)),
-                }
-            }
+        else {
+            return Ok(false);
+        };
+        if modifiers != KeyModifiers::NONE && modifiers != KeyModifiers::SHIFT {
+            return Ok(false);
         }
 
-        Ok(false)
+        match self.page {
+            UiPage::Tree => Ok(self.handle_event_tree(code)),
+            UiPage::Epochs => Ok(self.handle_event_epochs(code)),
+            UiPage::Stderr => Ok(self.handle_event_stderr(code)),
+        }
     }
 
-    fn handle_event_main(&mut self, code: KeyCode) -> bool {
-        match code {
-            KeyCode::Char('q') | KeyCode::Esc => return true,
+    fn handle_event_tree(&mut self, code: KeyCode) -> bool {
+        // Filter input mode captures most keys; Enter/Esc end it.
+        if self.tree.filter_editing {
+            match code {
+                KeyCode::Esc => {
+                    self.tree.filter_editing = false;
+                    self.tree.filter.clear();
+                }
+                KeyCode::Enter => {
+                    self.tree.filter_editing = false;
+                }
+                KeyCode::Backspace => {
+                    self.tree.filter.pop();
+                }
+                KeyCode::Char(c) => {
+                    self.tree.filter.push(c);
+                }
+                _ => {}
+            }
+            return false;
+        }
 
+        let was_awaiting_g = self.tree.awaiting_g;
+        self.tree.awaiting_g = false;
+
+        match code {
+            KeyCode::Char('q') => return true,
+            KeyCode::Esc => {
+                if !self.tree.filter.is_empty() {
+                    self.tree.filter.clear();
+                } else {
+                    return true;
+                }
+            }
+
+            KeyCode::Char('1') => self.page = UiPage::Tree,
+            KeyCode::Char('2') => self.page = UiPage::Epochs,
             KeyCode::Char('e') => {
                 self.page = UiPage::Stderr;
                 self.stderr_follow = true;
-                self.stderr_scroll = u16::MAX; // clamp-to-bottom in draw
-                return false;
-            }
-
-            KeyCode::Char('f') => {
-                self.follow_pipeline = !self.follow_pipeline;
-                if self.follow_pipeline {
-                    let next = PipelineStage::from_app_view(&self.app_view);
-                    if next.is_available(&self.app_view) {
-                        self.stage = next;
-                    }
-                }
-            }
-
-            KeyCode::Left => {
-                self.follow_pipeline = false;
-                self.navigate_stage_relative(-1);
-            }
-
-            KeyCode::Right => {
-                self.follow_pipeline = false;
-                self.navigate_stage_relative(1);
+                self.stderr_scroll = u16::MAX;
             }
 
             KeyCode::Tab => {
-                self.follow_pipeline = false;
-                self.navigate_stage_relative(1);
+                self.tree.detail_focus = match self.tree.detail_focus {
+                    DetailFocus::Tree => DetailFocus::Detail,
+                    DetailFocus::Detail => DetailFocus::Tree,
+                };
             }
 
-            KeyCode::BackTab => {
-                self.follow_pipeline = false;
-                self.navigate_stage_relative(-1);
+            KeyCode::Char('/') => {
+                self.tree.filter_editing = true;
+                self.tree.filter.clear();
             }
 
-            KeyCode::Down | KeyCode::Char('j') => self.move_down(),
-            KeyCode::Up | KeyCode::Char('k') => self.move_up(),
+            KeyCode::Char('u') => {
+                self.tree.show_unchanged = !self.tree.show_unchanged;
+                self.clamp_tree_selection_to_visible();
+            }
 
-            KeyCode::Enter | KeyCode::Char(' ') => self.toggle_selected(),
+            KeyCode::Char('g') => {
+                if was_awaiting_g {
+                    self.tree_jump_first();
+                } else {
+                    self.tree.awaiting_g = true;
+                }
+            }
+            KeyCode::Char('G') => self.tree_jump_last(),
+
+            KeyCode::Down | KeyCode::Char('j') => self.tree_move_or_scroll(1),
+            KeyCode::Up | KeyCode::Char('k') => self.tree_move_or_scroll(-1),
+
+            KeyCode::Right | KeyCode::Char('l') => {
+                if let Some(sel) = self.tree.selected
+                    && is_branch(&self.app_view, sel)
+                {
+                    self.tree.collapsed.remove(&sel);
+                }
+            }
+
+            KeyCode::Left | KeyCode::Char('h') => {
+                if let Some(sel) = self.tree.selected
+                    && is_branch(&self.app_view, sel)
+                {
+                    self.tree.collapsed.insert(sel);
+                }
+                // Collapsing a branch never hides its own row, but if the
+                // selection points at a descendant of a newly-collapsed
+                // branch the next clamp call cleans it up.
+                self.clamp_tree_selection_to_visible();
+            }
+
+            KeyCode::Char(' ') => {
+                if let Some(sel) = self.tree.selected
+                    && is_branch(&self.app_view, sel)
+                {
+                    self.tree.toggle_collapse(sel);
+                }
+                self.clamp_tree_selection_to_visible();
+            }
 
             _ => {}
         }
@@ -545,17 +457,35 @@ impl TuiApp {
         false
     }
 
+    fn handle_event_epochs(&mut self, code: KeyCode) -> bool {
+        // Page-switch keys; everything else is a no-op until Task 13.
+        // Esc returns to Tree to match standard TUI conventions; `q` is the
+        // only way to quit, so the operator can't accidentally exit by
+        // tapping Esc to dismiss the page.
+        match code {
+            KeyCode::Char('q') => return true,
+            KeyCode::Esc => self.page = UiPage::Tree,
+            KeyCode::Char('1') => self.page = UiPage::Tree,
+            KeyCode::Char('2') => self.page = UiPage::Epochs,
+            KeyCode::Char('e') => {
+                self.page = UiPage::Stderr;
+                self.stderr_follow = true;
+                self.stderr_scroll = u16::MAX;
+            }
+            _ => {}
+        }
+        false
+    }
+
     fn handle_event_stderr(&mut self, code: KeyCode) -> bool {
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => return true,
+            KeyCode::Char('q') => return true,
+            KeyCode::Esc => self.page = UiPage::Tree,
 
-            // Toggle back to main view.
-            KeyCode::Char('e') => {
-                self.page = UiPage::Main;
-                return false;
-            }
+            KeyCode::Char('1') => self.page = UiPage::Tree,
+            KeyCode::Char('2') => self.page = UiPage::Epochs,
+            KeyCode::Char('e') => self.page = UiPage::Tree,
 
-            // Scrolling controls.
             KeyCode::Up | KeyCode::Char('k') => self.stderr_scroll_up(1),
             KeyCode::Down | KeyCode::Char('j') => self.stderr_scroll_down(1),
 
@@ -563,7 +493,6 @@ impl TuiApp {
                 let step = self.stderr_view_height.max(1);
                 self.stderr_scroll_up(step);
             }
-
             KeyCode::PageDown => {
                 let step = self.stderr_view_height.max(1);
                 self.stderr_scroll_down(step);
@@ -573,133 +502,90 @@ impl TuiApp {
                 self.stderr_follow = false;
                 self.stderr_scroll = 0;
             }
-
             KeyCode::End | KeyCode::Char('G') => {
                 self.stderr_follow = true;
-                self.stderr_scroll = u16::MAX; // clamp-to-bottom in draw
+                self.stderr_scroll = u16::MAX;
             }
 
             _ => {}
         }
-
         false
     }
 
-    fn navigate_stage_relative(&mut self, direction: i32) {
-        if direction == 0 {
-            return;
-        }
-
-        let current_index = self.stage.index();
-
-        if direction > 0 {
-            for next_index in (current_index + 1)..PipelineStage::ALL.len() {
-                let candidate = PipelineStage::from_index(next_index);
-                if candidate.is_available(&self.app_view) {
-                    self.stage = candidate;
-                    return;
-                }
+    fn tree_move_or_scroll(&mut self, delta: i32) {
+        if self.tree.detail_focus == DetailFocus::Detail {
+            if delta > 0 {
+                self.tree.detail_scroll = self.tree.detail_scroll.saturating_add(delta as u16);
+            } else {
+                self.tree.detail_scroll = self.tree.detail_scroll.saturating_sub((-delta) as u16);
             }
         } else {
-            for next_index in (0..current_index).rev() {
-                let candidate = PipelineStage::from_index(next_index);
-                if candidate.is_available(&self.app_view) {
-                    self.stage = candidate;
-                    return;
-                }
-            }
+            self.tree_move(delta);
         }
     }
 
-    fn move_down(&mut self) {
-        match self.stage {
-            PipelineStage::OperationsEpochs => {
-                let len = self.operations_apply_state.visible_len();
-                if len == 0 {
-                    return;
-                }
-                let selected = self.operations_apply_state.selected_flat.unwrap_or(0);
-                self.operations_apply_state.selected_flat =
-                    Some((selected + 1).min(len.saturating_sub(1)));
-            }
-            _ => {
-                if let Some((tree, state)) = self.tree_and_state_for_stage() {
-                    tree_move_selection(&tree, state, 1);
-                }
-            }
+    fn tree_move(&mut self, delta: i32) {
+        let rows = build_visible_rows(&self.app_view, &self.tree);
+        if rows.is_empty() {
+            self.tree.selected = None;
+            self.tree.list_offset = 0;
+            return;
+        }
+        let current = rows
+            .iter()
+            .position(|r| Some(r.arena_index) == self.tree.selected)
+            .unwrap_or(0);
+        let next = if delta >= 0 {
+            (current + delta as usize).min(rows.len() - 1)
+        } else {
+            current.saturating_sub((-delta) as usize)
+        };
+        self.tree.selected = Some(rows[next].arena_index);
+        self.tree.detail_scroll = 0;
+    }
+
+    fn tree_jump_first(&mut self) {
+        let rows = build_visible_rows(&self.app_view, &self.tree);
+        if let Some(first) = rows.first() {
+            self.tree.selected = Some(first.arena_index);
         }
     }
 
-    fn move_up(&mut self) {
-        match self.stage {
-            PipelineStage::OperationsEpochs => {
-                let selected = self.operations_apply_state.selected_flat.unwrap_or(0);
-                self.operations_apply_state.selected_flat = Some(selected.saturating_sub(1));
-            }
-            _ => {
-                if let Some((tree, state)) = self.tree_and_state_for_stage() {
-                    tree_move_selection(&tree, state, -1);
-                }
-            }
+    fn tree_jump_last(&mut self) {
+        let rows = build_visible_rows(&self.app_view, &self.tree);
+        if let Some(last) = rows.last() {
+            self.tree.selected = Some(last.arena_index);
         }
     }
 
-    fn toggle_selected(&mut self) {
-        if let Some((tree, state)) = self.tree_and_state_for_stage() {
-            let rows = build_visible_rows(&tree, state);
-            if rows.is_empty() {
-                return;
-            }
-
-            let selected_row = selected_row_index(&rows, state).unwrap_or(0);
-            let row = &rows[selected_row];
-
-            if row.is_branch {
-                state.toggle(row.index);
-            }
+    /// After collapsing or hiding-Ok-leaves, the previously-selected arena
+    /// index may no longer appear in `build_visible_rows`. Move the
+    /// selection to the nearest still-visible row so the detail pane and
+    /// future j/k presses operate on something the operator can see.
+    ///
+    /// "Nearest" is defined as "largest visible arena index that is
+    /// `<= prev`". The resources tree ships in pre-order, so this lands on
+    /// the parent branch when a descendant is hidden, and on the previous
+    /// sibling otherwise — close to where the operator's eyes were.
+    fn clamp_tree_selection_to_visible(&mut self) {
+        let rows = build_visible_rows(&self.app_view, &self.tree);
+        if rows.is_empty() {
+            self.tree.selected = None;
+            return;
         }
-    }
-
-    /// Build the projected tree for the current stage and borrow the
-    /// matching `TreeState` field. The projection is owned (allocated per
-    /// call); the state borrow is disjoint from `app_view`, so this compiles
-    /// despite returning both from `&mut self`. The stage's typed projection
-    /// is collapsed to a [`StringTree`] so per-stage projections share one
-    /// downstream rendering path while each domain payload's
-    /// [`lusid_render::Render`] impl still authors its own text.
-    fn tree_and_state_for_stage(&mut self) -> Option<(StringTree, &mut TreeState)> {
-        match self.stage {
-            PipelineStage::ResourceParams => self
-                .app_view
-                .resource_params()
-                .map(StringTree::from_projection)
-                .map(|tree| (tree, &mut self.params_state)),
-            PipelineStage::Resources => self
-                .app_view
-                .resources_view()
-                .as_ref()
-                .map(StringTree::from_projection)
-                .map(|tree| (tree, &mut self.resources_state)),
-            PipelineStage::ResourceStates => self
-                .app_view
-                .resource_states_view()
-                .as_ref()
-                .map(StringTree::from_projection)
-                .map(|tree| (tree, &mut self.states_state)),
-            PipelineStage::ResourceChanges => self
-                .app_view
-                .resource_changes_view()
-                .as_ref()
-                .map(StringTree::from_projection)
-                .map(|tree| (tree, &mut self.changes_state)),
-            PipelineStage::OperationsTree => self
-                .app_view
-                .operations_tree_view()
-                .as_ref()
-                .map(StringTree::from_projection)
-                .map(|tree| (tree, &mut self.operations_state)),
-            PipelineStage::OperationsEpochs => None,
+        let Some(prev) = self.tree.selected else {
+            self.tree.selected = rows.first().map(|r| r.arena_index);
+            return;
+        };
+        if rows.iter().any(|r| r.arena_index == prev) {
+            return;
         }
+        let fallback = rows
+            .iter()
+            .filter(|r| r.arena_index <= prev)
+            .max_by_key(|r| r.arena_index)
+            .or_else(|| rows.first());
+        self.tree.selected = fallback.map(|r| r.arena_index);
     }
 
     fn push_stderr(&mut self, line: String) {
@@ -709,9 +595,6 @@ impl TuiApp {
         self.stderr_buffer.push_str(&line);
         self.stderr_lines_count = self.stderr_lines_count.saturating_add(1);
 
-        // If the user is following stderr, keep "pinned to bottom". We
-        // don’t know the view height here, so we set an oversize scroll and
-        // clamp during draw.
         if self.page == UiPage::Stderr && self.stderr_follow {
             self.stderr_scroll = u16::MAX;
         }
@@ -728,201 +611,562 @@ impl TuiApp {
     }
 }
 
+// --------------------------------------------------------------------------
+// Drawing
+// --------------------------------------------------------------------------
+
 fn draw_ui(frame: &mut ratatui::Frame, app: &mut TuiApp, outcome: Option<&Result<(), TuiError>>) {
-    let outer = Block::bordered().title_top("lusid");
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
             [
-                Constraint::Length(4),
-                Constraint::Min(5),
-                Constraint::Length(1),
+                Constraint::Length(1), // header strip
+                Constraint::Min(3),    // body
+                Constraint::Length(1), // footer hints / filter prompt
             ]
             .as_ref(),
         )
-        .split(outer.inner(frame.area()));
+        .split(frame.area());
 
-    frame.render_widget(outer, frame.area());
-    draw_pipeline(frame, layout[0], app, outcome);
-    draw_main(frame, layout[1], app);
-    draw_help(frame, layout[2], app);
+    draw_header(frame, layout[0], app, outcome);
+    match app.page {
+        UiPage::Tree => draw_tree_page(frame, layout[1], app),
+        UiPage::Epochs => draw_epochs_page(frame, layout[1], app),
+        UiPage::Stderr => draw_stderr_page(frame, layout[1], app),
+    }
+    draw_footer(frame, layout[2], app);
 }
 
-fn draw_pipeline(
+fn draw_header(
     frame: &mut ratatui::Frame,
     area: Rect,
     app: &TuiApp,
     outcome: Option<&Result<(), TuiError>>,
 ) {
-    let mut pipeline_spans: Vec<Span> = Vec::new();
-
-    for (index, stage) in PipelineStage::ALL.iter().copied().enumerate() {
-        if index > 0 {
-            pipeline_spans.push(Span::styled(" -> ", Style::default().fg(Color::DarkGray)));
-        }
-
-        let available = stage.is_available(&app.app_view);
-        let selected = stage == app.stage;
-
-        let style = match (available, selected) {
-            (true, true) => Style::default()
+    let (status, status_style) = status_summary(app, outcome);
+    let spans: Vec<Span> = vec![
+        Span::styled(
+            "lusid",
+            Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
-            (true, false) => Style::default().fg(Color::White),
-            (false, true) => Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::CROSSED_OUT),
-            (false, false) => Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::CROSSED_OUT),
-        };
-
-        pipeline_spans.push(Span::styled(stage.label(), style));
-    }
-
-    let feedback = pipeline_feedback_line(app, outcome);
-
-    let lines = vec![
-        Line::from(pipeline_spans),
-        Line::from(Span::styled(feedback, Style::default().fg(Color::Yellow))),
+        ),
+        Span::raw(" · "),
+        Span::raw(app.subcommand.clone()),
+        Span::raw(" · "),
+        Span::raw(epoch_label(&app.app_view)),
+        Span::raw(" · "),
+        Span::styled(status, status_style),
     ];
 
-    let widget = Paragraph::new(Text::from(lines))
-        .block(Block::bordered().title_top(if app.follow_pipeline {
-            "pipeline (following)"
-        } else {
-            "pipeline"
-        }))
-        .alignment(Alignment::Left)
-        .wrap(Wrap { trim: true });
-
+    let widget = Paragraph::new(Line::from(spans)).alignment(Alignment::Left);
     frame.render_widget(widget, area);
 }
 
-fn pipeline_feedback_line(app: &TuiApp, outcome: Option<&Result<(), TuiError>>) -> String {
+/// 1-based "epoch K/N" indicator. `?/?` until `PipelineInfo` arrives so the
+/// strip doesn't bake a `0/?` placeholder into the operator's first frame.
+/// During apply, `K` is the resource epoch the most recently emitted op
+/// epoch belongs to (Phase A and B both report the same K); after
+/// `ApplyComplete`, `K = N`.
+fn epoch_label(view: &AppView) -> String {
+    let Some(total) = view.resource_epochs_total() else {
+        return "epoch ?/?".to_string();
+    };
+    let current = if view.done {
+        total
+    } else if let Some(last) = view.operation_epoch_meta.last() {
+        last.resource_epoch + 1
+    } else {
+        0
+    };
+    format!("epoch {current}/{total}")
+}
+
+fn status_summary(app: &TuiApp, outcome: Option<&Result<(), TuiError>>) -> (String, Style) {
     if let Some(Err(err)) = outcome {
-        return format!("Process error: {err}");
+        return (
+            format!("process error: {err}"),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        );
     }
-
-    if app.page == UiPage::Stderr {
-        return "Viewing stderr (press e to return)".to_string();
-    }
-
     let view = &app.app_view;
-    match view.progress() {
-        PipelineProgress::Done => {
-            if !view.had_changes {
-                "No changes.".to_string()
-            } else if app.child_exited {
-                "Complete.".to_string()
-            } else {
-                "Complete (waiting for process to exit)...".to_string()
-            }
+    if view.done {
+        if !view.had_changes {
+            ("no changes".to_string(), Style::default().fg(Color::Green))
+        } else if app.child_exited {
+            ("complete".to_string(), Style::default().fg(Color::Green))
+        } else {
+            (
+                "complete (waiting for process)".to_string(),
+                Style::default().fg(Color::Yellow),
+            )
         }
-        PipelineProgress::Applying => "Applying operations epochs.".to_string(),
-        PipelineProgress::SomeOpsExpanded => "Operations expanded.".to_string(),
-        PipelineProgress::SomeResolved => {
-            if view.had_changes {
-                "Changes detected.".to_string()
-            } else {
-                "No changes detected so far.".to_string()
-            }
-        }
-        PipelineProgress::Probing => "Probing resource states...".to_string(),
-        PipelineProgress::AwaitingStates => "Resources planned.".to_string(),
-        PipelineProgress::AwaitingResources => "Resource parameters planned.".to_string(),
-        PipelineProgress::AwaitingParams => "Waiting for planning output...".to_string(),
+    } else if !view.operations_epochs.is_empty() {
+        ("applying".to_string(), Style::default().fg(Color::Blue))
+    } else if view.resources.is_some() {
+        ("planning".to_string(), Style::default().fg(Color::Yellow))
+    } else if view.resource_params.is_some() {
+        (
+            "expanding resources".to_string(),
+            Style::default().fg(Color::Yellow),
+        )
+    } else {
+        (
+            "waiting for plan".to_string(),
+            Style::default().fg(Color::DarkGray),
+        )
     }
 }
 
-fn draw_main(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
+fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
+    let line = if app.page == UiPage::Tree && app.tree.filter_editing {
+        Line::from(vec![
+            Span::styled("/", Style::default().fg(Color::Yellow)),
+            Span::raw(app.tree.filter.clone()),
+            Span::styled(
+                "  (Enter to apply, Esc to clear)",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])
+    } else {
+        let hint = footer_hint(app);
+        Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray)))
+    };
+    let widget = Paragraph::new(line).alignment(Alignment::Left);
+    frame.render_widget(widget, area);
+}
+
+fn footer_hint(app: &TuiApp) -> String {
     match app.page {
-        UiPage::Stderr => draw_stderr_page(frame, area, app),
-        UiPage::Main => draw_main_pipeline(frame, area, app),
+        UiPage::Tree => "j/k move  h/l collapse/expand  Tab focus  / filter  u show-unchanged  \
+             gg/G first/last  1/2/e pages  q quit"
+            .to_string(),
+        UiPage::Epochs => "1/2/e pages  q quit  (Task 13 will fill this in)".to_string(),
+        UiPage::Stderr => {
+            "j/k scroll  PgUp/PgDn page  g/G top/bottom  1/2/e pages  q quit".to_string()
+        }
     }
 }
 
-fn draw_main_pipeline(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
-    match app.stage {
-        PipelineStage::ResourceParams => match app.app_view.resource_params() {
-            Some(tree) => {
-                let stringified = StringTree::from_projection(tree);
-                draw_tree(
-                    frame,
-                    area,
-                    "resource params",
-                    &stringified,
-                    &mut app.params_state,
-                );
-            }
-            None => draw_placeholder(frame, area, "Waiting for resource params..."),
-        },
+// --------------------------------------------------------------------------
+// Tree page
+// --------------------------------------------------------------------------
 
-        PipelineStage::Resources => match app.app_view.resources_view() {
-            Some(tree) => {
-                let stringified = StringTree::from_projection(&tree);
-                draw_tree(
-                    frame,
-                    area,
-                    "resources",
-                    &stringified,
-                    &mut app.resources_state,
-                );
-            }
-            None => draw_placeholder(frame, area, "Resources are not available yet."),
-        },
+fn draw_tree_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
+    let resources = app.app_view.resources.as_ref();
+    if resources.is_none() {
+        draw_placeholder(frame, area, "Waiting for resources tree...");
+        return;
+    }
 
-        PipelineStage::ResourceStates => match app.app_view.resource_states_view() {
-            Some(tree) => {
-                let stringified = StringTree::from_projection(&tree);
-                draw_tree(
-                    frame,
-                    area,
-                    "resource states",
-                    &stringified,
-                    &mut app.states_state,
-                );
-            }
-            None => draw_placeholder(frame, area, "Resource states are not available yet."),
-        },
+    // Lazy-default the selection to the first visible row.
+    if app.tree.selected.is_none() {
+        let rows = build_visible_rows(&app.app_view, &app.tree);
+        app.tree.selected = rows.first().map(|r| r.arena_index);
+    }
 
-        PipelineStage::ResourceChanges => match app.app_view.resource_changes_view() {
-            Some(tree) => {
-                let stringified = StringTree::from_projection(&tree);
-                draw_tree(
-                    frame,
-                    area,
-                    "resource changes",
-                    &stringified,
-                    &mut app.changes_state,
-                );
-            }
-            None => draw_placeholder(frame, area, "Resource changes are not available yet."),
-        },
+    let layout = if area.width >= 100 {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
+            .split(area)
+    };
 
-        PipelineStage::OperationsTree => match app.app_view.operations_tree_view() {
-            Some(tree) => {
-                let stringified = StringTree::from_projection(&tree);
-                draw_tree(
-                    frame,
-                    area,
-                    "operations tree",
-                    &stringified,
-                    &mut app.operations_state,
-                );
-            }
-            None => draw_placeholder(frame, area, "Operations tree is not available yet."),
-        },
+    draw_tree_list(frame, layout[0], app);
+    draw_detail_pane(frame, layout[1], app);
+}
 
-        PipelineStage::OperationsEpochs => match app.app_view.operations_epochs() {
-            Some(epochs) => draw_apply(frame, area, epochs, &mut app.operations_apply_state),
-            None => draw_placeholder(frame, area, "Operations epochs are not available."),
-        },
+#[derive(Debug, Clone)]
+struct TreeRow {
+    arena_index: usize,
+    depth: usize,
+    is_branch: bool,
+    badge: Badge,
+    label: String,
+    dim: bool,
+}
+
+/// Atoms tree root is at arena index 0 by convention (see
+/// `lusid_apply_stdio::ResourcesNode`).
+const ROOT_ARENA_INDEX: usize = 0;
+
+fn build_visible_rows(view: &AppView, state: &TreePageState) -> Vec<TreeRow> {
+    let mut out = Vec::new();
+    let Some(resources) = view.resources.as_ref() else {
+        return out;
+    };
+    let filter = if state.filter.is_empty() {
+        None
+    } else {
+        Some(state.filter.as_str())
+    };
+    walk_for_rows(
+        resources,
+        ROOT_ARENA_INDEX,
+        0,
+        state,
+        filter,
+        &mut out,
+        &mut HashSet::new(),
+    );
+    out
+}
+
+fn walk_for_rows(
+    resources: &lusid_apply_stdio::ResourcesTree,
+    arena_index: usize,
+    depth: usize,
+    state: &TreePageState,
+    filter: Option<&str>,
+    out: &mut Vec<TreeRow>,
+    visited: &mut HashSet<usize>,
+) {
+    if !visited.insert(arena_index) {
+        return;
+    }
+    let Some(slot) = resources.nodes.get(arena_index).and_then(Option::as_ref) else {
+        return;
+    };
+    match slot {
+        ResourcesNode::Branch { meta, children } => {
+            let label = plan_meta_short_label(meta);
+            let badge = rollup_for_branch(resources, arena_index);
+            let dim = match filter {
+                Some(f) => !label.to_lowercase().contains(&f.to_lowercase()),
+                None => false,
+            };
+            out.push(TreeRow {
+                arena_index,
+                depth,
+                is_branch: true,
+                badge,
+                label,
+                dim,
+            });
+            if state.is_expanded(arena_index) {
+                for &child in children {
+                    walk_for_rows(resources, child, depth + 1, state, filter, out, visited);
+                }
+            }
+        }
+        ResourcesNode::Leaf { state: leaf_state } => {
+            let badge = badge_for_leaf(leaf_state);
+            if !state.show_unchanged && badge == Badge::Ok {
+                return;
+            }
+            let label = leaf_state.resource().render().to_plain_string();
+            let dim = match filter {
+                Some(f) => !label.to_lowercase().contains(&f.to_lowercase()),
+                None => false,
+            };
+            out.push(TreeRow {
+                arena_index,
+                depth,
+                is_branch: false,
+                badge,
+                label,
+                dim,
+            });
+        }
     }
 }
 
-fn draw_stderr_page(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
+fn draw_tree_list(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
+    let rows = build_visible_rows(&app.app_view, &app.tree);
+
+    let selected_row = rows
+        .iter()
+        .position(|r| Some(r.arena_index) == app.tree.selected);
+
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| {
+            let mut spans: Vec<Span> = Vec::new();
+            spans.push(Span::raw("  ".repeat(row.depth)));
+            let badge_style = if row.dim {
+                row.badge.style().add_modifier(Modifier::DIM)
+            } else {
+                row.badge.style()
+            };
+            spans.push(Span::styled(format!("{} ", row.badge.glyph()), badge_style));
+            if row.is_branch {
+                spans.push(Span::styled(
+                    if app.tree.is_expanded(row.arena_index) {
+                        "▼ "
+                    } else {
+                        "▶ "
+                    },
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            let label_style = if row.dim {
+                Style::default().add_modifier(Modifier::DIM)
+            } else {
+                Style::default()
+            };
+            spans.push(Span::styled(row.label.clone(), label_style));
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let mut list_state = ListState::default();
+    list_state.select(selected_row);
+    *list_state.offset_mut() = app.tree.list_offset;
+
+    let inner_height = area.height.saturating_sub(2) as usize;
+    if let Some(row) = selected_row {
+        app.tree.ensure_visible_row(row, inner_height);
+        *list_state.offset_mut() = app.tree.list_offset;
+    }
+
+    let title = if app.tree.detail_focus == DetailFocus::Tree {
+        "tree (focused)"
+    } else {
+        "tree"
+    };
+    let widget = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    frame.render_stateful_widget(widget, area, &mut list_state);
+}
+
+fn draw_detail_pane(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
+    let render_palette = RenderPalette::default();
+    let text = match app.tree.selected {
+        Some(arena_index) => detail_for_node(&app.app_view, arena_index, &render_palette),
+        None => Text::from("(no selection)"),
+    };
+
+    let title = if app.tree.detail_focus == DetailFocus::Detail {
+        "detail (focused)"
+    } else {
+        "detail"
+    };
+    let widget = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .wrap(Wrap { trim: false })
+        .scroll((app.tree.detail_scroll, 0));
+    frame.render_widget(widget, area);
+}
+
+/// Build the detail content for a given arena index. Branches get
+/// plan-item metadata; leaves get the per-lifecycle content table.
+fn detail_for_node(view: &AppView, arena_index: usize, palette: &RenderPalette) -> Text<'static> {
+    let Some(resources) = view.resources.as_ref() else {
+        return Text::from("(no resources)");
+    };
+    let Some(slot) = resources.nodes.get(arena_index).and_then(Option::as_ref) else {
+        return Text::from("(missing slot)");
+    };
+    match slot {
+        ResourcesNode::Branch { meta, children } => detail_for_branch(meta, children, palette),
+        ResourcesNode::Leaf { state } => detail_for_leaf(state, palette),
+    }
+}
+
+fn detail_for_branch(
+    meta: &PlanMeta,
+    children: &[usize],
+    palette: &RenderPalette,
+) -> Text<'static> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(section_header("Plan item"));
+    let id_text = meta
+        .id
+        .as_ref()
+        .map(|id| id.render().to_plain_string())
+        .unwrap_or_else(|| "(anonymous)".to_string());
+    lines.push(field_line("id", &id_text));
+    lines.push(field_line(
+        "children",
+        &format!("{} atom(s)", children.len()),
+    ));
+    if !meta.requires.is_empty() {
+        lines.push(blank_line());
+        lines.push(section_header("Requires"));
+        for r in &meta.requires {
+            lines.push(bullet_line(&r.render().to_plain_string()));
+        }
+    }
+    if !meta.required_by.is_empty() {
+        lines.push(blank_line());
+        lines.push(section_header("Required by"));
+        for r in &meta.required_by {
+            lines.push(bullet_line(&r.render().to_plain_string()));
+        }
+    }
+    if !meta.handlers.is_empty() {
+        lines.push(blank_line());
+        lines.push(section_header("on_change handlers"));
+        for h in &meta.handlers {
+            extend_lines(&mut lines, &h.render(), palette);
+        }
+    }
+    Text::from(lines)
+}
+
+fn detail_for_leaf(state: &LeafState, palette: &RenderPalette) -> Text<'static> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(section_header("Resource"));
+    extend_lines(&mut lines, &state.resource().render(), palette);
+
+    match state {
+        LeafState::Planned { .. } => {
+            lines.push(blank_line());
+            lines.push(status_line("Planned (not started)"));
+        }
+        LeafState::Probing { .. } => {
+            lines.push(blank_line());
+            lines.push(status_line("Probing current state..."));
+        }
+        LeafState::Probed {
+            state: probed_state,
+            ..
+        } => {
+            lines.push(blank_line());
+            lines.push(section_header("Current state"));
+            extend_lines(&mut lines, &probed_state.render(), palette);
+        }
+        LeafState::NoChange {
+            state: probed_state,
+            ..
+        } => {
+            lines.push(blank_line());
+            lines.push(section_header("Current state"));
+            extend_lines(&mut lines, &probed_state.render(), palette);
+            lines.push(blank_line());
+            lines.push(status_line("No change"));
+        }
+        LeafState::Changed {
+            state: probed_state,
+            change,
+            ops,
+            ..
+        } => {
+            lines.push(blank_line());
+            lines.push(section_header("Current state"));
+            extend_lines(&mut lines, &probed_state.render(), palette);
+            lines.push(blank_line());
+            lines.push(section_header("Change"));
+            extend_lines(&mut lines, &change.render(), palette);
+            if let Some((ops_tree, _)) = ops {
+                lines.push(blank_line());
+                lines.push(section_header("Operations"));
+                for_each_plan_leaf(ops_tree, &mut |op| {
+                    extend_lines(&mut lines, &op.render(), palette);
+                });
+            }
+        }
+    }
+
+    Text::from(lines)
+}
+
+/// Walk a `PlanTree<T>` and call `visit` on every leaf, in arena order.
+/// Generic because `lusid-operation` is only a dev-dep here, so the
+/// caller passes the inferred type rather than naming it.
+fn for_each_plan_leaf<T, F: FnMut(&T)>(tree: &lusid_plan::PlanTree<T>, visit: &mut F) {
+    match tree {
+        lusid_plan::PlanTree::Leaf { node, .. } => visit(node),
+        lusid_plan::PlanTree::Branch { children, .. } => {
+            for child in children {
+                for_each_plan_leaf(child, visit);
+            }
+        }
+    }
+}
+
+fn section_header(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn field_line(name: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{name}: "), Style::default().fg(Color::DarkGray)),
+        Span::raw(value.to_string()),
+    ])
+}
+
+fn bullet_line(text: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("  • ", Style::default().fg(Color::DarkGray)),
+        Span::raw(text.to_string()),
+    ])
+}
+
+fn status_line(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::ITALIC),
+    ))
+}
+
+fn blank_line() -> Line<'static> {
+    Line::from(Span::raw(""))
+}
+
+/// Lower a `RenderedNode` into the existing `lines` buffer with the
+/// supplied render palette. Multi-line content from `to_ratatui_text` is
+/// flattened in order.
+fn extend_lines(lines: &mut Vec<Line<'static>>, node: &RenderedNode, palette: &RenderPalette) {
+    for line in node.to_ratatui_text(palette).lines {
+        lines.push(line);
+    }
+}
+
+// --------------------------------------------------------------------------
+// Epochs page (placeholder for Task 13)
+// --------------------------------------------------------------------------
+
+fn draw_epochs_page(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
+    let view = &app.app_view;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let phase_a_count = view
+        .operation_epoch_meta
+        .iter()
+        .filter(|m| m.phase == Phase::A)
+        .count();
+    let phase_b_count = view.operation_epoch_meta.len() - phase_a_count;
+    let total = view
+        .resource_epochs_total()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    lines.push(Line::from(Span::raw(format!(
+        "{total} resource epoch(s), {phase_a_count} Phase A, {phase_b_count} Phase B logged",
+    ))));
+    lines.push(blank_line());
+    lines.push(Line::from(Span::styled(
+        "Epochs page is reserved for Task 13. Use `1` to return to Tree.",
+        Style::default().fg(Color::DarkGray),
+    )));
+    let widget = Paragraph::new(Text::from(lines))
+        .block(Block::default().borders(Borders::ALL).title("epochs"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(widget, area);
+}
+
+// --------------------------------------------------------------------------
+// Stderr page
+// --------------------------------------------------------------------------
+
+fn draw_stderr_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
     let inner_height = area.height.saturating_sub(2) as usize;
     app.stderr_view_height = inner_height as u16;
 
@@ -934,9 +1178,9 @@ fn draw_stderr_page(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp
     }
 
     let title = if app.stderr_follow {
-        "stderr (following) - press e to return"
+        "stderr (following)"
     } else {
-        "stderr - press e to return"
+        "stderr"
     };
 
     let widget = if app.stderr_buffer.is_empty() {
@@ -957,363 +1201,305 @@ fn draw_stderr_page(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp
     frame.render_widget(widget, area);
 }
 
-fn draw_help(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
-    let hints = match app.page {
-        UiPage::Main => {
-            "Left/Right stages  Up/Down move  Enter toggle tree  f follow  e stderr  q quit"
-        }
-        UiPage::Stderr => "Up/Down scroll  PgUp/PgDn page  g top  G/end bottom  e back  q quit",
-    };
-
-    let lines = vec![Line::from(Span::styled(
-        hints,
-        Style::default().fg(Color::DarkGray),
-    ))];
-
-    let widget = Paragraph::new(Text::from(lines))
-        .block(Block::default())
-        .alignment(Alignment::Left)
-        .wrap(Wrap { trim: true });
-
-    frame.render_widget(widget, area);
-}
-
-fn draw_placeholder(frame: &mut ratatui::Frame<'_>, area: Rect, text: &str) {
+fn draw_placeholder(frame: &mut ratatui::Frame, area: Rect, text: &str) {
     let widget = Paragraph::new(Text::from(text))
         .block(Block::default().borders(Borders::ALL))
         .alignment(Alignment::Center);
     frame.render_widget(widget, area);
 }
 
-fn draw_apply(
-    frame: &mut ratatui::Frame<'_>,
-    area: Rect,
-    epochs: &[Vec<OperationView>],
-    state: &mut OperationsApplyState,
-) {
-    if state.flat_index_to_epoch_operation.is_empty() {
-        state.rebuild_index(epochs);
-    }
+// --------------------------------------------------------------------------
+// Helpers
+// --------------------------------------------------------------------------
 
-    let selected_operation = get_selected_operation(epochs, state);
-
-    let l = Layout::default().direction(Direction::Vertical);
-    let layout = if let Some(selected_operation) = selected_operation {
-        if selected_operation.error.is_some() {
-            l.constraints(
-                [
-                    Constraint::Percentage(60),
-                    Constraint::Percentage(10),
-                    Constraint::Percentage(30),
-                ]
-                .as_ref(),
-            )
-            .split(area)
-        } else {
-            l.constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
-                .split(area)
+/// Short user-friendly label for a `PlanNodeId`, suitable for tree rows.
+/// Unlike `PlanNodeId::Display` (which spells out the full plan path) this
+/// returns just the user-authored item id, falling back to `.` for the
+/// anonymous root.
+fn plan_node_short_label(id: &PlanNodeId) -> String {
+    match id {
+        PlanNodeId::PlanItem { item_id, .. } | PlanNodeId::SubItem { item_id, .. } => {
+            item_id.clone()
         }
-    } else {
-        l.constraints([Constraint::Percentage(100)].as_ref())
-            .split(area)
-    };
-
-    let mut items: Vec<ListItem<'_>> = Vec::new();
-    for (epoch_index, operations) in epochs.iter().enumerate() {
-        for (operation_index, operation) in operations.iter().enumerate() {
-            let status = if operation.is_complete {
-                if operation.error.is_some() {
-                    "❌"
-                } else {
-                    "✅"
-                }
-            } else {
-                "…"
-            };
-            let label = format!(
-                "[{status}] (epoch {epoch_index}, operation {operation_index}) {}",
-                operation.label.render().to_plain_string()
-            );
-            items.push(ListItem::new(Line::from(Span::raw(label))));
-        }
-    }
-
-    let mut list_state = ListState::default();
-    if let Some(selected) = state.selected_flat {
-        list_state.select(Some(selected));
-    }
-    *list_state.offset_mut() = state.list_offset;
-
-    let height = layout[0].height.saturating_sub(2) as usize;
-    if let Some(sel) = state.selected_flat {
-        state.ensure_visible_row(sel, height);
-        *list_state.offset_mut() = state.list_offset;
-    }
-
-    let operations_list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("operations epochs:"),
-        )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
-
-    frame.render_stateful_widget(operations_list, layout[0], &mut list_state);
-
-    if let Some(operation) = selected_operation {
-        if let Some(error) = &operation.error {
-            let operation_error_widget = Paragraph::new(error.clone())
-                .block(Block::default().borders(Borders::ALL).title("error"))
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(Color::White));
-
-            frame.render_widget(operation_error_widget, layout[1]);
-        }
-
-        let stdout = &operation.stdout;
-        let stderr = &operation.stderr;
-
-        let logs_layout = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
-            .split(layout[if operation.error.is_none() { 1 } else { 2 }]);
-
-        let stdout_widget = Paragraph::new(stdout.clone())
-            .block(Block::default().borders(Borders::ALL).title("stdout"))
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(Color::White));
-
-        let stderr_widget = Paragraph::new(stderr.clone())
-            .block(Block::default().borders(Borders::ALL).title("stderr"))
-            .wrap(Wrap { trim: false })
-            .style(Style::default().fg(Color::Red));
-
-        frame.render_widget(stdout_widget, logs_layout[0]);
-        frame.render_widget(stderr_widget, logs_layout[1]);
+        PlanNodeId::Plan(plan_id) => plan_id.to_string(),
     }
 }
 
-fn get_selected_operation<'a>(
-    epochs: &'a [Vec<OperationView>],
-    state: &mut OperationsApplyState,
-) -> Option<&'a OperationView> {
-    if let Some(selected) = state.selected_flat {
-        if let Some((epoch_index, operation_index)) =
-            state.flat_index_to_epoch_operation.get(selected).copied()
-        {
-            return epochs.get(epoch_index).and_then(|v| v.get(operation_index));
-        }
-    }
-    None
-}
-
-fn draw_tree(
-    frame: &mut ratatui::Frame<'_>,
-    area: Rect,
-    title: &str,
-    tree: &StringTree,
-    state: &mut TreeState,
-) {
-    let rows = build_visible_rows(tree, state);
-
-    if state.selected_node.is_none() {
-        state.selected_node = rows.first().map(|r| r.index);
-    }
-
-    let selected_row = selected_row_index(&rows, state);
-
-    let items = rows
-        .iter()
-        .map(|row| {
-            let mut spans: Vec<Span> = Vec::new();
-            spans.push(Span::raw("  ".repeat(row.depth)));
-
-            if row.is_branch {
-                spans.push(Span::styled(
-                    format!("{} ", if row.is_expanded { "▼" } else { "▶" }),
-                    Style::default().fg(Color::Yellow),
-                ));
-            } else {
-                spans.push(Span::styled("• ", Style::default().fg(Color::DarkGray)));
-            }
-
-            spans.push(Span::raw(&row.label));
-
-            ListItem::new(Line::from(spans))
-        })
-        .collect::<Vec<_>>();
-
-    let mut list_state = ListState::default();
-    list_state.select(selected_row);
-    *list_state.offset_mut() = state.list_offset;
-
-    let inner_height = area.height.saturating_sub(2) as usize;
-    if let Some(selected_row) = selected_row {
-        state.ensure_visible_row(selected_row, inner_height);
-        *list_state.offset_mut() = state.list_offset;
-    }
-
-    let widget = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
-
-    frame.render_stateful_widget(widget, area, &mut list_state);
-}
-
-#[derive(Debug, Clone)]
-struct TreeRow {
-    index: usize,
-    depth: usize,
-    is_branch: bool,
-    is_expanded: bool,
-    label: String,
-}
-
-fn build_visible_rows(tree: &StringTree, state: &TreeState) -> Vec<TreeRow> {
-    let mut out = Vec::new();
-    let mut visited = HashSet::new();
-
-    build_visible_rows_rec(tree, StringTree::ROOT, 0, state, &mut out, &mut visited);
-
-    out
-}
-
-fn build_visible_rows_rec(
-    tree: &StringTree,
-    index: usize,
-    depth: usize,
-    state: &TreeState,
-    out: &mut Vec<TreeRow>,
-    visited: &mut HashSet<usize>,
-) {
-    if !visited.insert(index) {
-        return;
-    }
-
-    let Some(node) = tree.get(index) else {
-        return;
-    };
-
-    match node {
-        StringNode::Leaf { label } => {
-            out.push(TreeRow {
-                index,
-                depth,
-                is_branch: false,
-                is_expanded: false,
-                label: label.clone(),
-            });
-        }
-
-        StringNode::Branch { label, children } => {
-            let is_expanded = state.is_expanded(index);
-
-            out.push(TreeRow {
-                index,
-                depth,
-                is_branch: true,
-                is_expanded,
-                label: label.clone(),
-            });
-
-            if is_expanded {
-                for child in children.iter().copied() {
-                    build_visible_rows_rec(tree, child, depth + 1, state, out, visited);
-                }
-            }
-        }
-    }
-}
-
-fn selected_row_index(rows: &[TreeRow], state: &TreeState) -> Option<usize> {
-    let selected_node = state.selected_node?;
-    rows.iter().position(|r| r.index == selected_node)
-}
-
-fn tree_move_selection(tree: &StringTree, state: &mut TreeState, delta: i32) {
-    let rows = build_visible_rows(tree, state);
-
-    if rows.is_empty() {
-        state.selected_node = None;
-        state.list_offset = 0;
-        return;
-    }
-
-    let current_row = selected_row_index(&rows, state).unwrap_or(0);
-
-    let next_row = if delta >= 0 {
-        (current_row + delta as usize).min(rows.len() - 1)
-    } else {
-        current_row.saturating_sub((-delta) as usize)
-    };
-
-    state.selected_node = Some(rows[next_row].index);
-}
-
-/// Flattened, string-only view of a [`ProjectedTree`] used by the TUI's tree
-/// rendering and navigation. Each per-stage projection has its own payload
-/// type; collapsing to strings here lets one set of `draw_tree` /
-/// `build_visible_rows` / `tree_move_selection` helpers cover every stage.
-/// Labels come from [`lusid_render::Render`], so any structured tagging the
-/// renderer adds in future tasks (diffs, semantic spans) will flow through
-/// without further changes here.
-#[derive(Debug, Clone)]
-struct StringTree {
-    nodes: Vec<Option<StringNode>>,
-}
-
-#[derive(Debug, Clone)]
-enum StringNode {
-    Branch { label: String, children: Vec<usize> },
-    Leaf { label: String },
-}
-
-impl StringTree {
-    const ROOT: usize = 0;
-
-    fn get(&self, index: usize) -> Option<&StringNode> {
-        self.nodes.get(index).and_then(Option::as_ref)
-    }
-
-    /// Convert each branch's `PlanMeta` to its `id` label (`.` for anonymous
-    /// branches) and each leaf's `Lifecycle<T>` to display text via
-    /// [`lusid_render::Render`] for `Complete`, with placeholder text for
-    /// the pre-completion phases.
-    fn from_projection<T: Render>(projection: &ProjectedTree<T>) -> Self {
-        let nodes = projection
-            .nodes()
-            .iter()
-            .map(|slot| {
-                slot.as_ref().map(|node| match node {
-                    ProjectedNode::Branch { meta, children } => StringNode::Branch {
-                        label: plan_meta_label(meta),
-                        children: children.clone(),
-                    },
-                    ProjectedNode::Leaf { lifecycle } => StringNode::Leaf {
-                        label: match lifecycle {
-                            Lifecycle::NotStarted => "not started".to_string(),
-                            Lifecycle::Started => "in progress".to_string(),
-                            Lifecycle::Complete(value) => value.render().to_plain_string(),
-                        },
-                    },
-                })
-            })
-            .collect();
-        Self { nodes }
-    }
-}
-
-fn plan_meta_label(meta: &PlanMeta) -> String {
+fn plan_meta_short_label(meta: &PlanMeta) -> String {
     meta.id
         .as_ref()
-        .map(|id| id.render().to_plain_string())
+        .map(plan_node_short_label)
         .unwrap_or_else(|| ".".to_string())
+}
+
+fn is_branch(view: &AppView, arena_index: usize) -> bool {
+    matches!(
+        view.resources
+            .as_ref()
+            .and_then(|t| t.nodes.get(arena_index).and_then(Option::as_ref)),
+        Some(ResourcesNode::Branch { .. })
+    )
+}
+
+fn badge_for_leaf(state: &LeafState) -> Badge {
+    match state {
+        LeafState::Planned { .. } => Badge::Planned,
+        LeafState::Probing { .. } | LeafState::Probed { .. } => Badge::Running,
+        LeafState::NoChange { .. } => Badge::Ok,
+        LeafState::Changed { .. } => Badge::Changed,
+    }
+}
+
+/// Roll up the badges of every descendant atom under the branch at
+/// `arena_index`. Empty branches (no descendant atoms) report `Ok`; the
+/// rollup precedence in [`palette::rollup`] then composes children.
+fn rollup_for_branch(resources: &lusid_apply_stdio::ResourcesTree, arena_index: usize) -> Badge {
+    let mut acc = Badge::Ok;
+    let mut saw_any = false;
+    walk_atoms(resources, arena_index, &mut HashSet::new(), &mut |b| {
+        acc = if saw_any { rollup(acc, b) } else { b };
+        saw_any = true;
+    });
+    if saw_any { acc } else { Badge::Ok }
+}
+
+fn walk_atoms<F: FnMut(Badge)>(
+    resources: &lusid_apply_stdio::ResourcesTree,
+    arena_index: usize,
+    visited: &mut HashSet<usize>,
+    visit: &mut F,
+) {
+    if !visited.insert(arena_index) {
+        return;
+    }
+    let Some(slot) = resources.nodes.get(arena_index).and_then(Option::as_ref) else {
+        return;
+    };
+    match slot {
+        ResourcesNode::Branch { children, .. } => {
+            for &child in children {
+                walk_atoms(resources, child, visited, visit);
+            }
+        }
+        ResourcesNode::Leaf { state } => visit(badge_for_leaf(state)),
+    }
+}
+
+// --------------------------------------------------------------------------
+// Tests
+// --------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lusid_apply_stdio::AppUpdate;
+    use lusid_operation::operations::file::FilePath;
+    use lusid_plan::{PlanId, PlanMeta, PlanNodeId, PlanTree};
+    use lusid_resource::{
+        Resource, ResourceState,
+        file::{FileResource, FileState},
+    };
+    use std::path::PathBuf;
+
+    fn pi_id(item: &str) -> PlanNodeId {
+        PlanNodeId::PlanItem {
+            plan_id: PlanId::Path(PathBuf::from("plan.lusid")),
+            item_id: item.into(),
+        }
+    }
+
+    fn resource_leaf(path: &str) -> PlanTree<Resource> {
+        PlanTree::Leaf {
+            meta: PlanMeta::default(),
+            node: Resource::File(FileResource::Present {
+                path: FilePath::new(path),
+            }),
+        }
+    }
+
+    fn view_with_two_branches() -> AppView {
+        let alpha = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(pi_id("alpha")),
+                ..PlanMeta::default()
+            },
+            children: vec![resource_leaf("/a/1"), resource_leaf("/a/2")],
+        };
+        let beta = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(pi_id("beta")),
+                ..PlanMeta::default()
+            },
+            children: vec![resource_leaf("/b/1")],
+        };
+        let root = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![alpha, beta],
+        };
+        AppView::default()
+            .update(AppUpdate::ResourcesStart)
+            .unwrap()
+            .update(AppUpdate::ResourcesNode {
+                index: 0,
+                tree: root,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn short_label_drops_path_noise() {
+        let id = pi_id("nginx-config");
+        assert_eq!(plan_node_short_label(&id), "nginx-config");
+        let sub = PlanNodeId::SubItem {
+            scope_id: "scope".into(),
+            item_id: "file".into(),
+        };
+        assert_eq!(plan_node_short_label(&sub), "file");
+    }
+
+    #[test]
+    fn anonymous_branch_short_label_is_dot() {
+        let meta = PlanMeta::default();
+        assert_eq!(plan_meta_short_label(&meta), ".");
+    }
+
+    #[test]
+    fn rollup_combines_child_badges() {
+        // Two planned leaves -> branch is Planned.
+        let view = view_with_two_branches();
+        let resources = view.resources.as_ref().unwrap();
+        // Arena: 0=root, 1=alpha, 2=/a/1, 3=/a/2, 4=beta, 5=/b/1
+        assert_eq!(rollup_for_branch(resources, 1), Badge::Planned);
+        assert_eq!(rollup_for_branch(resources, 0), Badge::Planned);
+    }
+
+    #[test]
+    fn rollup_escalates_on_running_child() {
+        let view = view_with_two_branches()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap();
+        let resources = view.resources.as_ref().unwrap();
+        assert_eq!(rollup_for_branch(resources, 1), Badge::Running);
+        // Sibling branch beta untouched.
+        assert_eq!(rollup_for_branch(resources, 4), Badge::Planned);
+        // Root inherits Running from alpha.
+        assert_eq!(rollup_for_branch(resources, 0), Badge::Running);
+    }
+
+    #[test]
+    fn rollup_changed_beats_ok() {
+        let view = view_with_two_branches()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 2,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 2,
+                change: None,
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 3 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 3,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 3,
+                change: Some(lusid_resource::ResourceChange::Apt(
+                    lusid_resource::apt::AptChange::Install {
+                        package: "nginx".into(),
+                    },
+                )),
+            })
+            .unwrap();
+        let resources = view.resources.as_ref().unwrap();
+        assert_eq!(rollup_for_branch(resources, 1), Badge::Changed);
+    }
+
+    #[test]
+    fn filter_dims_non_matches_without_removing() {
+        let view = view_with_two_branches();
+        let mut state = TreePageState::new();
+        state.filter = "beta".into();
+        let rows = build_visible_rows(&view, &state);
+        let labels: Vec<(String, bool)> = rows.iter().map(|r| (r.label.clone(), r.dim)).collect();
+        // Every branch + leaf is present; only "beta" branch and its leaf are
+        // un-dimmed (substring match).
+        assert!(labels.iter().any(|(l, d)| l == "beta" && !*d));
+        assert!(labels.iter().any(|(l, d)| l == "alpha" && *d));
+    }
+
+    #[test]
+    fn show_unchanged_false_hides_ok_leaves() {
+        let view = view_with_two_branches()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 2,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 2,
+                change: None,
+            })
+            .unwrap();
+        let mut state = TreePageState::new();
+        state.show_unchanged = false;
+        let rows = build_visible_rows(&view, &state);
+        // The Ok leaf at arena index 2 is hidden; the others remain.
+        assert!(rows.iter().all(|r| r.arena_index != 2));
+        assert!(rows.iter().any(|r| r.arena_index == 3));
+    }
+
+    /// A filter that doesn't match anything still leaves every row visible
+    /// (just dimmed). Navigation must keep working — `build_visible_rows`
+    /// returns the full set so j/k still finds rows to land on.
+    #[test]
+    fn filter_with_no_match_dims_all_but_keeps_rows() {
+        let view = view_with_two_branches();
+        let mut state = TreePageState::new();
+        state.filter = "no-such-id".into();
+        let rows = build_visible_rows(&view, &state);
+        assert!(!rows.is_empty(), "rows must remain navigable");
+        assert!(rows.iter().all(|r| r.dim), "every row dimmed");
+    }
+
+    /// Hiding Ok leaves while one of them is selected must move the
+    /// selection to its parent branch (the nearest still-visible ancestor
+    /// in pre-order), not all the way back to the root.
+    #[test]
+    fn toggling_show_unchanged_clamps_selection_to_parent_branch() {
+        let view = view_with_two_branches()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 2,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 2,
+                change: None,
+            })
+            .unwrap();
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view;
+        // Arena: 0=root, 1=alpha, 2=/a/1 (now NoChange), 3=/a/2, 4=beta, 5=/b/1
+        app.tree.selected = Some(2);
+
+        app.handle_event_tree(KeyCode::Char('u'));
+
+        assert!(!app.tree.show_unchanged);
+        assert_eq!(
+            app.tree.selected,
+            Some(1),
+            "selection should land on the parent branch (alpha), not bounce to root",
+        );
+    }
 }
