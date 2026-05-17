@@ -277,6 +277,9 @@ struct TreePageState {
     filter_editing: bool,
     /// `gg` chord support: set after the first `g`, reset on any other key.
     awaiting_g: bool,
+    /// Transient message shown in the footer until the next keypress.
+    /// Used today by `n`/`N` when the jump-to-change search finds nothing.
+    toast: Option<String>,
 }
 
 impl TreePageState {
@@ -475,6 +478,12 @@ impl TuiApp {
     }
 
     fn handle_event_tree(&mut self, code: KeyCode) -> bool {
+        // Any keypress clears the prior `n`/`N` toast. Set again below if
+        // the next jump is still a no-op, so repeated `n` presses keep
+        // the message visible without sticking around after the operator
+        // moves on.
+        self.tree.toast = None;
+
         // Filter input mode captures most keys; Enter/Esc end it.
         if self.tree.filter_editing {
             match code {
@@ -544,6 +553,9 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('G') => self.tree_jump_last(),
+
+            KeyCode::Char('n') => self.tree_jump_to_change(true),
+            KeyCode::Char('N') => self.tree_jump_to_change(false),
 
             KeyCode::Down | KeyCode::Char('j') => self.tree_move_or_scroll(1),
             KeyCode::Up | KeyCode::Char('k') => self.tree_move_or_scroll(-1),
@@ -726,6 +738,44 @@ impl TuiApp {
         let rows = build_visible_rows(&self.app_view, &self.tree);
         if let Some(last) = rows.last() {
             self.tree.selected = Some(last.arena_index);
+        }
+    }
+
+    /// Move the selection to the next (or, for `forward = false`, previous)
+    /// row whose badge represents a change worth investigating - `Changed`
+    /// or `Failed`. Branch rollups are included so the operator can land on
+    /// a collapsed plan-item branch and drill in. `Ok`, `Planned`, and
+    /// `Running` are skipped: the operator is hunting for resolved-with-
+    /// difference rows. No wrap-around; if no target exists in the chosen
+    /// direction, the selection stays put and a one-shot footer toast
+    /// surfaces "no more changes".
+    fn tree_jump_to_change(&mut self, forward: bool) {
+        let rows = build_visible_rows(&self.app_view, &self.tree);
+        if rows.is_empty() {
+            self.tree.toast = Some("no more changes".into());
+            return;
+        }
+        let current = rows
+            .iter()
+            .position(|r| Some(r.arena_index) == self.tree.selected);
+        let target = if forward {
+            let start = current.map(|i| i + 1).unwrap_or(0);
+            rows[start..]
+                .iter()
+                .position(is_change_target)
+                .map(|i| start + i)
+        } else {
+            let end = current.unwrap_or(rows.len());
+            rows[..end].iter().rposition(is_change_target)
+        };
+        match target {
+            Some(idx) => {
+                self.tree.selected = Some(rows[idx].arena_index);
+                self.tree.detail_scroll = 0;
+            }
+            None => {
+                self.tree.toast = Some("no more changes".into());
+            }
         }
     }
 
@@ -998,6 +1048,13 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
             ),
             Span::styled("  ? help", Style::default().fg(Color::DarkGray)),
         ])
+    } else if app.page == UiPage::Tree
+        && let Some(toast) = app.tree.toast.as_ref()
+    {
+        Line::from(Span::styled(
+            toast.clone(),
+            Style::default().fg(Color::Yellow),
+        ))
     } else {
         let hint = footer_hint(app);
         Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray)))
@@ -1010,8 +1067,8 @@ fn footer_hint(app: &TuiApp) -> String {
     let s_hint = side_by_side_hint(app);
     match app.page {
         UiPage::Tree => format!(
-            "j/k move  h/l collapse/expand  Tab focus  / filter  u show-unchanged  \
-             gg/G first/last  {s_hint}  1/2/e pages  q quit",
+            "j/k move  h/l collapse/expand  Tab focus  / filter  n/N next/prev change  \
+             u show-unchanged  gg/G first/last  {s_hint}  1/2/e pages  q quit",
         ),
         UiPage::Epochs => format!(
             "j/k move  h/l collapse/expand  Space toggle  Tab focus  gg/G first/last  \
@@ -1054,6 +1111,11 @@ fn draw_tree_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
         app.tree.selected = rows.first().map(|r| r.arena_index);
     }
 
+    // Body area spans the full terminal width, so this is the threshold the
+    // spec calls out for `(epoch K)` tags. Hidden below 80 cols so labels
+    // keep their column budget on narrow terminals.
+    let show_epoch_tag = area.width >= 80;
+
     let layout = if area.width >= 100 {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -1066,7 +1128,7 @@ fn draw_tree_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
             .split(area)
     };
 
-    draw_tree_list(frame, layout[0], app);
+    draw_tree_list(frame, layout[0], app, show_epoch_tag);
     draw_detail_pane(frame, layout[1], app);
 }
 
@@ -1078,6 +1140,11 @@ struct TreeRow {
     badge: Badge,
     label: String,
     dim: bool,
+    /// Latest 0-based resource epoch any descendant atom lands in, when the
+    /// wire's epoch mapping is known. Branches only - leaves leave it `None`
+    /// because the spec reserves the tag for plan-item rows. Rendered as
+    /// `(epoch K)` (1-based) at terminal widths >= 80 cols.
+    epoch: Option<usize>,
 }
 
 /// Atoms tree root is at arena index 0 by convention (see
@@ -1094,41 +1161,63 @@ fn build_visible_rows(view: &AppView, state: &TreePageState) -> Vec<TreeRow> {
     } else {
         Some(state.filter.as_str())
     };
-    walk_for_rows(
+    // Branch -> latest descendant atom epoch. Empty when `PipelineInfo`
+    // hasn't arrived yet (no atom_epoch entries); branches then render
+    // without an epoch tag.
+    let parent_of = build_parent_of_resources(resources);
+    let latest_epoch_by_branch = build_latest_epoch_by_branch(resources, view, &parent_of);
+    let ctx = RowWalkCtx {
         resources,
-        ROOT_ARENA_INDEX,
-        0,
         state,
         filter,
-        &mut out,
-        &mut HashSet::new(),
-    );
+        latest_epoch_by_branch: &latest_epoch_by_branch,
+    };
+    walk_for_rows(&ctx, ROOT_ARENA_INDEX, 0, &mut out, &mut HashSet::new());
     out
 }
 
+/// Shared inputs threaded through the recursive [`walk_for_rows`]. Kept as
+/// a borrowed bundle so each recursive call only mutates `out` / `visited`.
+struct RowWalkCtx<'a> {
+    resources: &'a lusid_apply_stdio::ResourcesTree,
+    state: &'a TreePageState,
+    filter: Option<&'a str>,
+    latest_epoch_by_branch: &'a HashMap<usize, usize>,
+}
+
 fn walk_for_rows(
-    resources: &lusid_apply_stdio::ResourcesTree,
+    ctx: &RowWalkCtx<'_>,
     arena_index: usize,
     depth: usize,
-    state: &TreePageState,
-    filter: Option<&str>,
     out: &mut Vec<TreeRow>,
     visited: &mut HashSet<usize>,
 ) {
     if !visited.insert(arena_index) {
         return;
     }
-    let Some(slot) = resources.nodes.get(arena_index).and_then(Option::as_ref) else {
+    let Some(slot) = ctx
+        .resources
+        .nodes
+        .get(arena_index)
+        .and_then(Option::as_ref)
+    else {
         return;
     };
     match slot {
         ResourcesNode::Branch { meta, children } => {
             let label = plan_meta_short_label(meta);
-            let badge = rollup_for_branch(resources, arena_index);
-            let dim = match filter {
+            let badge = rollup_for_branch(ctx.resources, arena_index);
+            let dim = match ctx.filter {
                 Some(f) => !label.to_lowercase().contains(&f.to_lowercase()),
                 None => false,
             };
+            // Reserve the epoch tag for named plan items so the anonymous
+            // root - whose latest epoch always equals the global total -
+            // doesn't duplicate the header strip's `epoch K/N`.
+            let epoch = meta
+                .id
+                .as_ref()
+                .and_then(|_| ctx.latest_epoch_by_branch.get(&arena_index).copied());
             out.push(TreeRow {
                 arena_index,
                 depth,
@@ -1136,20 +1225,21 @@ fn walk_for_rows(
                 badge,
                 label,
                 dim,
+                epoch,
             });
-            if state.is_expanded(arena_index) {
+            if ctx.state.is_expanded(arena_index) {
                 for &child in children {
-                    walk_for_rows(resources, child, depth + 1, state, filter, out, visited);
+                    walk_for_rows(ctx, child, depth + 1, out, visited);
                 }
             }
         }
         ResourcesNode::Leaf { state: leaf_state } => {
             let badge = badge_for_leaf(leaf_state);
-            if !state.show_unchanged && badge == Badge::Ok {
+            if !ctx.state.show_unchanged && badge == Badge::Ok {
                 return;
             }
             let label = leaf_state.resource().render().to_plain_string();
-            let dim = match filter {
+            let dim = match ctx.filter {
                 Some(f) => !label.to_lowercase().contains(&f.to_lowercase()),
                 None => false,
             };
@@ -1160,12 +1250,13 @@ fn walk_for_rows(
                 badge,
                 label,
                 dim,
+                epoch: None,
             });
         }
     }
 }
 
-fn draw_tree_list(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
+fn draw_tree_list(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp, show_epoch_tag: bool) {
     let rows = build_visible_rows(&app.app_view, &app.tree);
 
     let selected_row = rows
@@ -1199,6 +1290,12 @@ fn draw_tree_list(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
                 Style::default()
             };
             spans.push(Span::styled(row.label.clone(), label_style));
+            if show_epoch_tag && let Some(epoch) = row.epoch {
+                spans.push(Span::styled(
+                    format!("  (epoch {})", epoch + 1),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
             ListItem::new(Line::from(spans))
         })
         .collect();
@@ -2197,6 +2294,13 @@ fn badge_for_leaf(state: &LeafState) -> Badge {
     }
 }
 
+/// True when a tree row's badge signals a difference worth jumping to.
+/// `n`/`N` use this to skip past `Ok`/`Planned`/`Running` while still
+/// stopping on collapsed branches whose rollup contains a change.
+fn is_change_target(row: &TreeRow) -> bool {
+    matches!(row.badge, Badge::Changed | Badge::Failed)
+}
+
 /// Roll up the badges of every descendant atom under the branch at
 /// `arena_index`. Empty branches (no descendant atoms) report `Ok`; the
 /// rollup precedence in [`palette::rollup`] then composes children.
@@ -2831,6 +2935,238 @@ mod tests {
         assert_eq!(op_rows.len(), 2);
         assert_eq!(op_rows[0].badge, Some(Badge::Running));
         assert_eq!(op_rows[1].badge, Some(Badge::Failed));
+    }
+
+    // ------------------------------------------------------------------
+    // n / N jump-to-change
+    // ------------------------------------------------------------------
+
+    /// A view with a Changed leaf at arena index 3 and an Ok leaf at arena
+    /// index 2. Branch alpha (index 1) rolls up Changed (mix of Ok and
+    /// Changed children); branch beta (4) and its leaf (5) stay Planned.
+    fn view_with_one_change() -> AppView {
+        view_with_two_branches()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 2,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 2,
+                change: None,
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 3 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 3,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 3,
+                change: Some(lusid_resource::ResourceChange::Apt(
+                    lusid_resource::apt::AptChange::Install {
+                        package: "nginx".into(),
+                    },
+                )),
+            })
+            .unwrap()
+    }
+
+    /// Pressing `n` from the root walks forward to the first change-bearing
+    /// row. With `view_with_one_change`, alpha (arena 1) rolls up Changed,
+    /// so it gets selected before alpha's `/a/2` leaf (the actual change).
+    #[test]
+    fn tree_n_jumps_to_first_change_target() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_one_change();
+        app.tree.selected = Some(0);
+
+        app.handle_event_tree(KeyCode::Char('n'));
+
+        assert_eq!(app.tree.selected, Some(1), "alpha branch rolls up Changed");
+        assert!(app.tree.toast.is_none());
+    }
+
+    /// From the Changed branch itself, `n` descends into the first Changed
+    /// descendant - alpha's `/a/2` at arena index 3. The Ok leaf at index 2
+    /// is skipped.
+    #[test]
+    fn tree_n_skips_ok_leaves() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_one_change();
+        app.tree.selected = Some(1);
+
+        app.handle_event_tree(KeyCode::Char('n'));
+
+        assert_eq!(app.tree.selected, Some(3));
+        assert!(app.tree.toast.is_none());
+    }
+
+    /// Past the last change-bearing row, `n` is a no-op: selection stays
+    /// and the footer toast surfaces.
+    #[test]
+    fn tree_n_past_last_change_sets_toast() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_one_change();
+        app.tree.selected = Some(3);
+
+        app.handle_event_tree(KeyCode::Char('n'));
+
+        assert_eq!(app.tree.selected, Some(3));
+        assert_eq!(app.tree.toast.as_deref(), Some("no more changes"));
+    }
+
+    /// `N` walks the same set in reverse. From `/a/2` (arena 3), the
+    /// previous change target is alpha (arena 1).
+    #[test]
+    fn tree_capital_n_walks_backward() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_one_change();
+        app.tree.selected = Some(3);
+
+        app.handle_event_tree(KeyCode::Char('N'));
+
+        assert_eq!(app.tree.selected, Some(1));
+        assert!(app.tree.toast.is_none());
+    }
+
+    /// All leaves Planned (no changes anywhere); `n` is a no-op and the
+    /// toast appears so the operator isn't left wondering whether the key
+    /// did anything.
+    #[test]
+    fn tree_n_with_no_changes_sets_toast() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_two_branches();
+        app.tree.selected = Some(0);
+
+        app.handle_event_tree(KeyCode::Char('n'));
+
+        assert_eq!(app.tree.selected, Some(0));
+        assert_eq!(app.tree.toast.as_deref(), Some("no more changes"));
+    }
+
+    /// Any subsequent keypress clears the prior `n`/`N` toast; it's a
+    /// one-shot indicator, not a sticky message.
+    #[test]
+    fn tree_toast_clears_on_next_keypress() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_two_branches();
+        app.tree.selected = Some(0);
+
+        app.handle_event_tree(KeyCode::Char('n'));
+        assert!(app.tree.toast.is_some());
+
+        app.handle_event_tree(KeyCode::Char('j'));
+        assert!(app.tree.toast.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // (epoch K) branch annotation
+    // ------------------------------------------------------------------
+
+    /// After `PipelineInfo` arrives, named plan-item branches carry the
+    /// latest descendant epoch. The anonymous root does not - the global
+    /// header strip already shows `epoch K/N`, so a duplicate tag here
+    /// would be noise.
+    #[test]
+    fn tree_branch_rows_carry_epoch_after_pipeline_info() {
+        let view = view_with_two_branches()
+            .update(AppUpdate::PipelineInfo {
+                resource_epochs_total: 2,
+                atom_epoch: [(2, 0), (3, 0), (5, 1)].into_iter().collect(),
+            })
+            .unwrap();
+        let state = TreePageState::new();
+        let rows = build_visible_rows(&view, &state);
+
+        let alpha = rows
+            .iter()
+            .find(|r| r.arena_index == 1)
+            .expect("alpha branch");
+        assert_eq!(alpha.epoch, Some(0), "alpha's leaves are both in epoch 0");
+
+        let beta = rows
+            .iter()
+            .find(|r| r.arena_index == 4)
+            .expect("beta branch");
+        assert_eq!(beta.epoch, Some(1), "beta's leaf is in epoch 1");
+
+        let root = rows
+            .iter()
+            .find(|r| r.arena_index == 0)
+            .expect("root branch");
+        assert!(root.epoch.is_none(), "anonymous root carries no epoch tag");
+
+        // Leaves never carry the tag - the spec reserves it for plan-item
+        // branches.
+        for leaf in rows.iter().filter(|r| !r.is_branch) {
+            assert!(
+                leaf.epoch.is_none(),
+                "leaf at {} got an epoch tag",
+                leaf.arena_index
+            );
+        }
+    }
+
+    /// Without `PipelineInfo`, no atom_epoch entries exist and the
+    /// `latest_epoch_by_branch` map is empty - every branch row reports
+    /// `epoch: None` and the tag is suppressed.
+    #[test]
+    fn tree_branch_rows_have_no_epoch_until_pipeline_info_arrives() {
+        let view = view_with_two_branches();
+        let state = TreePageState::new();
+        let rows = build_visible_rows(&view, &state);
+        for row in &rows {
+            assert!(
+                row.epoch.is_none(),
+                "row {} has epoch before pipeline info",
+                row.arena_index
+            );
+        }
+    }
+
+    /// A branch whose descendant atoms span multiple epochs reports the
+    /// latest one - matching `build_latest_epoch_by_branch` and so
+    /// matching the "when does this branch finish?" question the tag
+    /// answers.
+    #[test]
+    fn tree_branch_epoch_picks_latest_descendant() {
+        let mixed = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(pi_id("mixed")),
+                ..PlanMeta::default()
+            },
+            children: vec![resource_leaf("/m/early"), resource_leaf("/m/late")],
+        };
+        let root = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![mixed],
+        };
+        // Arena: 0=root, 1=mixed, 2=/m/early (epoch 0), 3=/m/late (epoch 2).
+        let view = AppView::default()
+            .update(AppUpdate::ResourcesStart)
+            .unwrap()
+            .update(AppUpdate::ResourcesNode {
+                index: 0,
+                tree: root,
+            })
+            .unwrap()
+            .update(AppUpdate::PipelineInfo {
+                resource_epochs_total: 3,
+                atom_epoch: [(2, 0), (3, 2)].into_iter().collect(),
+            })
+            .unwrap();
+        let state = TreePageState::new();
+        let rows = build_visible_rows(&view, &state);
+        let mixed = rows
+            .iter()
+            .find(|r| r.arena_index == 1)
+            .expect("mixed branch");
+        assert_eq!(mixed.epoch, Some(2));
     }
 
     /// Hiding Ok leaves while one of them is selected must move the
