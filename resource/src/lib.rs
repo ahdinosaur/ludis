@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use lusid_causality::CausalityTree;
 use lusid_ctx::Context;
 use lusid_fs::FsError;
-use lusid_operation::{Operation, operations::file::FilePath};
+use lusid_operation::{operations::file::FilePath, Operation};
 use lusid_params::ParseParams;
 use rimu::Span;
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,20 @@ use crate::resources::systemd::{
     Systemd, SystemdChange, SystemdParams, SystemdResource, SystemdState,
 };
 use crate::resources::user::{User, UserChange, UserParams, UserResource, UserState};
+
+/// TODO
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChangeKind {
+    Added,
+    Removed,
+    Modified,
+}
+
+/// TODO
+pub trait ResourceChangeTrait {
+    /// TODO
+    fn kind(&self) -> ChangeKind;
+}
 
 /// The full pipeline for a single resource type.
 ///
@@ -85,7 +99,7 @@ pub trait ResourceType {
     ) -> Result<Self::State, Self::StateError>;
 
     /// The delta from `State` to the desired `Resource`.
-    type Change;
+    type Change: ResourceChangeTrait;
 
     /// Compute the change needed to reach `resource` from `state`. `None` means no-op.
     fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change>;
