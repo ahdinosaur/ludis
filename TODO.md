@@ -820,7 +820,7 @@ cargo clippy --workspace -- -D warnings
 
 ## Task 15 — `lusid-cmd` refactor: expose `ChildStdin`
 
-**Status:** pending
+**Status:** done 067da25
 
 **Goal:** Make the spawned child's stdin accessible from the caller, so the parent CLI can write JSON acks to `lusid-apply`. Pure plumbing — no behavior change.
 
