@@ -731,7 +731,7 @@ cargo run -p lusid -- --config examples/nginx-cluster/lusid.toml local parse
 
 ## Task 13 — Epochs page
 
-**Status:** pending
+**Status:** done f8f4e4d
 
 **Goal:** Page 2: stacked sections, one per resource epoch. Each section shows the epoch's atoms, Phase A ops (merged), Phase B handlers.
 
