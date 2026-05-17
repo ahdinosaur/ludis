@@ -496,7 +496,7 @@ cargo run -p lusid -- --config examples/nginx-cluster/lusid.toml local parse
 
 ## Task 8 — Non-TTY detection + `--no-tui` flag + plain-log fallback
 
-**Status:** pending
+**Status:** done 50e55a6
 
 **Goal:** When stdout is not a terminal, or when `--no-tui` is passed, skip ratatui and stream a human-readable plain log instead. Confirm prompts auto-resolve to `--yes` in this mode.
 
