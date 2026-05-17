@@ -53,6 +53,12 @@ pub struct ApplyOptions {
     pub identity_path: Option<PathBuf>,
     pub secrets_dir: Option<PathBuf>,
     pub guest_mode: bool,
+    /// Short-circuit after planning + validation: parse the plan, expand
+    /// resource params, validate host-paths, build the atoms tree, and run
+    /// `compute_epochs` to catch cyclic dependencies. No probes, no changes,
+    /// no operations. Emits `ResourceParams`, `ResourcesStart`, `ResourcesNode`,
+    /// `ResourcesComplete` and exits without running the per-epoch loop.
+    pub parse_only: bool,
 }
 
 #[derive(Error, Debug)]
@@ -114,6 +120,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         identity_path,
         secrets_dir,
         guest_mode,
+        parse_only,
     } = options;
 
     let mut ctx = Context::create(&root_path)?;
@@ -215,6 +222,15 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     let atom_epochs = compute_epochs(indexed_atoms.map(Some).map_meta(PlanMeta::to_causality))?;
     let epochs_count = atom_epochs.len();
     info!(epochs = epochs_count, "scheduled resource epochs");
+
+    // TODO(Task 10): emit `PipelineInfo { resource_epochs_total, atom_epoch }`
+    // here so consumers see the total epoch count + per-atom epoch mapping
+    // under both `--parse-only` and full apply.
+
+    if parse_only {
+        info!("parse-only: skipping per-epoch apply loop");
+        return Ok(());
+    }
 
     // For each handler-bearing plan-item branch, the latest resource epoch
     // any of its descendant atoms appears in. Phase B fires that branch's

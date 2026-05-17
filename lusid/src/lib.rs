@@ -104,11 +104,19 @@ pub enum MachinesCmd {
 #[derive(Subcommand, Debug)]
 pub enum LocalCmd {
     Apply,
+    #[doc = " Parse + validate the plan without probing or mutating state"]
+    Parse,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum RemoteCmd {
     Apply {
+        #[doc = " Machine identifier"]
+        #[arg(long = "machine")]
+        machine_id: String,
+    },
+    #[doc = " Parse + validate the plan on the target without probing or mutating state"]
+    Parse {
         #[doc = " Machine identifier"]
         #[arg(long = "machine")]
         machine_id: String,
@@ -122,6 +130,12 @@ pub enum RemoteCmd {
 #[derive(Subcommand, Debug)]
 pub enum DevCmd {
     Apply {
+        #[doc = " Machine identifier"]
+        #[arg(long = "machine")]
+        machine_id: String,
+    },
+    #[doc = " Parse + validate the plan in the dev VM without probing or mutating state"]
+    Parse {
         #[doc = " Machine identifier"]
         #[arg(long = "machine")]
         machine_id: String,
@@ -243,17 +257,24 @@ pub async fn run(cli: Cli, config: Config) -> Result<(), AppError> {
             MachinesCmd::List => cmd_machines_list(config).await,
         },
         Cmd::Local { command } => match command {
-            LocalCmd::Apply => cmd_local_apply(config, secrets_dir, identity_path).await,
+            LocalCmd::Apply => cmd_local_apply(config, secrets_dir, identity_path, false).await,
+            LocalCmd::Parse => cmd_local_apply(config, secrets_dir, identity_path, true).await,
         },
         Cmd::Remote { command } => match command {
             RemoteCmd::Apply { machine_id } => {
-                cmd_remote_apply(config, machine_id, secrets_dir, identity_path).await
+                cmd_remote_apply(config, machine_id, secrets_dir, identity_path, false).await
+            }
+            RemoteCmd::Parse { machine_id } => {
+                cmd_remote_apply(config, machine_id, secrets_dir, identity_path, true).await
             }
             RemoteCmd::Ssh { machine_id } => cmd_remote_ssh(config, machine_id).await,
         },
         Cmd::Dev { command } => match command {
             DevCmd::Apply { machine_id } => {
-                cmd_dev_apply(config, machine_id, secrets_dir, identity_path).await
+                cmd_dev_apply(config, machine_id, secrets_dir, identity_path, false).await
+            }
+            DevCmd::Parse { machine_id } => {
+                cmd_dev_apply(config, machine_id, secrets_dir, identity_path, true).await
             }
             DevCmd::Ssh { machine_id } => cmd_dev_ssh(config, machine_id).await,
         },
@@ -291,6 +312,7 @@ async fn cmd_local_apply(
     config: Config,
     secrets_dir: PathBuf,
     identity_path: Option<PathBuf>,
+    parse_only: bool,
 ) -> Result<(), AppError> {
     let MachineConfig { plan, params, .. } = config.local_machine()?;
 
@@ -305,6 +327,10 @@ async fn cmd_local_apply(
 
     if let Some(identity_path) = identity_path.as_deref() {
         command.args(["--identity", &identity_path.to_string_lossy()]);
+    }
+
+    if parse_only {
+        command.arg("--parse-only");
     }
 
     if let Some(params) = params {
@@ -341,6 +367,7 @@ async fn cmd_remote_apply(
     machine_id: String,
     secrets_dir: PathBuf,
     identity_path: Option<PathBuf>,
+    parse_only: bool,
 ) -> Result<(), AppError> {
     let MachineConfig {
         plan,
@@ -480,6 +507,9 @@ async fn cmd_remote_apply(
             " --guest-mode --identity /etc/ssh/ssh_host_ed25519_key --secrets-dir {}",
             shell_words::quote(&guest_secrets_dir),
         ));
+    }
+    if parse_only {
+        command.push_str(" --parse-only");
     }
     if let Some(params) = params {
         let params_json = serde_json::to_string(&params)?;
@@ -756,6 +786,7 @@ async fn cmd_dev_apply(
     machine_id: String,
     secrets_dir: PathBuf,
     identity_path: Option<PathBuf>,
+    parse_only: bool,
 ) -> Result<(), AppError> {
     let MachineConfig {
         plan,
@@ -869,6 +900,9 @@ async fn cmd_dev_apply(
         command.push_str(&format!(
             " --guest-mode --identity {guest_identity_path} --secrets-dir {guest_secrets_dir}"
         ));
+    }
+    if parse_only {
+        command.push_str(" --parse-only");
     }
     if let Some(params) = params {
         let params_json = serde_json::to_string(&params)?;

@@ -1,6 +1,12 @@
 //! `lusid-apply` CLI entry point. Tracing goes to stderr so stdout stays
 //! clean for the [`AppUpdate`](lusid_apply_stdio::AppUpdate) JSON stream.
-//! Exits non-zero on any pipeline error (the error is also logged).
+//!
+//! Exit codes:
+//! - `0` on a clean run (apply or `--parse-only`).
+//! - `1` on plan / validation / cycle / secrets / host-path errors - the
+//!   plan or its declared targets are wrong.
+//! - `2` on IO / context / system / JSON-parameter errors - the operator's
+//!   environment is wrong.
 
 use clap::Parser;
 use lusid_plan::PlanId;
@@ -8,7 +14,7 @@ use std::path::PathBuf;
 use tracing::{debug, error};
 use tracing_subscriber::{EnvFilter, fmt};
 
-use lusid_apply::{ApplyOptions, apply};
+use lusid_apply::{ApplyError, ApplyOptions, apply};
 
 #[derive(Parser, Debug)]
 #[command(name = "lusid-apply", about = "Apply a Lusid plan.", version)]
@@ -50,6 +56,12 @@ struct Cli {
     #[arg(long = "guest-mode")]
     guest_mode: bool,
 
+    /// Parse and validate the plan without probing target state or running
+    /// any operation. Emits the resource-params and atoms tree to stdout,
+    /// runs `compute_epochs` to catch cyclic dependencies, then exits.
+    #[arg(long = "parse-only")]
+    parse_only: bool,
+
     /// Log level (e.g., trace, debug, info, warn, error). Default: info.
     #[arg(long = "log", default_value = "info")]
     log: String,
@@ -73,11 +85,38 @@ async fn main() {
         identity_path: cli.identity_path,
         secrets_dir: cli.secrets_dir,
         guest_mode: cli.guest_mode,
+        parse_only: cli.parse_only,
     };
 
     if let Err(err) = apply(options).await {
         error!("{err}");
-        std::process::exit(1);
+        std::process::exit(exit_code(&err));
+    }
+}
+
+/// Map [`ApplyError`] to a process exit code. `1` means the plan or its
+/// declared targets are wrong (validation, cycles, missing secrets, bad
+/// host-paths, probe / apply failures); `2` means the operator's
+/// environment is wrong (IO, context, system inspection, JSON parameters).
+/// Kept as an exhaustive `match` so new error variants force a deliberate
+/// classification.
+fn exit_code(error: &ApplyError) -> i32 {
+    match error {
+        ApplyError::Context(_)
+        | ApplyError::GetSystem(_)
+        | ApplyError::JsonParameters(_)
+        | ApplyError::RimuParameters(_)
+        | ApplyError::JsonOutput(_)
+        | ApplyError::ReadOperationStdio(_)
+        | ApplyError::WriteStdout(_)
+        | ApplyError::FlushStdout(_) => 2,
+
+        ApplyError::Plan(_)
+        | ApplyError::Epoch(_)
+        | ApplyError::ResourceState(_)
+        | ApplyError::OperationApply(_)
+        | ApplyError::Secrets(_)
+        | ApplyError::HostPathValidation(_) => 1,
     }
 }
 
