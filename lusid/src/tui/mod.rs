@@ -15,12 +15,21 @@
 //! responsive. Terminal raw-mode is acquired via `ratatui::init` and
 //! restored in the [`TerminalSession`]'s `Drop` so panics don't leave the
 //! terminal in a bad state.
+//!
+//! [`plain`] is the non-interactive sibling: it folds the same `AppUpdate`s
+//! into the same [`AppView`] but emits a human digest to stderr instead of
+//! drawing. Selected when stdout is not a TTY or `--no-tui` is set.
 
 #![allow(clippy::collapsible_if)]
+
+mod plain;
+
+pub use plain::plain;
 
 use std::collections::HashSet;
 use std::future::Future;
 use std::io;
+use std::io::IsTerminal;
 use std::pin::Pin;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -45,6 +54,14 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, BufReader},
     sync::mpsc::{UnboundedReceiver, unbounded_channel},
 };
+
+/// True if the current process's stdout is connected to a terminal. The CLI
+/// pairs this with `--no-tui` to choose between [`tui`] and [`plain`]: the
+/// TUI is selected only when stdout is a TTY *and* the operator has not
+/// opted out via `--no-tui`.
+pub fn is_tty_stdout() -> bool {
+    io::stdout().is_terminal()
+}
 
 #[derive(Error, Debug)]
 pub enum TuiError {

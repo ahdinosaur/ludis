@@ -37,7 +37,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::config::{Config, ConfigError, MachineConfig};
 use crate::embedded::EmbeddedError;
-use crate::tui::{TuiError, tui};
+use crate::tui::{TuiError, is_tty_stdout, plain, tui};
 
 /// Parsed CLI. The `lusid-apply` worker is baked into this binary at build
 /// time for each supported target arch (see [`crate::embedded`] /
@@ -64,6 +64,12 @@ pub struct Cli {
     /// `secrets ls`, `secrets check`, and `secrets keygen`.
     #[arg(long = "identity", env = "LUSID_IDENTITY", global = true)]
     pub identity: Option<PathBuf>,
+
+    /// Skip the ratatui TUI even when stdout is a terminal. Emits a line-
+    /// buffered digest to stderr instead. Always implied when stdout is not
+    /// a terminal (CI, pipes, redirects).
+    #[arg(long = "no-tui", env = "LUSID_NO_TUI", global = true)]
+    pub no_tui: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -252,29 +258,69 @@ pub async fn get_config(cli: &Cli) -> Result<Config, AppError> {
 pub async fn run(cli: Cli, config: Config) -> Result<(), AppError> {
     let secrets_dir = resolve_secrets_dir(&cli, &config);
     let identity_path = cli.identity.clone();
+    // Pick the renderer once at dispatch time: TUI only when the operator
+    // didn't opt out AND stdout is a real terminal. Both checks live here so
+    // a non-TTY pipe never accidentally writes ratatui escape sequences.
+    let use_tui = !cli.no_tui && is_tty_stdout();
     match cli.command {
         Cmd::Machines { command } => match command {
             MachinesCmd::List => cmd_machines_list(config).await,
         },
         Cmd::Local { command } => match command {
-            LocalCmd::Apply => cmd_local_apply(config, secrets_dir, identity_path, false).await,
-            LocalCmd::Parse => cmd_local_apply(config, secrets_dir, identity_path, true).await,
+            LocalCmd::Apply => {
+                cmd_local_apply(config, secrets_dir, identity_path, false, use_tui).await
+            }
+            LocalCmd::Parse => {
+                cmd_local_apply(config, secrets_dir, identity_path, true, use_tui).await
+            }
         },
         Cmd::Remote { command } => match command {
             RemoteCmd::Apply { machine_id } => {
-                cmd_remote_apply(config, machine_id, secrets_dir, identity_path, false).await
+                cmd_remote_apply(
+                    config,
+                    machine_id,
+                    secrets_dir,
+                    identity_path,
+                    false,
+                    use_tui,
+                )
+                .await
             }
             RemoteCmd::Parse { machine_id } => {
-                cmd_remote_apply(config, machine_id, secrets_dir, identity_path, true).await
+                cmd_remote_apply(
+                    config,
+                    machine_id,
+                    secrets_dir,
+                    identity_path,
+                    true,
+                    use_tui,
+                )
+                .await
             }
             RemoteCmd::Ssh { machine_id } => cmd_remote_ssh(config, machine_id).await,
         },
         Cmd::Dev { command } => match command {
             DevCmd::Apply { machine_id } => {
-                cmd_dev_apply(config, machine_id, secrets_dir, identity_path, false).await
+                cmd_dev_apply(
+                    config,
+                    machine_id,
+                    secrets_dir,
+                    identity_path,
+                    false,
+                    use_tui,
+                )
+                .await
             }
             DevCmd::Parse { machine_id } => {
-                cmd_dev_apply(config, machine_id, secrets_dir, identity_path, true).await
+                cmd_dev_apply(
+                    config,
+                    machine_id,
+                    secrets_dir,
+                    identity_path,
+                    true,
+                    use_tui,
+                )
+                .await
             }
             DevCmd::Ssh { machine_id } => cmd_dev_ssh(config, machine_id).await,
         },
@@ -313,6 +359,7 @@ async fn cmd_local_apply(
     secrets_dir: PathBuf,
     identity_path: Option<PathBuf>,
     parse_only: bool,
+    use_tui: bool,
 ) -> Result<(), AppError> {
     let MachineConfig { plan, params, .. } = config.local_machine()?;
 
@@ -344,7 +391,11 @@ async fn cmd_local_apply(
         output.status.await?;
         Ok::<_, CommandError>(())
     });
-    tui(output.stdout, output.stderr, wait).await?;
+    if use_tui {
+        tui(output.stdout, output.stderr, wait).await?;
+    } else {
+        plain(output.stdout, output.stderr, wait).await?;
+    }
 
     Ok(())
 }
@@ -368,6 +419,7 @@ async fn cmd_remote_apply(
     secrets_dir: PathBuf,
     identity_path: Option<PathBuf>,
     parse_only: bool,
+    use_tui: bool,
 ) -> Result<(), AppError> {
     let MachineConfig {
         plan,
@@ -528,7 +580,11 @@ async fn cmd_remote_apply(
         handle.channel.wait().await?;
         Ok::<_, SshError>(())
     });
-    let apply_result = tui(&mut handle.stdout, &mut handle.stderr, wait).await;
+    let apply_result = if use_tui {
+        tui(&mut handle.stdout, &mut handle.stderr, wait).await
+    } else {
+        plain(&mut handle.stdout, &mut handle.stderr, wait).await
+    };
 
     // 8. Best-effort post-cleanup. Never shadows apply_result.
     if forward_secrets
@@ -787,6 +843,7 @@ async fn cmd_dev_apply(
     secrets_dir: PathBuf,
     identity_path: Option<PathBuf>,
     parse_only: bool,
+    use_tui: bool,
 ) -> Result<(), AppError> {
     let MachineConfig {
         plan,
@@ -921,7 +978,11 @@ async fn cmd_dev_apply(
         Ok::<_, SshError>(())
     });
 
-    tui(&mut handle.stdout, &mut handle.stderr, wait).await?;
+    if use_tui {
+        tui(&mut handle.stdout, &mut handle.stderr, wait).await?;
+    } else {
+        plain(&mut handle.stdout, &mut handle.stderr, wait).await?;
+    }
 
     if let Err(err) = ssh.disconnect().await {
         tracing::debug!(?err, "ssh disconnect failed");
