@@ -451,7 +451,7 @@ After Phase 0, the wire is fully structured and the renderer lives in its own cr
 
 ## Task 7 — `lusid local parse` + `--parse-only` short-circuit
 
-**Status:** pending
+**Status:** done cf04447
 
 **Goal:** New subcommand that parses + validates a plan and renders the plan-item tree, without probing any state or applying any operation.
 
