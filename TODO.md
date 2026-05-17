@@ -870,7 +870,7 @@ cargo run -p lusid -- --config examples/nginx-cluster/lusid.toml local apply -y
 
 ## Task 16 — Per-epoch confirm: `EpochReady` + ack channel + `--yes` + footer prompt
 
-**Status:** done
+**Status:** done 9ab7a21
 
 **Goal:** Apply pauses between resource epochs (after probes and op planning, before any op runs). TUI shows a footer prompt; user `y`/Enter sends ack, `n`/Esc aborts. `--yes` skips.
 
