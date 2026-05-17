@@ -10,7 +10,7 @@ use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AurParams {
@@ -93,6 +93,14 @@ impl Display for AurChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AurChange::Install { package } => write!(f, "Aur::Install({package})"),
+        }
+    }
+}
+
+impl ResourceChangeTrait for AurChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            AurChange::Install { .. } => ChangeKind::Added,
         }
     }
 }

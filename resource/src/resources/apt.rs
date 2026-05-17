@@ -10,7 +10,7 @@ use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptParams {
@@ -95,6 +95,14 @@ impl Display for AptChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AptChange::Install { package } => write!(f, "Apt::Install({package})"),
+        }
+    }
+}
+
+impl ResourceChangeTrait for AptChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            AptChange::Install { .. } => ChangeKind::Added,
         }
     }
 }

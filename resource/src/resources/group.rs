@@ -10,7 +10,7 @@ use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Plan-level parameters for the `@resource/group` resource.
 ///
@@ -151,6 +151,16 @@ impl Display for GroupChange {
             GroupChange::Create { name, .. } => write!(f, "Group::Create(name = {name})"),
             GroupChange::Modify { name, .. } => write!(f, "Group::Modify(name = {name})"),
             GroupChange::Delete { name } => write!(f, "Group::Delete(name = {name})"),
+        }
+    }
+}
+
+impl ResourceChangeTrait for GroupChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            GroupChange::Create { .. } => ChangeKind::Added,
+            GroupChange::Modify { .. } => ChangeKind::Modified,
+            GroupChange::Delete { .. } => ChangeKind::Removed,
         }
     }
 }

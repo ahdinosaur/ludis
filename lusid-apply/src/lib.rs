@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use lusid_apply_stdio::{AckAction, AppUpdate, ChangeKind, ChangeLabel, EpochSummary, Phase};
+use lusid_apply_stdio::{AckAction, AppUpdate, ChangeLabel, EpochSummary, Phase};
 use lusid_causality::{EpochError, compute_epochs};
 use lusid_ctx::{Context, ContextError};
 use lusid_operation::{Operation, OperationApplyError};
@@ -17,7 +17,7 @@ use lusid_plan::{
     self, PlanError, PlanFlatTree, PlanFlatTreeNode, PlanId, PlanMeta, PlanNodeId, PlanTree,
     map_plan_subitems, plan,
 };
-use lusid_resource::{HostPathValidationError, Resource, ResourceStateError};
+use lusid_resource::{HostPathValidationError, Resource, ResourceChangeTrait, ResourceStateError};
 use lusid_secrets::{LoadError, Redactor, Secrets};
 use lusid_store::Store;
 use lusid_system::{GetSystemError, System};
@@ -357,7 +357,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
                 }
                 change_labels.push(ChangeLabel {
                     atom_id: resource.to_string(),
-                    kind: ChangeKind::classify(change),
+                    kind: change.kind(),
                     summary: change.to_string(),
                 });
             }
@@ -809,6 +809,7 @@ async fn emit(update: AppUpdate) -> Result<(), ApplyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lusid_apply_stdio::ChangeKind;
     use lusid_operation::operations::command::{CommandExecutor, CommandOperation};
     use lusid_operation::operations::file::FilePath;
     use lusid_resource::file::FileResource;

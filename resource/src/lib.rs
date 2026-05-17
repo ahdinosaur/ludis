@@ -47,7 +47,16 @@ use crate::resources::systemd::{
 };
 use crate::resources::user::{User, UserChange, UserParams, UserResource, UserState};
 
-/// TODO
+/// Coarse classification of a [`ResourceChange`], used by the apply pipeline
+/// to size the per-epoch confirm prompt and label each pending change with one
+/// of three buckets. Finer-grained intent (e.g. the specific change variant)
+/// stays on the structured change itself; this is only the headline.
+///
+/// - [`Added`](Self::Added) - the change introduces new state on the target
+///   (install a package, create a file/symlink/dir/user/group).
+/// - [`Removed`](Self::Removed) - the change deletes existing state.
+/// - [`Modified`](Self::Modified) - everything else (writes-over-existing,
+///   mode/owner adjustments, vcs updates, service config tweaks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeKind {
     Added,
@@ -55,9 +64,15 @@ pub enum ChangeKind {
     Modified,
 }
 
-/// TODO
+/// Classify a resource's change value into the coarse [`ChangeKind`] bucket
+/// shown in the confirm prompt summary.
+///
+/// Each resource module implements this on its own `*Change` type so the
+/// add/remove/modify mapping lives next to the variants themselves - adding a
+/// new variant cannot silently drift from the apply-time UI because the
+/// match is local. The [`ResourceChange`] dispatcher implements this too, by
+/// delegating to whichever per-resource variant it carries.
 pub trait ResourceChangeTrait {
-    /// TODO
     fn kind(&self) -> ChangeKind;
 }
 
@@ -327,6 +342,28 @@ impl Display for ResourceChange {
             Systemd(systemd) => systemd.fmt(f),
             User(user) => user.fmt(f),
             Group(group) => group.fmt(f),
+        }
+    }
+}
+
+impl ResourceChangeTrait for ResourceChange {
+    fn kind(&self) -> ChangeKind {
+        use ResourceChange::*;
+        match self {
+            Apt(c) => c.kind(),
+            AptRepo(c) => c.kind(),
+            Aur(c) => c.kind(),
+            File(c) => c.kind(),
+            Directory(c) => c.kind(),
+            Flatpak(c) => c.kind(),
+            FlatpakRemote(c) => c.kind(),
+            Pacman(c) => c.kind(),
+            Podman(c) => c.kind(),
+            Command(c) => c.kind(),
+            Git(c) => c.kind(),
+            Systemd(c) => c.kind(),
+            User(c) => c.kind(),
+            Group(c) => c.kind(),
         }
     }
 }

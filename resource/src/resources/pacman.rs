@@ -10,7 +10,7 @@ use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PacmanParams {
@@ -93,6 +93,14 @@ impl Display for PacmanChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PacmanChange::Install { package } => write!(f, "Pacman::Install({package})"),
+        }
+    }
+}
+
+impl ResourceChangeTrait for PacmanChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            PacmanChange::Install { .. } => ChangeKind::Added,
         }
     }
 }

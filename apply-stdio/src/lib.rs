@@ -50,6 +50,7 @@ use std::collections::HashMap;
 
 use lusid_operation::Operation;
 use lusid_plan::{PlanMeta, PlanTree};
+pub use lusid_resource::ChangeKind;
 use lusid_resource::{Resource, ResourceChange, ResourceParams, ResourceState};
 use lusid_tree::Tree;
 use serde::{Deserialize, Serialize};
@@ -182,87 +183,6 @@ pub enum AppUpdate {
 pub enum AckAction {
     Apply,
     Abort,
-}
-
-/// Coarse classification of an atom change shown in the confirm prompt's
-/// summary. Mapped from the structured [`ResourceChange`] by the producer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ChangeKind {
-    Added,
-    Removed,
-    Modified,
-}
-
-impl ChangeKind {
-    /// Classify a [`ResourceChange`] into the coarse `Added` / `Removed` /
-    /// `Modified` buckets the confirm prompt shows. "Added" is reserved for
-    /// changes that introduce new state on the target (install a package,
-    /// create a file/symlink/dir/user/group); "Removed" for those that delete
-    /// it; everything else (writes-over-existing, mode/owner adjustments,
-    /// vcs updates) is "Modified".
-    pub fn classify(change: &ResourceChange) -> Self {
-        use ChangeKind::*;
-        use lusid_resource::apt::AptChange;
-        use lusid_resource::apt_repo::AptRepoChange;
-        use lusid_resource::aur::AurChange;
-        use lusid_resource::command::CommandChange;
-        use lusid_resource::directory::DirectoryChange;
-        use lusid_resource::file::FileChange;
-        use lusid_resource::flatpak::FlatpakChange;
-        use lusid_resource::flatpak_remote::FlatpakRemoteChange;
-        use lusid_resource::git::GitChange;
-        use lusid_resource::group::GroupChange;
-        use lusid_resource::pacman::PacmanChange;
-        use lusid_resource::podman::PodmanChange;
-        use lusid_resource::user::UserChange;
-
-        match change {
-            ResourceChange::Apt(AptChange::Install { .. }) => Added,
-            ResourceChange::AptRepo(AptRepoChange::Install { .. }) => Added,
-            ResourceChange::Aur(AurChange::Install { .. }) => Added,
-            ResourceChange::Pacman(PacmanChange::Install { .. }) => Added,
-            ResourceChange::Flatpak(FlatpakChange::Install { .. }) => Added,
-            ResourceChange::Flatpak(FlatpakChange::Uninstall { .. }) => Removed,
-            ResourceChange::FlatpakRemote(FlatpakRemoteChange::Add { .. }) => Added,
-            ResourceChange::FlatpakRemote(FlatpakRemoteChange::Modify { .. }) => Modified,
-            ResourceChange::FlatpakRemote(FlatpakRemoteChange::Remove { .. }) => Removed,
-            ResourceChange::File(FileChange::Write { before: None, .. }) => Added,
-            ResourceChange::File(FileChange::Write {
-                before: Some(_), ..
-            }) => Modified,
-            ResourceChange::File(FileChange::CreateSymlink { .. }) => Added,
-            ResourceChange::File(FileChange::Remove { .. }) => Removed,
-            ResourceChange::File(FileChange::ChangeMode { .. }) => Modified,
-            ResourceChange::File(FileChange::ChangeOwner { .. }) => Modified,
-            ResourceChange::Directory(DirectoryChange::Create { .. }) => Added,
-            ResourceChange::Directory(DirectoryChange::CreateSymlink { .. }) => Added,
-            ResourceChange::Directory(DirectoryChange::CopyTree { .. }) => Added,
-            ResourceChange::Directory(DirectoryChange::Remove { .. }) => Removed,
-            ResourceChange::Directory(DirectoryChange::ChangeMode { .. }) => Modified,
-            ResourceChange::Directory(DirectoryChange::ChangeOwner { .. }) => Modified,
-            ResourceChange::Command(CommandChange::Install { .. }) => Added,
-            ResourceChange::Command(CommandChange::Uninstall { .. }) => Removed,
-            ResourceChange::Git(GitChange::Clone { .. }) => Added,
-            ResourceChange::Git(GitChange::Checkout { .. }) => Modified,
-            ResourceChange::Git(GitChange::Pull { .. }) => Modified,
-            // Note(cc): `SystemdChange` is currently a single-variant
-            // struct shape, so this wildcard is exhaustive in practice.
-            // If `SystemdChange` grows variants (start/stop/restart) some
-            // would belong in Added/Removed; narrow the match then.
-            ResourceChange::Systemd(_) => Modified,
-            ResourceChange::Podman(PodmanChange::Create { .. }) => Added,
-            ResourceChange::Podman(PodmanChange::Start { .. }) => Modified,
-            ResourceChange::Podman(PodmanChange::Stop { .. }) => Modified,
-            ResourceChange::Podman(PodmanChange::Recreate { .. }) => Modified,
-            ResourceChange::Podman(PodmanChange::Remove { .. }) => Removed,
-            ResourceChange::User(UserChange::Create { .. }) => Added,
-            ResourceChange::User(UserChange::Modify { .. }) => Modified,
-            ResourceChange::User(UserChange::Delete { .. }) => Removed,
-            ResourceChange::Group(GroupChange::Create { .. }) => Added,
-            ResourceChange::Group(GroupChange::Modify { .. }) => Modified,
-            ResourceChange::Group(GroupChange::Delete { .. }) => Removed,
-        }
-    }
 }
 
 /// One row in [`EpochSummary::change_labels`]: a per-atom one-liner so the

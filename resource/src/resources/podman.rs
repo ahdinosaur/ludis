@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Plan-level parameters for the `@resource/podman` resource.
 ///
@@ -230,6 +230,18 @@ impl Display for PodmanChange {
                 write!(f, "Podman::Recreate(name = {name}, image = {image})")
             }
             PodmanChange::Remove { name } => write!(f, "Podman::Remove({name})"),
+        }
+    }
+}
+
+impl ResourceChangeTrait for PodmanChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            PodmanChange::Create { .. } => ChangeKind::Added,
+            PodmanChange::Start { .. }
+            | PodmanChange::Stop { .. }
+            | PodmanChange::Recreate { .. } => ChangeKind::Modified,
+            PodmanChange::Remove { .. } => ChangeKind::Removed,
         }
     }
 }

@@ -10,7 +10,7 @@ use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemdParams {
@@ -134,6 +134,16 @@ impl Display for SystemdChange {
         }
         let scope = if *user { " --user" } else { "" };
         write!(f, "Systemd::{}({name}){scope}", verbs.join("+"))
+    }
+}
+
+impl ResourceChangeTrait for SystemdChange {
+    /// A systemd change is always a transition on an existing unit's
+    /// enable/active dimension. There is no add/remove of the unit itself
+    /// at this layer (units are created/removed by separate file resources),
+    /// so every variant lands in [`ChangeKind::Modified`].
+    fn kind(&self) -> ChangeKind {
+        ChangeKind::Modified
     }
 }
 

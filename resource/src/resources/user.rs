@@ -13,7 +13,7 @@ use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Plan-level parameters for the `@resource/user` resource.
 ///
@@ -222,6 +222,16 @@ impl Display for UserChange {
                     "User::Delete(name = {name}, remove_home = {remove_home})"
                 )
             }
+        }
+    }
+}
+
+impl ResourceChangeTrait for UserChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            UserChange::Create { .. } => ChangeKind::Added,
+            UserChange::Modify { .. } => ChangeKind::Modified,
+            UserChange::Delete { .. } => ChangeKind::Removed,
         }
     }
 }

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Byte payload of a file as it appears in [`FileState`] / [`FileChange`].
 ///
@@ -433,6 +433,23 @@ impl Display for FileChange {
                 f,
                 "File::ChangeOwner(path = {path}, user = {user:?}, group = {group:?})"
             ),
+        }
+    }
+}
+
+impl ResourceChangeTrait for FileChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            // `before: None` means the target did not previously have these
+            // bytes (no file or non-regular file), so the write introduces
+            // new state. `Some` means we are overwriting existing bytes.
+            FileChange::Write { before: None, .. } => ChangeKind::Added,
+            FileChange::Write {
+                before: Some(_), ..
+            } => ChangeKind::Modified,
+            FileChange::CreateSymlink { .. } => ChangeKind::Added,
+            FileChange::Remove { .. } => ChangeKind::Removed,
+            FileChange::ChangeMode { .. } | FileChange::ChangeOwner { .. } => ChangeKind::Modified,
         }
     }
 }

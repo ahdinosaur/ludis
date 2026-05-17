@@ -13,7 +13,7 @@ use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandParams {
@@ -156,6 +156,15 @@ impl Display for CommandChange {
         match self {
             CommandChange::Install { command } => write!(f, "Command::Install({command})"),
             CommandChange::Uninstall { command } => write!(f, "Command::Uninstall({command})"),
+        }
+    }
+}
+
+impl ResourceChangeTrait for CommandChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            CommandChange::Install { .. } => ChangeKind::Added,
+            CommandChange::Uninstall { .. } => ChangeKind::Removed,
         }
     }
 }

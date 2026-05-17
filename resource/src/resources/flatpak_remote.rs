@@ -10,7 +10,7 @@ use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Plan-level parameters for the `@core/flatpak-remote` resource.
 ///
@@ -159,6 +159,16 @@ impl Display for FlatpakRemoteChange {
             FlatpakRemoteChange::Remove { name, user } => {
                 write!(f, "FlatpakRemote::Remove(name = {name}, user = {user})")
             }
+        }
+    }
+}
+
+impl ResourceChangeTrait for FlatpakRemoteChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            FlatpakRemoteChange::Add { .. } => ChangeKind::Added,
+            FlatpakRemoteChange::Modify { .. } => ChangeKind::Modified,
+            FlatpakRemoteChange::Remove { .. } => ChangeKind::Removed,
         }
     }
 }

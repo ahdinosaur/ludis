@@ -16,7 +16,7 @@ use rimu::{Span, Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryParams {
@@ -260,6 +260,20 @@ impl Display for DirectoryChange {
                     f,
                     "Directory::ChangeOwner(path = {path}, user = {user:?}, group = {group:?})"
                 )
+            }
+        }
+    }
+}
+
+impl ResourceChangeTrait for DirectoryChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            DirectoryChange::Create { .. }
+            | DirectoryChange::CreateSymlink { .. }
+            | DirectoryChange::CopyTree { .. } => ChangeKind::Added,
+            DirectoryChange::Remove { .. } => ChangeKind::Removed,
+            DirectoryChange::ChangeMode { .. } | DirectoryChange::ChangeOwner { .. } => {
+                ChangeKind::Modified
             }
         }
     }

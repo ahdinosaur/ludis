@@ -10,7 +10,7 @@ use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Default remote name used when a `state: "present"` declaration omits `remote`.
 /// `flathub` is by far the dominant flatpak remote; explicit other remotes
@@ -179,6 +179,15 @@ impl Display for FlatpakChange {
                 f,
                 "Flatpak::Uninstall(name = {name}, user = {user}, delete_data = {delete_data})"
             ),
+        }
+    }
+}
+
+impl ResourceChangeTrait for FlatpakChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            FlatpakChange::Install { .. } => ChangeKind::Added,
+            FlatpakChange::Uninstall { .. } => ChangeKind::Removed,
         }
     }
 }

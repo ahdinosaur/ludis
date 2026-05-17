@@ -14,7 +14,7 @@ use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 const KEYRINGS_DIR: &str = "/etc/apt/keyrings";
 const SOURCES_LIST_DIR: &str = "/etc/apt/sources.list.d";
@@ -163,6 +163,14 @@ impl Display for AptRepoChange {
                 key.is_some(),
                 sources.is_some()
             ),
+        }
+    }
+}
+
+impl ResourceChangeTrait for AptRepoChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            AptRepoChange::Install { .. } => ChangeKind::Added,
         }
     }
 }

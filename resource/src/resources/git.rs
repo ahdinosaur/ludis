@@ -14,7 +14,7 @@ use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitParams {
@@ -160,6 +160,15 @@ impl Display for GitChange {
                 path, version, force, fetch
             ),
             GitChange::Pull { path } => write!(f, "Git::Pull(path = {})", path),
+        }
+    }
+}
+
+impl ResourceChangeTrait for GitChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            GitChange::Clone { .. } => ChangeKind::Added,
+            GitChange::Checkout { .. } | GitChange::Pull { .. } => ChangeKind::Modified,
         }
     }
 }
