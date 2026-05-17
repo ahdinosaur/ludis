@@ -944,7 +944,7 @@ cargo run -p lusid -- --config examples/nginx-cluster/lusid.toml local apply -y
 
 ## Task 17 — Polish: `n`/`N` jump-to-change + epoch tags
 
-**Status:** done
+**Status:** done 79b1884
 
 **Goal:** Two small quality-of-life additions.
 
