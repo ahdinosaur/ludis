@@ -1,12 +1,12 @@
-//! Ratatui-based TUI for the apply pipeline. Two structural pages:
+//! Ratatui-based TUI for the apply pipeline. Three structural pages:
 //!
 //! - **Tree** (`1`): plan-item tree on the left with per-atom status badges,
 //!   detail pane on the right (or stacked vertically below 100 columns).
 //!   This is the default page and the surface most operators spend time on.
+//! - **Epochs** (`2`): one section per resource epoch, each showing the
+//!   epoch's atoms, Phase A ops, and Phase B handlers, with a detail pane on
+//!   the right (same layout breakpoint as Tree).
 //! - **Stderr** (`e`): apply stderr scrollback.
-//!
-//! An **Epochs** (`2`) page is reserved for Task 13 - it shows a placeholder
-//! until then.
 //!
 //! Input: crossterm events are read on a dedicated OS thread (blocking read)
 //! and forwarded into a tokio mpsc channel so the main select loop stays
@@ -25,14 +25,16 @@ mod plain;
 
 pub use plain::plain;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::io;
 use std::io::IsTerminal;
 use std::pin::Pin;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use lusid_apply_stdio::{AppUpdate, AppView, AppViewError, LeafState, Phase, ResourcesNode};
+use lusid_apply_stdio::{
+    AppUpdate, AppView, AppViewError, LeafState, OperationView, Phase, ResourcesNode,
+};
 use lusid_cmd::CommandError;
 use lusid_plan::{PlanMeta, PlanNodeId};
 use lusid_render::{Palette as RenderPalette, Render, RenderedNode};
@@ -286,6 +288,58 @@ impl TreePageState {
     }
 }
 
+/// State for the Epochs page. Selection cycles across every visible row -
+/// epoch headers, atoms, phase headers, individual ops - via [`EpochsCursor`],
+/// which stays stable across data arrivals (collapse/uncollapse, new ops)
+/// even as the underlying row list reshuffles. `collapsed` is keyed by the
+/// resource epoch index.
+#[derive(Debug, Default, Clone)]
+struct EpochsPageState {
+    collapsed: HashSet<usize>,
+    selected: Option<EpochsCursor>,
+    list_offset: usize,
+    detail_focus: DetailFocus,
+    detail_scroll: u16,
+    awaiting_g: bool,
+}
+
+impl EpochsPageState {
+    fn toggle_collapse(&mut self, epoch: usize) {
+        if self.collapsed.contains(&epoch) {
+            self.collapsed.remove(&epoch);
+        } else {
+            self.collapsed.insert(epoch);
+        }
+    }
+
+    fn is_expanded(&self, epoch: usize) -> bool {
+        !self.collapsed.contains(&epoch)
+    }
+
+    fn ensure_visible_row(&mut self, selected_row: usize, height: usize) {
+        if height == 0 {
+            return;
+        }
+        let bottom = self.list_offset + height.saturating_sub(1);
+        if selected_row < self.list_offset {
+            self.list_offset = selected_row;
+        } else if selected_row > bottom {
+            self.list_offset = selected_row.saturating_sub(height.saturating_sub(1));
+        }
+    }
+}
+
+/// Stable selection key for the Epochs page. Survives row reshuffles when
+/// epochs collapse/uncollapse or new ops arrive; the renderer maps it back to
+/// the current row index each frame via [`build_epochs_rows`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EpochsCursor {
+    EpochHeader { epoch: usize },
+    Atom { arena_index: usize },
+    PhaseHeader { epoch: usize, phase: Phase },
+    Op { epoch_index: usize, op_index: usize },
+}
+
 /// Top-level TUI state. Holds the folded `AppView` from the wire plus
 /// per-page UI state. The header strip's `subcommand` label is the only
 /// thing the operator passes from the CLI; everything else is derived from
@@ -297,6 +351,7 @@ struct TuiApp {
     page: UiPage,
 
     tree: TreePageState,
+    epochs: EpochsPageState,
 
     child_exited: bool,
 
@@ -317,6 +372,7 @@ impl TuiApp {
             subcommand,
             page: UiPage::Tree,
             tree: TreePageState::new(),
+            epochs: EpochsPageState::default(),
             child_exited: false,
             stderr_buffer: String::new(),
             stderr_lines_count: 0,
@@ -458,13 +514,16 @@ impl TuiApp {
     }
 
     fn handle_event_epochs(&mut self, code: KeyCode) -> bool {
-        // Page-switch keys; everything else is a no-op until Task 13.
-        // Esc returns to Tree to match standard TUI conventions; `q` is the
-        // only way to quit, so the operator can't accidentally exit by
-        // tapping Esc to dismiss the page.
+        let was_awaiting_g = self.epochs.awaiting_g;
+        self.epochs.awaiting_g = false;
+
         match code {
             KeyCode::Char('q') => return true,
+            // Esc closes the page (returns to Tree) to match standard TUI
+            // conventions; `q` is the only way to quit, so the operator can't
+            // accidentally exit by tapping Esc.
             KeyCode::Esc => self.page = UiPage::Tree,
+
             KeyCode::Char('1') => self.page = UiPage::Tree,
             KeyCode::Char('2') => self.page = UiPage::Epochs,
             KeyCode::Char('e') => {
@@ -472,6 +531,46 @@ impl TuiApp {
                 self.stderr_follow = true;
                 self.stderr_scroll = u16::MAX;
             }
+
+            KeyCode::Tab => {
+                self.epochs.detail_focus = match self.epochs.detail_focus {
+                    DetailFocus::Tree => DetailFocus::Detail,
+                    DetailFocus::Detail => DetailFocus::Tree,
+                };
+            }
+
+            KeyCode::Char('g') => {
+                if was_awaiting_g {
+                    self.epochs_jump_first();
+                } else {
+                    self.epochs.awaiting_g = true;
+                }
+            }
+            KeyCode::Char('G') => self.epochs_jump_last(),
+
+            KeyCode::Down | KeyCode::Char('j') => self.epochs_move_or_scroll(1),
+            KeyCode::Up | KeyCode::Char('k') => self.epochs_move_or_scroll(-1),
+
+            KeyCode::Right | KeyCode::Char('l') => {
+                if let Some(EpochsCursor::EpochHeader { epoch }) = self.epochs.selected {
+                    self.epochs.collapsed.remove(&epoch);
+                }
+            }
+
+            KeyCode::Left | KeyCode::Char('h') => {
+                if let Some(EpochsCursor::EpochHeader { epoch }) = self.epochs.selected {
+                    self.epochs.collapsed.insert(epoch);
+                    self.clamp_epochs_selection_to_visible();
+                }
+            }
+
+            KeyCode::Char(' ') => {
+                if let Some(EpochsCursor::EpochHeader { epoch }) = self.epochs.selected {
+                    self.epochs.toggle_collapse(epoch);
+                    self.clamp_epochs_selection_to_visible();
+                }
+            }
+
             _ => {}
         }
         false
@@ -586,6 +685,78 @@ impl TuiApp {
             .max_by_key(|r| r.arena_index)
             .or_else(|| rows.first());
         self.tree.selected = fallback.map(|r| r.arena_index);
+    }
+
+    fn epochs_move_or_scroll(&mut self, delta: i32) {
+        if self.epochs.detail_focus == DetailFocus::Detail {
+            if delta > 0 {
+                self.epochs.detail_scroll = self.epochs.detail_scroll.saturating_add(delta as u16);
+            } else {
+                self.epochs.detail_scroll =
+                    self.epochs.detail_scroll.saturating_sub((-delta) as u16);
+            }
+        } else {
+            self.epochs_move(delta);
+        }
+    }
+
+    fn epochs_move(&mut self, delta: i32) {
+        let rows = build_epochs_rows(&self.app_view, &self.epochs);
+        if rows.is_empty() {
+            self.epochs.selected = None;
+            self.epochs.list_offset = 0;
+            return;
+        }
+        let current = rows
+            .iter()
+            .position(|r| Some(r.cursor) == self.epochs.selected)
+            .unwrap_or(0);
+        let next = if delta >= 0 {
+            (current + delta as usize).min(rows.len() - 1)
+        } else {
+            current.saturating_sub((-delta) as usize)
+        };
+        self.epochs.selected = Some(rows[next].cursor);
+        self.epochs.detail_scroll = 0;
+    }
+
+    fn epochs_jump_first(&mut self) {
+        let rows = build_epochs_rows(&self.app_view, &self.epochs);
+        if let Some(first) = rows.first() {
+            self.epochs.selected = Some(first.cursor);
+        }
+    }
+
+    fn epochs_jump_last(&mut self) {
+        let rows = build_epochs_rows(&self.app_view, &self.epochs);
+        if let Some(last) = rows.last() {
+            self.epochs.selected = Some(last.cursor);
+        }
+    }
+
+    /// After collapsing, the previously-selected cursor may no longer appear
+    /// in the visible rows. Move the selection to the still-visible header of
+    /// the same epoch (every row carries one), falling back to the first row.
+    /// Mirrors [`TuiApp::clamp_tree_selection_to_visible`].
+    fn clamp_epochs_selection_to_visible(&mut self) {
+        let rows = build_epochs_rows(&self.app_view, &self.epochs);
+        if rows.is_empty() {
+            self.epochs.selected = None;
+            return;
+        }
+        let Some(prev) = self.epochs.selected else {
+            self.epochs.selected = rows.first().map(|r| r.cursor);
+            return;
+        };
+        if rows.iter().any(|r| r.cursor == prev) {
+            return;
+        }
+        let prev_epoch = epochs_cursor_epoch(&self.app_view, prev);
+        let fallback = rows
+            .iter()
+            .rfind(|r| matches!(r.cursor, EpochsCursor::EpochHeader { epoch } if Some(epoch) == prev_epoch))
+            .or_else(|| rows.first());
+        self.epochs.selected = fallback.map(|r| r.cursor);
     }
 
     fn push_stderr(&mut self, line: String) {
@@ -741,7 +912,11 @@ fn footer_hint(app: &TuiApp) -> String {
         UiPage::Tree => "j/k move  h/l collapse/expand  Tab focus  / filter  u show-unchanged  \
              gg/G first/last  1/2/e pages  q quit"
             .to_string(),
-        UiPage::Epochs => "1/2/e pages  q quit  (Task 13 will fill this in)".to_string(),
+        UiPage::Epochs => {
+            "j/k move  h/l collapse/expand  Space toggle  Tab focus  gg/G first/last  \
+             1/2/e pages  q quit"
+                .to_string()
+        }
         UiPage::Stderr => {
             "j/k scroll  PgUp/PgDn page  g/G top/bottom  1/2/e pages  q quit".to_string()
         }
@@ -1132,34 +1307,662 @@ fn extend_lines(lines: &mut Vec<Line<'static>>, node: &RenderedNode, palette: &R
 }
 
 // --------------------------------------------------------------------------
-// Epochs page (placeholder for Task 13)
+// Epochs page
 // --------------------------------------------------------------------------
 
-fn draw_epochs_page(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
-    let view = &app.app_view;
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let phase_a_count = view
-        .operation_epoch_meta
+fn draw_epochs_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
+    if app.app_view.resource_epochs_total().is_none() {
+        draw_placeholder(frame, area, "Waiting for pipeline info...");
+        return;
+    }
+
+    let rows = build_epochs_rows(&app.app_view, &app.epochs);
+
+    // Lazy-default the selection to the first visible row (an epoch header).
+    if app.epochs.selected.is_none() {
+        app.epochs.selected = rows.first().map(|r| r.cursor);
+    }
+
+    let layout = if area.width >= 100 {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
+            .split(area)
+    };
+
+    draw_epochs_list(frame, layout[0], app, &rows);
+    draw_epochs_detail(frame, layout[1], app);
+}
+
+/// One renderable row on the Epochs page. The flat list mirrors `EpochsCursor`
+/// (the stable selection key) plus the small set of derived facts the row
+/// needs at draw time so the renderer doesn't re-walk the tree for each row.
+#[derive(Debug, Clone)]
+struct EpochsRow {
+    cursor: EpochsCursor,
+    depth: usize,
+    badge: Option<Badge>,
+    label: String,
+    /// `~ requires: <id>` / `(epoch K)` annotation. Per-atom only; the
+    /// detail pane shows full per-branch dependency info.
+    annotation: Option<String>,
+}
+
+/// Visible-row list for the Epochs page. Sections appear in resource-epoch
+/// order; within each section: epoch header → atoms → Phase A header → Phase A
+/// ops → Phase B header → Phase B ops. Collapsed sections render only their
+/// header. Atoms are sorted by arena index so navigation is deterministic.
+fn build_epochs_rows(view: &AppView, state: &EpochsPageState) -> Vec<EpochsRow> {
+    let mut rows = Vec::new();
+    let Some(total) = view.resource_epochs_total() else {
+        return rows;
+    };
+
+    // atoms grouped by resource epoch.
+    let mut atoms_by_epoch: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (atom_idx, epoch) in &view.atom_epoch {
+        atoms_by_epoch.entry(*epoch).or_default().push(*atom_idx);
+    }
+    for v in atoms_by_epoch.values_mut() {
+        v.sort_unstable();
+    }
+
+    // op-epochs grouped by (resource_epoch, phase). The inner Vec is in
+    // arrival order, which mirrors apply order, which is what operators
+    // expect to read top-down.
+    let mut ops_by_epoch_phase: HashMap<(usize, Phase), Vec<usize>> = HashMap::new();
+    for (op_epoch_index, meta) in view.operation_epoch_meta.iter().enumerate() {
+        debug_assert!(
+            meta.resource_epoch < total,
+            "op epoch {op_epoch_index} carries resource_epoch={} \
+             but PipelineInfo says total={total}; ops would be invisible",
+            meta.resource_epoch,
+        );
+        ops_by_epoch_phase
+            .entry((meta.resource_epoch, meta.phase))
+            .or_default()
+            .push(op_epoch_index);
+    }
+
+    let resources = view.resources.as_ref();
+    let parent_of = resources.map(build_parent_of_resources).unwrap_or_default();
+    let plan_item_index = resources.map(build_plan_item_index).unwrap_or_default();
+    let latest_epoch_by_branch = resources
+        .map(|r| build_latest_epoch_by_branch(r, view, &parent_of))
+        .unwrap_or_default();
+
+    for epoch in 0..total {
+        let atoms = atoms_by_epoch.get(&epoch).cloned().unwrap_or_default();
+        let phase_a = ops_by_epoch_phase
+            .get(&(epoch, Phase::A))
+            .cloned()
+            .unwrap_or_default();
+        let phase_b = ops_by_epoch_phase
+            .get(&(epoch, Phase::B))
+            .cloned()
+            .unwrap_or_default();
+
+        // Header.
+        rows.push(EpochsRow {
+            cursor: EpochsCursor::EpochHeader { epoch },
+            depth: 0,
+            badge: Some(rollup_for_atoms(resources, &atoms)),
+            label: format_epoch_header(view, epoch, &atoms, &phase_b),
+            annotation: None,
+        });
+
+        if !state.is_expanded(epoch) {
+            continue;
+        }
+
+        // Atoms.
+        for arena_index in &atoms {
+            let (badge, label) = atom_badge_and_label(resources, *arena_index);
+            let annotation = requires_annotation_for_atom(
+                view,
+                *arena_index,
+                &parent_of,
+                &plan_item_index,
+                &latest_epoch_by_branch,
+            );
+            rows.push(EpochsRow {
+                cursor: EpochsCursor::Atom {
+                    arena_index: *arena_index,
+                },
+                depth: 1,
+                badge: Some(badge),
+                label,
+                annotation,
+            });
+        }
+
+        // Phase A.
+        rows.push(EpochsRow {
+            cursor: EpochsCursor::PhaseHeader {
+                epoch,
+                phase: Phase::A,
+            },
+            depth: 1,
+            badge: None,
+            label: format!("Phase A · {} op event(s)", phase_a.len()),
+            annotation: None,
+        });
+        for &epoch_index in &phase_a {
+            push_op_rows(&mut rows, view, epoch_index);
+        }
+
+        // Phase B.
+        rows.push(EpochsRow {
+            cursor: EpochsCursor::PhaseHeader {
+                epoch,
+                phase: Phase::B,
+            },
+            depth: 1,
+            badge: None,
+            label: if phase_b.is_empty() {
+                "Phase B · (no on_change handlers fired)".to_string()
+            } else {
+                format!("Phase B · {} op event(s)", phase_b.len())
+            },
+            annotation: None,
+        });
+        for &epoch_index in &phase_b {
+            push_op_rows(&mut rows, view, epoch_index);
+        }
+    }
+
+    rows
+}
+
+/// Append one OpRow per operation in the given op-epoch's apply pane.
+/// Lifts the badge from `OperationView` so callers don't need to.
+fn push_op_rows(rows: &mut Vec<EpochsRow>, view: &AppView, epoch_index: usize) {
+    let Some(ops) = view.operations_epochs.get(epoch_index) else {
+        return;
+    };
+    for (op_index, op) in ops.iter().enumerate() {
+        rows.push(EpochsRow {
+            cursor: EpochsCursor::Op {
+                epoch_index,
+                op_index,
+            },
+            depth: 2,
+            badge: Some(badge_for_op(op)),
+            label: op.label.render().to_plain_string(),
+            annotation: None,
+        });
+    }
+}
+
+fn draw_epochs_list(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp, rows: &[EpochsRow]) {
+    let selected_row = rows
         .iter()
-        .filter(|m| m.phase == Phase::A)
-        .count();
-    let phase_b_count = view.operation_epoch_meta.len() - phase_a_count;
+        .position(|r| Some(r.cursor) == app.epochs.selected);
+
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| {
+            let mut spans: Vec<Span> = Vec::new();
+            spans.push(Span::raw("  ".repeat(row.depth)));
+            if let Some(badge) = row.badge {
+                spans.push(Span::styled(format!("{} ", badge.glyph()), badge.style()));
+            }
+            // Header rows render the collapse glyph so operators see the toggle
+            // affordance; ops/atoms don't have descendants of their own here.
+            if let EpochsCursor::EpochHeader { epoch } = row.cursor {
+                spans.push(Span::styled(
+                    if app.epochs.is_expanded(epoch) {
+                        "▼ "
+                    } else {
+                        "▶ "
+                    },
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            let label_style = match row.cursor {
+                EpochsCursor::EpochHeader { .. } => Style::default().add_modifier(Modifier::BOLD),
+                EpochsCursor::PhaseHeader { .. } => Style::default().fg(Color::DarkGray),
+                _ => Style::default(),
+            };
+            spans.push(Span::styled(row.label.clone(), label_style));
+            if let Some(ann) = &row.annotation {
+                spans.push(Span::styled(
+                    format!("  {ann}"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let mut list_state = ListState::default();
+    list_state.select(selected_row);
+
+    let inner_height = area.height.saturating_sub(2) as usize;
+    if let Some(row) = selected_row {
+        app.epochs.ensure_visible_row(row, inner_height);
+    }
+    *list_state.offset_mut() = app.epochs.list_offset;
+
+    let title = if app.epochs.detail_focus == DetailFocus::Tree {
+        "epochs (focused)"
+    } else {
+        "epochs"
+    };
+    let widget = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+
+    frame.render_stateful_widget(widget, area, &mut list_state);
+}
+
+fn draw_epochs_detail(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
+    let render_palette = RenderPalette::default();
+    let text = match app.epochs.selected {
+        Some(cursor) => detail_for_epochs_cursor(&app.app_view, cursor, &render_palette),
+        None => Text::from("(no selection)"),
+    };
+
+    let title = if app.epochs.detail_focus == DetailFocus::Detail {
+        "detail (focused)"
+    } else {
+        "detail"
+    };
+    let widget = Paragraph::new(text)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .wrap(Wrap { trim: false })
+        .scroll((app.epochs.detail_scroll, 0));
+    frame.render_widget(widget, area);
+}
+
+fn detail_for_epochs_cursor(
+    view: &AppView,
+    cursor: EpochsCursor,
+    palette: &RenderPalette,
+) -> Text<'static> {
+    match cursor {
+        EpochsCursor::EpochHeader { epoch } => detail_for_epoch_header(view, epoch),
+        EpochsCursor::Atom { arena_index } => {
+            let Some(resources) = view.resources.as_ref() else {
+                return Text::from("(no resources)");
+            };
+            match resources.nodes.get(arena_index).and_then(Option::as_ref) {
+                Some(ResourcesNode::Leaf { state }) => detail_for_leaf(state, palette),
+                _ => Text::from(format!("(no atom at index {arena_index})")),
+            }
+        }
+        EpochsCursor::PhaseHeader { epoch, phase } => detail_for_phase_header(view, epoch, phase),
+        EpochsCursor::Op {
+            epoch_index,
+            op_index,
+        } => detail_for_op(view, epoch_index, op_index, palette),
+    }
+}
+
+fn detail_for_epoch_header(view: &AppView, epoch: usize) -> Text<'static> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
     let total = view
         .resource_epochs_total()
         .map(|n| n.to_string())
-        .unwrap_or_else(|| "?".to_string());
-    lines.push(Line::from(Span::raw(format!(
-        "{total} resource epoch(s), {phase_a_count} Phase A, {phase_b_count} Phase B logged",
-    ))));
-    lines.push(blank_line());
-    lines.push(Line::from(Span::styled(
-        "Epochs page is reserved for Task 13. Use `1` to return to Tree.",
-        Style::default().fg(Color::DarkGray),
+        .unwrap_or_else(|| "?".into());
+    lines.push(section_header(&format!(
+        "Resource epoch {}/{total}",
+        epoch + 1
     )));
-    let widget = Paragraph::new(Text::from(lines))
-        .block(Block::default().borders(Borders::ALL).title("epochs"))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(widget, area);
+
+    let atoms: Vec<usize> = view
+        .atom_epoch
+        .iter()
+        .filter_map(|(idx, e)| if *e == epoch { Some(*idx) } else { None })
+        .collect();
+    let mut atoms = atoms;
+    atoms.sort_unstable();
+
+    lines.push(field_line("atoms", &atoms.len().to_string()));
+    let changed = atoms
+        .iter()
+        .filter(|&&idx| matches!(leaf_at(view, idx), Some(LeafState::Changed { .. })))
+        .count();
+    lines.push(field_line("changed", &changed.to_string()));
+    let phase_a = view
+        .operation_epoch_meta
+        .iter()
+        .filter(|m| m.resource_epoch == epoch && m.phase == Phase::A)
+        .count();
+    let phase_b = view
+        .operation_epoch_meta
+        .iter()
+        .filter(|m| m.resource_epoch == epoch && m.phase == Phase::B)
+        .count();
+    lines.push(field_line("Phase A op events", &phase_a.to_string()));
+    lines.push(field_line("Phase B op events", &phase_b.to_string()));
+
+    Text::from(lines)
+}
+
+fn detail_for_phase_header(view: &AppView, epoch: usize, phase: Phase) -> Text<'static> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let label = match phase {
+        Phase::A => "Phase A: change ops produced by this epoch's atoms",
+        Phase::B => "Phase B: on_change handlers fired by this epoch's branches",
+    };
+    lines.push(section_header(label));
+
+    let matching: Vec<(usize, usize)> = view
+        .operation_epoch_meta
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            if m.resource_epoch == epoch && m.phase == phase {
+                Some((i, view.operations_epochs.get(i).map(Vec::len).unwrap_or(0)))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if matching.is_empty() {
+        lines.push(blank_line());
+        let note = match phase {
+            Phase::A => "no op events yet (epoch may not have run, or had no changes)",
+            Phase::B => "no on_change handlers fired",
+        };
+        lines.push(status_line(note));
+    } else {
+        let total_ops: usize = matching.iter().map(|(_, n)| *n).sum();
+        lines.push(field_line("op epochs", &matching.len().to_string()));
+        lines.push(field_line("total ops", &total_ops.to_string()));
+    }
+
+    Text::from(lines)
+}
+
+fn detail_for_op(
+    view: &AppView,
+    epoch_index: usize,
+    op_index: usize,
+    palette: &RenderPalette,
+) -> Text<'static> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let Some(op) = view
+        .operations_epochs
+        .get(epoch_index)
+        .and_then(|ops| ops.get(op_index))
+    else {
+        return Text::from(format!("(no op at {epoch_index}.{op_index})"));
+    };
+
+    lines.push(section_header("Operation"));
+    extend_lines(&mut lines, &op.label.render(), palette);
+    lines.push(blank_line());
+
+    let status = if !op.is_complete {
+        "running"
+    } else if op.error.is_some() {
+        "failed"
+    } else {
+        "complete"
+    };
+    lines.push(field_line("status", status));
+    if let Some(meta) = view.operation_epoch_meta(epoch_index) {
+        let total = view
+            .resource_epochs_total()
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "?".into());
+        lines.push(field_line(
+            "resource epoch",
+            &format!("{}/{total}", meta.resource_epoch + 1),
+        ));
+        lines.push(field_line(
+            "phase",
+            match meta.phase {
+                Phase::A => "A",
+                Phase::B => "B",
+            },
+        ));
+    }
+    if let Some(err) = &op.error {
+        lines.push(blank_line());
+        lines.push(section_header("Error"));
+        lines.push(Line::from(Span::styled(
+            err.clone(),
+            Style::default().fg(Color::Red),
+        )));
+    }
+    if !op.stdout.is_empty() {
+        lines.push(blank_line());
+        lines.push(section_header("stdout"));
+        for line in op.stdout.lines() {
+            lines.push(Line::from(Span::raw(line.to_string())));
+        }
+    }
+    if !op.stderr.is_empty() {
+        lines.push(blank_line());
+        lines.push(section_header("stderr"));
+        for line in op.stderr.lines() {
+            lines.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(Color::Red),
+            )));
+        }
+    }
+
+    Text::from(lines)
+}
+
+/// Header row text. `handlers` is the count of Phase B *operations* (sum over
+/// the relevant op-epochs), matching project terminology where handlers are
+/// the `on_change` ops fired in Phase B. Epoch number is 1-based to match
+/// the header strip (`epoch K/N`).
+fn format_epoch_header(view: &AppView, epoch: usize, atoms: &[usize], phase_b: &[usize]) -> String {
+    let total = view
+        .resource_epochs_total()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".into());
+    let changed = atoms
+        .iter()
+        .filter(|&&idx| matches!(leaf_at(view, idx), Some(LeafState::Changed { .. })))
+        .count();
+    let handlers: usize = phase_b
+        .iter()
+        .filter_map(|&i| view.operations_epochs.get(i).map(Vec::len))
+        .sum();
+    format!(
+        "Epoch {one_based}/{total} · {} atoms · {changed} changed · {handlers} handlers",
+        atoms.len(),
+        one_based = epoch + 1,
+    )
+}
+
+fn leaf_at(view: &AppView, arena_index: usize) -> Option<&LeafState> {
+    match view.resources.as_ref()?.nodes.get(arena_index)?.as_ref()? {
+        ResourcesNode::Leaf { state } => Some(state),
+        _ => None,
+    }
+}
+
+fn atom_badge_and_label(
+    resources: Option<&lusid_apply_stdio::ResourcesTree>,
+    arena_index: usize,
+) -> (Badge, String) {
+    let Some(resources) = resources else {
+        return (Badge::Planned, format!("#{arena_index}"));
+    };
+    match resources.nodes.get(arena_index).and_then(Option::as_ref) {
+        Some(ResourcesNode::Leaf { state }) => (
+            badge_for_leaf(state),
+            state.resource().render().to_plain_string(),
+        ),
+        _ => (Badge::Planned, format!("#{arena_index}")),
+    }
+}
+
+fn rollup_for_atoms(
+    resources: Option<&lusid_apply_stdio::ResourcesTree>,
+    atoms: &[usize],
+) -> Badge {
+    let Some(resources) = resources else {
+        return Badge::Planned;
+    };
+    let mut acc = Badge::Ok;
+    let mut saw_any = false;
+    for &idx in atoms {
+        if let Some(ResourcesNode::Leaf { state }) =
+            resources.nodes.get(idx).and_then(Option::as_ref)
+        {
+            let b = badge_for_leaf(state);
+            acc = if saw_any { rollup(acc, b) } else { b };
+            saw_any = true;
+        }
+    }
+    if saw_any { acc } else { Badge::Planned }
+}
+
+fn badge_for_op(op: &OperationView) -> Badge {
+    if !op.is_complete {
+        Badge::Running
+    } else if op.error.is_some() {
+        Badge::Failed
+    } else {
+        Badge::Ok
+    }
+}
+
+/// `arena_index -> parent_arena_index` for the consumer's view of the atoms
+/// tree. Produced once per render frame.
+fn build_parent_of_resources(
+    resources: &lusid_apply_stdio::ResourcesTree,
+) -> HashMap<usize, usize> {
+    let mut parent_of: HashMap<usize, usize> = HashMap::new();
+    for (idx, slot) in resources.nodes.iter().enumerate() {
+        if let Some(ResourcesNode::Branch { children, .. }) = slot {
+            for &child in children {
+                parent_of.insert(child, idx);
+            }
+        }
+    }
+    parent_of
+}
+
+/// `PlanNodeId -> branch_arena_index` for every branch whose `meta.id` is set.
+/// Lets `requires` ids be resolved back to the branch (and its descendant
+/// atoms) without re-walking the tree.
+fn build_plan_item_index(
+    resources: &lusid_apply_stdio::ResourcesTree,
+) -> HashMap<PlanNodeId, usize> {
+    let mut out: HashMap<PlanNodeId, usize> = HashMap::new();
+    for (idx, slot) in resources.nodes.iter().enumerate() {
+        if let Some(ResourcesNode::Branch {
+            meta: PlanMeta { id: Some(id), .. },
+            ..
+        }) = slot
+        {
+            out.insert(id.clone(), idx);
+        }
+    }
+    out
+}
+
+/// `← requires: <id> (epoch K)` annotation for an atom row. Walks up the
+/// ancestor chain until it finds a branch with at least one cross-epoch
+/// requires (resolves to a known branch whose latest atom epoch is strictly
+/// earlier than this atom's epoch). Same-epoch and later edges add noise
+/// without explaining where the row landed, so the walk continues past
+/// ancestors whose entire requires set is non-crossing.
+///
+/// `None` when no ancestor declares any cross-epoch requires.
+fn requires_annotation_for_atom(
+    view: &AppView,
+    arena_index: usize,
+    parent_of: &HashMap<usize, usize>,
+    plan_item_index: &HashMap<PlanNodeId, usize>,
+    latest_epoch_by_branch: &HashMap<usize, usize>,
+) -> Option<String> {
+    let resources = view.resources.as_ref()?;
+    let atom_epoch = view.epoch_of_atom(arena_index)?;
+    let mut cur = parent_of.get(&arena_index).copied();
+    while let Some(idx) = cur {
+        if let Some(ResourcesNode::Branch {
+            meta: PlanMeta { requires, .. },
+            ..
+        }) = resources.nodes.get(idx).and_then(Option::as_ref)
+            && !requires.is_empty()
+        {
+            let parts: Vec<String> = requires
+                .iter()
+                .filter_map(|r| {
+                    let branch_idx = plan_item_index.get(r)?;
+                    let dep_epoch = latest_epoch_by_branch.get(branch_idx).copied()?;
+                    if dep_epoch >= atom_epoch {
+                        return None;
+                    }
+                    Some(format!(
+                        "{} (epoch {})",
+                        plan_node_short_label(r),
+                        dep_epoch + 1,
+                    ))
+                })
+                .collect();
+            if !parts.is_empty() {
+                return Some(format!("← requires: {}", parts.join(", ")));
+            }
+        }
+        cur = parent_of.get(&idx).copied();
+    }
+    None
+}
+
+/// `branch_arena_index -> max epoch of any descendant atom`. Bottom-up:
+/// every leaf contributes its own epoch to its chain of ancestors. One pass
+/// over the arena instead of per-row walks; consumed by the requires
+/// annotation to resolve `requires: [<id>]` to the epoch the depended-on
+/// plan item's atoms ran in.
+fn build_latest_epoch_by_branch(
+    resources: &lusid_apply_stdio::ResourcesTree,
+    view: &AppView,
+    parent_of: &HashMap<usize, usize>,
+) -> HashMap<usize, usize> {
+    let mut out: HashMap<usize, usize> = HashMap::new();
+    for (idx, slot) in resources.nodes.iter().enumerate() {
+        if !matches!(slot, Some(ResourcesNode::Leaf { .. })) {
+            continue;
+        }
+        let Some(epoch) = view.epoch_of_atom(idx) else {
+            continue;
+        };
+        let mut cur = parent_of.get(&idx).copied();
+        while let Some(branch_idx) = cur {
+            out.entry(branch_idx)
+                .and_modify(|e| *e = (*e).max(epoch))
+                .or_insert(epoch);
+            cur = parent_of.get(&branch_idx).copied();
+        }
+    }
+    out
+}
+
+/// Resource epoch a cursor sits inside, resolving Atom/Op cursors through
+/// the AppView's per-atom / per-op-epoch mappings. Used by the clamp routine
+/// to find a still-visible header in the same section after a collapse.
+fn epochs_cursor_epoch(view: &AppView, cursor: EpochsCursor) -> Option<usize> {
+    match cursor {
+        EpochsCursor::EpochHeader { epoch } | EpochsCursor::PhaseHeader { epoch, .. } => {
+            Some(epoch)
+        }
+        EpochsCursor::Atom { arena_index } => view.epoch_of_atom(arena_index),
+        EpochsCursor::Op { epoch_index, .. } => view
+            .operation_epoch_meta(epoch_index)
+            .map(|m| m.resource_epoch),
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -1468,6 +2271,422 @@ mod tests {
         let rows = build_visible_rows(&view, &state);
         assert!(!rows.is_empty(), "rows must remain navigable");
         assert!(rows.iter().all(|r| r.dim), "every row dimmed");
+    }
+
+    // ------------------------------------------------------------------
+    // Epochs page
+    // ------------------------------------------------------------------
+
+    fn command_op(label: &str) -> lusid_operation::Operation {
+        use lusid_operation::operations::command::{CommandExecutor, CommandOperation};
+        lusid_operation::Operation::Command(CommandOperation {
+            command: label.into(),
+            executor: CommandExecutor::Shell,
+        })
+    }
+
+    /// Three-leaf view with `PipelineInfo` populating `atom_epoch`. Leaves at
+    /// arena indices 2, 3, 5; epochs 0, 0, 1 respectively (alpha's leaves in
+    /// epoch 0, beta's leaf in epoch 1).
+    fn epochs_view() -> AppView {
+        let view = view_with_two_branches();
+        let atom_epoch: HashMap<usize, usize> = [(2, 0), (3, 0), (5, 1)].into_iter().collect();
+        view.update(AppUpdate::PipelineInfo {
+            resource_epochs_total: 2,
+            atom_epoch,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn epochs_rows_render_a_section_per_resource_epoch() {
+        let view = epochs_view();
+        let state = EpochsPageState::default();
+        let rows = build_epochs_rows(&view, &state);
+
+        let headers: Vec<usize> = rows
+            .iter()
+            .filter_map(|r| match r.cursor {
+                EpochsCursor::EpochHeader { epoch } => Some(epoch),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headers, vec![0, 1]);
+
+        let atoms_epoch_0: Vec<usize> = rows
+            .iter()
+            .filter_map(|r| match r.cursor {
+                EpochsCursor::Atom { arena_index } => Some(arena_index),
+                _ => None,
+            })
+            .filter(|i| matches!(i, 2 | 3))
+            .collect();
+        assert_eq!(atoms_epoch_0, vec![2, 3]);
+    }
+
+    /// Each section must include both phase headers, even when no op events
+    /// have arrived. The Phase B header carries the explicit `(no on_change
+    /// handlers fired)` annotation so operators can tell empty-by-design from
+    /// missing-data.
+    #[test]
+    fn epochs_rows_include_phase_headers_with_empty_b_annotation() {
+        let view = epochs_view();
+        let state = EpochsPageState::default();
+        let rows = build_epochs_rows(&view, &state);
+        let phase_a_rows: Vec<&EpochsRow> = rows
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.cursor,
+                    EpochsCursor::PhaseHeader {
+                        phase: Phase::A,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(phase_a_rows.len(), 2, "one Phase A header per epoch");
+        let phase_b_rows: Vec<&EpochsRow> = rows
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.cursor,
+                    EpochsCursor::PhaseHeader {
+                        phase: Phase::B,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(phase_b_rows.len(), 2, "one Phase B header per epoch");
+        for r in phase_b_rows {
+            assert!(
+                r.label.contains("no on_change handlers fired"),
+                "phase B label: {}",
+                r.label,
+            );
+        }
+    }
+
+    /// Collapsing an epoch header strips the section's atoms and phase rows
+    /// from the visible list - only the header itself remains.
+    #[test]
+    fn epochs_collapse_hides_section_body() {
+        let view = epochs_view();
+        let mut state = EpochsPageState::default();
+        state.collapsed.insert(0);
+        let rows = build_epochs_rows(&view, &state);
+        // Epoch 0's body should be gone; epoch 1's body should remain.
+        let epoch_0_atoms = rows
+            .iter()
+            .any(|r| matches!(r.cursor, EpochsCursor::Atom { arena_index: 2 | 3 }));
+        assert!(!epoch_0_atoms, "epoch 0's atoms hidden");
+        let epoch_1_atoms = rows
+            .iter()
+            .any(|r| matches!(r.cursor, EpochsCursor::Atom { arena_index: 5 }));
+        assert!(epoch_1_atoms, "epoch 1's atoms still visible");
+    }
+
+    #[test]
+    fn epochs_phase_a_op_rows_appear_under_phase_header() {
+        let view = epochs_view()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::A,
+                operations: vec![command_op("op-a"), command_op("op-b")],
+            })
+            .unwrap();
+        let state = EpochsPageState::default();
+        let rows = build_epochs_rows(&view, &state);
+        // Phase A op events should appear directly after Phase A's header,
+        // before Phase B's header for the same epoch.
+        let phase_a_pos = rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    r.cursor,
+                    EpochsCursor::PhaseHeader {
+                        epoch: 0,
+                        phase: Phase::A
+                    }
+                )
+            })
+            .expect("phase A header");
+        let phase_b_pos = rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    r.cursor,
+                    EpochsCursor::PhaseHeader {
+                        epoch: 0,
+                        phase: Phase::B
+                    }
+                )
+            })
+            .expect("phase B header");
+        let ops_between: Vec<&EpochsRow> = rows[phase_a_pos + 1..phase_b_pos]
+            .iter()
+            .filter(|r| matches!(r.cursor, EpochsCursor::Op { .. }))
+            .collect();
+        assert_eq!(ops_between.len(), 2);
+    }
+
+    /// Phase B handlers must surface under the epoch that scheduled them, not
+    /// under some other epoch. The wire ships `resource_epoch` per
+    /// `OperationsApplyEpochAdded` event; the page groups by that field.
+    #[test]
+    fn epochs_phase_b_handlers_land_under_their_resource_epoch() {
+        let view = epochs_view()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 1,
+                phase: Phase::B,
+                operations: vec![command_op("reload-nginx")],
+            })
+            .unwrap();
+        let state = EpochsPageState::default();
+        let rows = build_epochs_rows(&view, &state);
+        // The handler op should sit under epoch 1's Phase B section, after
+        // epoch 1's Phase B header. Epoch 0's Phase B should still show the
+        // empty annotation.
+        let mut current_epoch = None;
+        let mut current_phase = None;
+        for row in &rows {
+            match row.cursor {
+                EpochsCursor::EpochHeader { epoch } => current_epoch = Some(epoch),
+                EpochsCursor::PhaseHeader { phase, .. } => current_phase = Some(phase),
+                EpochsCursor::Op { .. } => {
+                    assert_eq!(current_epoch, Some(1));
+                    assert_eq!(current_phase, Some(Phase::B));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// An atom whose parent branch declares `requires: [<id>]` must render
+    /// the `← requires: <id> (epoch K)` annotation when the id resolves to a
+    /// branch in an earlier epoch.
+    #[test]
+    fn epochs_atom_row_shows_requires_annotation_across_epochs() {
+        let upstream = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(pi_id("install")),
+                ..PlanMeta::default()
+            },
+            children: vec![resource_leaf("/install")],
+        };
+        let downstream = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(pi_id("reload")),
+                requires: vec![pi_id("install")],
+                ..PlanMeta::default()
+            },
+            children: vec![resource_leaf("/reload")],
+        };
+        let root = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![upstream, downstream],
+        };
+        // Arena: 0=root, 1=install branch, 2=/install leaf, 3=reload branch, 4=/reload leaf.
+        let atom_epoch: HashMap<usize, usize> = [(2, 0), (4, 1)].into_iter().collect();
+        let view = AppView::default()
+            .update(AppUpdate::ResourcesStart)
+            .unwrap()
+            .update(AppUpdate::ResourcesNode {
+                index: 0,
+                tree: root,
+            })
+            .unwrap()
+            .update(AppUpdate::PipelineInfo {
+                resource_epochs_total: 2,
+                atom_epoch,
+            })
+            .unwrap();
+        let state = EpochsPageState::default();
+        let rows = build_epochs_rows(&view, &state);
+        let reload_row = rows
+            .iter()
+            .find(|r| matches!(r.cursor, EpochsCursor::Atom { arena_index: 4 }))
+            .expect("reload atom row");
+        let ann = reload_row.annotation.as_ref().expect("annotation present");
+        assert!(ann.contains("install"), "annotation: {ann}");
+        // Epoch numbers in operator-facing text are 1-based to match the
+        // header strip; the upstream `install` plan-item ran in 0-based
+        // epoch 0, displayed as `epoch 1`.
+        assert!(ann.contains("epoch 1"), "annotation: {ann}");
+    }
+
+    /// Header rows must use 1-based epoch numbers (`Epoch K/N`) to match the
+    /// global header strip's `epoch K/N` and avoid mixing conventions.
+    #[test]
+    fn epochs_header_label_uses_one_based_numbering() {
+        let view = epochs_view();
+        let state = EpochsPageState::default();
+        let rows = build_epochs_rows(&view, &state);
+        let labels: Vec<&str> = rows
+            .iter()
+            .filter(|r| matches!(r.cursor, EpochsCursor::EpochHeader { .. }))
+            .map(|r| r.label.as_str())
+            .collect();
+        assert!(
+            labels.iter().any(|l| l.starts_with("Epoch 1/2")),
+            "labels: {labels:?}",
+        );
+        assert!(
+            labels.iter().any(|l| l.starts_with("Epoch 2/2")),
+            "labels: {labels:?}",
+        );
+    }
+
+    #[test]
+    fn epochs_collapse_clamps_selection_to_remaining_header() {
+        let view = epochs_view();
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view;
+        // Atom 5 lives in epoch 1 (see `epochs_view`); collapsing epoch 1
+        // hides it and the clamp must land on epoch 1's header, not bounce
+        // back to the first row (epoch 0's header).
+        app.epochs.selected = Some(EpochsCursor::Atom { arena_index: 5 });
+
+        app.epochs.collapsed.insert(1);
+        app.clamp_epochs_selection_to_visible();
+        assert_eq!(
+            app.epochs.selected,
+            Some(EpochsCursor::EpochHeader { epoch: 1 }),
+        );
+    }
+
+    /// An empty resource epoch (no atoms map to it) is valid and must still
+    /// render: header, both phase headers, no atom rows. Operators see the
+    /// section so they know nothing was scheduled there.
+    #[test]
+    fn epochs_empty_resource_epoch_still_renders_section() {
+        let view = view_with_two_branches();
+        let atom_epoch: HashMap<usize, usize> = [(2, 0), (3, 0), (5, 0)].into_iter().collect();
+        let view = view
+            .update(AppUpdate::PipelineInfo {
+                resource_epochs_total: 2,
+                atom_epoch,
+            })
+            .unwrap();
+        let state = EpochsPageState::default();
+        let rows = build_epochs_rows(&view, &state);
+
+        // Epoch 1's header is present even though no atoms land in it.
+        let epoch_1_header = rows
+            .iter()
+            .find(|r| matches!(r.cursor, EpochsCursor::EpochHeader { epoch: 1 }))
+            .expect("epoch 1 header");
+        assert!(
+            epoch_1_header.label.contains("0 atoms"),
+            "label: {}",
+            epoch_1_header.label,
+        );
+        // No atom rows under epoch 1; both its phase headers still present.
+        let atom_rows_in_1 = rows
+            .iter()
+            .filter(|r| matches!(r.cursor, EpochsCursor::Atom { arena_index } if [2,3,5].contains(&arena_index) && view.epoch_of_atom(arena_index) == Some(1)))
+            .count();
+        assert_eq!(atom_rows_in_1, 0);
+        let phase_rows_in_1 = rows
+            .iter()
+            .filter(|r| matches!(r.cursor, EpochsCursor::PhaseHeader { epoch: 1, .. }))
+            .count();
+        assert_eq!(phase_rows_in_1, 2);
+    }
+
+    /// A `requires` edge that resolves to the same epoch (or later) adds no
+    /// signal about why this atom ran where it did - the annotation is
+    /// reserved for cross-epoch edges per the spec.
+    #[test]
+    fn epochs_same_epoch_requires_does_not_annotate() {
+        let a = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(pi_id("a")),
+                ..PlanMeta::default()
+            },
+            children: vec![resource_leaf("/a")],
+        };
+        let b = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(pi_id("b")),
+                requires: vec![pi_id("a")],
+                ..PlanMeta::default()
+            },
+            children: vec![resource_leaf("/b")],
+        };
+        let root = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![a, b],
+        };
+        // Both atoms in epoch 0.
+        let atom_epoch: HashMap<usize, usize> = [(2, 0), (4, 0)].into_iter().collect();
+        let view = AppView::default()
+            .update(AppUpdate::ResourcesStart)
+            .unwrap()
+            .update(AppUpdate::ResourcesNode {
+                index: 0,
+                tree: root,
+            })
+            .unwrap()
+            .update(AppUpdate::PipelineInfo {
+                resource_epochs_total: 1,
+                atom_epoch,
+            })
+            .unwrap();
+        let state = EpochsPageState::default();
+        let rows = build_epochs_rows(&view, &state);
+        let b_row = rows
+            .iter()
+            .find(|r| matches!(r.cursor, EpochsCursor::Atom { arena_index: 4 }))
+            .expect("b atom row");
+        assert!(
+            b_row.annotation.is_none(),
+            "annotation: {:?}",
+            b_row.annotation
+        );
+    }
+
+    /// Without `PipelineInfo`, the Epochs page can't know how many epochs
+    /// exist - the row list must be empty so the renderer falls through to
+    /// the "waiting for pipeline info" placeholder.
+    #[test]
+    fn epochs_rows_empty_until_pipeline_info_arrives() {
+        let view = view_with_two_branches();
+        let state = EpochsPageState::default();
+        assert!(build_epochs_rows(&view, &state).is_empty());
+    }
+
+    /// Op rows must derive their badge from the live `OperationView` so the
+    /// epochs page tracks running/complete/failed state during apply.
+    #[test]
+    fn epochs_op_badge_reflects_operation_view_state() {
+        let view = epochs_view()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::A,
+                operations: vec![command_op("op-x"), command_op("op-y")],
+            })
+            .unwrap()
+            .update(AppUpdate::OperationApplyStart { index: (0, 0) })
+            .unwrap()
+            .update(AppUpdate::OperationApplyComplete {
+                index: (0, 1),
+                error: Some("boom".into()),
+            })
+            .unwrap();
+        let state = EpochsPageState::default();
+        let rows = build_epochs_rows(&view, &state);
+        let op_rows: Vec<&EpochsRow> = rows
+            .iter()
+            .filter(|r| matches!(r.cursor, EpochsCursor::Op { .. }))
+            .collect();
+        assert_eq!(op_rows.len(), 2);
+        assert_eq!(op_rows[0].badge, Some(Badge::Running));
+        assert_eq!(op_rows[1].badge, Some(Badge::Failed));
     }
 
     /// Hiding Ok leaves while one of them is selected must move the

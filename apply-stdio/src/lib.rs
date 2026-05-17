@@ -166,7 +166,7 @@ pub enum AppUpdate {
 /// belongs to. Phase A is the change ops produced by the epoch's atoms;
 /// Phase B is the `on_change` handlers fired after Phase A completes for any
 /// handler-bearing plan-item branch whose latest atom landed in this epoch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Phase {
     A,
     B,
