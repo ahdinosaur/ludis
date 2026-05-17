@@ -776,7 +776,7 @@ cargo run -p lusid -- --config examples/nginx-cluster/lusid.toml local parse
 
 ## Task 14 — Diff renderer in detail pane
 
-**Status:** pending
+**Status:** done 5144810
 
 **Goal:** When the detail pane shows a `Changed` atom, render the diff well. Scalars get `before | after` table; file content gets unified diff (optional side-by-side at ≥140 cols).
 
