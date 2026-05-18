@@ -18,12 +18,6 @@ pub enum Badge {
     /// Resolved with a pending or applied change.
     Changed,
     /// Failed during apply.
-    ///
-    /// TODO(cc): wire this in. Change/on-change phase errors aren't yet
-    /// mapped back to the originating atom, so the badge has no construction
-    /// site. Kept in the enum so `palette::rollup` precedence is complete the
-    /// moment the mapping lands.
-    #[allow(dead_code)]
     Failed,
 }
 

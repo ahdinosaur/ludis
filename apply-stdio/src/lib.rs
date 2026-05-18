@@ -157,6 +157,20 @@ pub enum AppUpdate {
         error: Option<String>,
     },
 
+    /// One atom whose change-phase or on-change-phase op failed. Emitted once
+    /// per affected atom, after `OperationApplyComplete { error: Some(..) }`
+    /// and before the producer halts the apply. `index` is the atom's arena
+    /// index in the shipped atoms tree. The transition is
+    /// `Changed { ops: Some } -> Failed`; other prior states are rejected.
+    ///
+    /// Why per-atom and not per-op: ops are merged by family across atoms (one
+    /// merged apt-install can cover N atoms' worth of installs), so a failed
+    /// merged op may attribute to multiple atoms.
+    ResourceApplyFailed {
+        index: usize,
+        error: String,
+    },
+
     /// Emitted between the `Change` phase's probe/change-computation and the first op
     /// for a resource epoch, but only when the epoch has at least one atom
     /// change or one handler queued (empty epochs skip emission to avoid
@@ -262,7 +276,7 @@ impl OperationView {
 ///
 /// ```text
 /// Planned -> Probing -> Probed -> NoChange   (terminal)
-///                            \-> Changed { ops: None } -> Changed { ops: Some }
+///                            \-> Changed { ops: None } -> Changed { ops: Some } -> Failed   (terminal)
 /// ```
 ///
 /// The lifecycle is per-leaf; events for different leaves interleave because
@@ -293,6 +307,17 @@ pub enum LeafState {
         /// projection so arena indices stay stable across renders.
         ops: Option<(PlanTree<Operation>, u64)>,
     },
+    /// One of the atom's change-phase or on-change-phase ops failed during
+    /// apply. The atom's change/ops payloads are preserved so the per-stage
+    /// projections still show what was planned; the live op error lives on
+    /// the corresponding [`OperationView`] in `operations_epochs`.
+    Failed {
+        resource: Resource,
+        state: ResourceState,
+        change: ResourceChange,
+        ops: (PlanTree<Operation>, u64),
+        error: String,
+    },
 }
 
 impl LeafState {
@@ -305,6 +330,7 @@ impl LeafState {
             LeafState::NoChange { .. } => "NoChange",
             LeafState::Changed { ops: None, .. } => "Changed { ops: None }",
             LeafState::Changed { ops: Some(_), .. } => "Changed { ops: Some }",
+            LeafState::Failed { .. } => "Failed",
         }
     }
 
@@ -314,7 +340,8 @@ impl LeafState {
             | LeafState::Probing { resource }
             | LeafState::Probed { resource, .. }
             | LeafState::NoChange { resource, .. }
-            | LeafState::Changed { resource, .. } => resource,
+            | LeafState::Changed { resource, .. }
+            | LeafState::Failed { resource, .. } => resource,
         }
     }
 }
@@ -781,6 +808,24 @@ impl AppView {
                 self.last_activity_op = Some((e, o));
             }
 
+            ResourceApplyFailed { index, error } => {
+                self.transition_leaf("ResourceApplyFailed", index, |prev| match prev {
+                    LeafState::Changed {
+                        resource,
+                        state,
+                        change,
+                        ops: Some(ops),
+                    } => Ok(LeafState::Failed {
+                        resource: resource.clone(),
+                        state: state.clone(),
+                        change: change.clone(),
+                        ops: ops.clone(),
+                        error: error.clone(),
+                    }),
+                    other => Err(other.name()),
+                })?;
+            }
+
             ApplyComplete { had_changes } => {
                 self.had_changes = self.had_changes || had_changes;
                 self.done = true;
@@ -832,7 +877,7 @@ impl AppView {
                 self.last_activity_atom = Some(index);
                 self.auto_follow_armed = true;
             }
-            LeafState::Probed { .. } | LeafState::Changed { .. } => {
+            LeafState::Probed { .. } | LeafState::Changed { .. } | LeafState::Failed { .. } => {
                 self.last_activity_atom = Some(index);
             }
             LeafState::Planned { .. } | LeafState::NoChange { .. } => {}
@@ -896,15 +941,17 @@ impl AppView {
         self.operation_epoch_meta.get(epoch_index)
     }
 
-    /// Count of leaves in `LeafState::Changed`. Branches contribute nothing
-    /// (the rollup is recomputed at draw time); other states don't count.
-    /// Drives the header strip's `~N changes` indicator.
+    /// Count of leaves whose computed diff was non-empty: `LeafState::Changed`
+    /// and `LeafState::Failed` (the latter had a change that the apply
+    /// attempted but couldn't complete). Branches contribute nothing (the
+    /// rollup is recomputed at draw time); other states don't count. Drives
+    /// the header strip's `~N changes` indicator.
     pub fn changed_count(&self) -> usize {
         let Some(tree) = self.resources.as_ref() else {
             return 0;
         };
         tree.leaves()
-            .filter(|s| matches!(s, LeafState::Changed { .. }))
+            .filter(|s| matches!(s, LeafState::Changed { .. } | LeafState::Failed { .. }))
             .count()
     }
 
@@ -929,7 +976,9 @@ impl AppView {
         let mut has_probing = false;
         for state in tree.leaves() {
             match state {
-                LeafState::Changed { ops: Some(_), .. } => has_ops = true,
+                LeafState::Changed { ops: Some(_), .. } | LeafState::Failed { .. } => {
+                    has_ops = true
+                }
                 LeafState::NoChange { .. } | LeafState::Changed { ops: None, .. } => {
                     has_resolved = true;
                 }
@@ -966,7 +1015,8 @@ impl AppView {
             LeafState::Probing { .. } => Some(Lifecycle::Started),
             LeafState::Probed { state, .. }
             | LeafState::NoChange { state, .. }
-            | LeafState::Changed { state, .. } => Some(Lifecycle::Complete(state.clone())),
+            | LeafState::Changed { state, .. }
+            | LeafState::Failed { state, .. } => Some(Lifecycle::Complete(state.clone())),
         }))
     }
 
@@ -979,7 +1029,9 @@ impl AppView {
                 Some(Lifecycle::NotStarted)
             }
             LeafState::NoChange { .. } => None,
-            LeafState::Changed { change, .. } => Some(Lifecycle::Complete(change.clone())),
+            LeafState::Changed { change, .. } | LeafState::Failed { change, .. } => {
+                Some(Lifecycle::Complete(change.clone()))
+            }
         }))
     }
 
@@ -1010,6 +1062,13 @@ impl AppView {
                     state:
                         LeafState::Changed {
                             ops: Some((subtree, seq)),
+                            ..
+                        },
+                })
+                | Some(ResourcesNode::Leaf {
+                    state:
+                        LeafState::Failed {
+                            ops: (subtree, seq),
                             ..
                         },
                 }) => Some((idx, subtree, *seq)),
@@ -2103,6 +2162,165 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(v.changed_count(), 3);
+    }
+
+    /// Drive a leaf all the way to `Changed { ops: Some }` so the
+    /// `ResourceApplyFailed` transition tests below can reuse a single
+    /// helper.
+    fn advance_to_changed_with_ops(view: AppView, idx: usize) -> AppView {
+        view.update(AppUpdate::ResourceStatesNodeStart { index: idx })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: idx,
+                state: file_state(),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: idx,
+                change: Some(apt_change()),
+            })
+            .unwrap()
+            .update(AppUpdate::OperationsNode {
+                index: idx,
+                operations: op_leaf("op"),
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn resource_apply_failed_transitions_changed_to_failed() {
+        let v = advance_to_changed_with_ops(app_view_with_two_leaves(), 1);
+        let v = v
+            .update(AppUpdate::ResourceApplyFailed {
+                index: 1,
+                error: "boom".into(),
+            })
+            .unwrap();
+        match leaf_state(&v, 1) {
+            LeafState::Failed { error, .. } => assert_eq!(error, "boom"),
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        // Failed leaves should keep counting toward "atoms with a change"
+        // because they had a non-empty diff the apply attempted to land.
+        assert_eq!(v.changed_count(), 1);
+    }
+
+    #[test]
+    fn resource_apply_failed_rejected_before_ops_assigned() {
+        // Changed { ops: None }: ops subtree event hasn't arrived for this
+        // leaf, so the producer would never legitimately ship a failure for
+        // an op we never announced. Reject loudly.
+        let v = app_view_with_two_leaves()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 1 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 1,
+                state: file_state(),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 1,
+                change: Some(apt_change()),
+            })
+            .unwrap();
+        let err = v
+            .update(AppUpdate::ResourceApplyFailed {
+                index: 1,
+                error: "boom".into(),
+            })
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AppViewError::InvalidLeafTransition {
+                    state: "Changed { ops: None }",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn resource_apply_failed_rejected_on_no_change_leaf() {
+        let v = app_view_with_two_leaves()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 1 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 1,
+                state: file_state(),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 1,
+                change: None,
+            })
+            .unwrap();
+        let err = v
+            .update(AppUpdate::ResourceApplyFailed {
+                index: 1,
+                error: "boom".into(),
+            })
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AppViewError::InvalidLeafTransition {
+                    state: "NoChange",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn resource_apply_failed_is_terminal() {
+        // Re-emission of the same event on a Failed leaf is rejected; once
+        // failed, the producer must not transition it back. Guards against
+        // protocol-level double-fires that would otherwise silently overwrite
+        // the recorded error.
+        let v = advance_to_changed_with_ops(app_view_with_two_leaves(), 1);
+        let v = v
+            .update(AppUpdate::ResourceApplyFailed {
+                index: 1,
+                error: "first".into(),
+            })
+            .unwrap();
+        let err = v
+            .update(AppUpdate::ResourceApplyFailed {
+                index: 1,
+                error: "second".into(),
+            })
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AppViewError::InvalidLeafTransition {
+                    state: "Failed",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn failed_leaf_updates_last_activity_atom() {
+        let v = advance_to_changed_with_ops(app_view_with_two_leaves(), 1);
+        // Wipe the activity recorded by earlier transitions so this
+        // assertion is unambiguous about which event refreshed it.
+        let v = AppView {
+            last_activity_atom: None,
+            ..v
+        };
+        let v = v
+            .update(AppUpdate::ResourceApplyFailed {
+                index: 1,
+                error: "boom".into(),
+            })
+            .unwrap();
+        assert_eq!(v.last_activity_atom, Some(1));
     }
 
     /// `auto_follow_armed` flips on the first Probing transition and stays

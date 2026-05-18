@@ -174,6 +174,10 @@ pub(crate) fn digest(update: &AppUpdate, app: &AppView) -> Option<String> {
             None => Some(format!("[ok] op {e}.{o}")),
             Some(msg) => Some(format!("[err] op {e}.{o}: {msg}")),
         },
+        AppUpdate::ResourceApplyFailed { index, error } => {
+            let id = leaf_label(app, *index);
+            Some(format!("[failed] #{index} {id}: {error}"))
+        }
         // Plain mode auto-acks via --yes upstream (the CLI refuses non-TTY
         // apply without --yes), so a producer-side `EpochReady` here is
         // strictly informational; surface it as a one-liner.
@@ -227,15 +231,16 @@ fn count_tree_leaves<N, M>(tree: &Tree<N, M>) -> usize {
     }
 }
 
-/// Count leaves whose lifecycle reached `Changed`. Read after folding
-/// `ApplyComplete` so the boolean and the count cannot disagree on
-/// "something definitely changed".
+/// Count leaves whose computed diff was non-empty: `LeafState::Changed`
+/// and `LeafState::Failed` (the latter had a change the apply attempted
+/// but couldn't complete). Read after folding `ApplyComplete` so the
+/// boolean and the count cannot disagree on "something definitely changed".
 fn count_changed_leaves(app: &AppView) -> usize {
     let Some(tree) = app.resources.as_ref() else {
         return 0;
     };
     tree.leaves()
-        .filter(|state| matches!(state, LeafState::Changed { .. }))
+        .filter(|state| matches!(state, LeafState::Changed { .. } | LeafState::Failed { .. }))
         .count()
 }
 

@@ -1744,6 +1744,36 @@ fn detail_for_leaf(
                 });
             }
         }
+        LeafState::Failed {
+            state: probed_state,
+            change,
+            ops: (ops_tree, _),
+            error,
+            ..
+        } => {
+            // Note(cc): the error may be from this atom's own change op or
+            // from an on_change handler that the atom's change triggered.
+            // The latter case means the listed Operations all succeeded -
+            // the failure is on an op shown in the Epochs apply pane, not
+            // here. Section is labelled "Error" rather than "Apply failed"
+            // to avoid implying the listed ops were the failure.
+            lines.push(blank_line());
+            lines.push(section_header("Current state"));
+            extend_lines(&mut lines, &probed_state.render(), palette);
+            lines.push(blank_line());
+            lines.push(section_header("Change"));
+            extend_lines(&mut lines, &render_change(change, diff_opts), palette);
+            lines.push(blank_line());
+            lines.push(section_header("Operations"));
+            for_each_plan_leaf(ops_tree, &mut |op| {
+                extend_lines(&mut lines, &op.render(), palette);
+            });
+            lines.push(blank_line());
+            lines.push(section_header("Error"));
+            for line in error.lines() {
+                lines.push(Line::from(line.to_string()));
+            }
+        }
     }
 
     Text::from(lines)
@@ -2221,7 +2251,12 @@ fn detail_for_epoch_header(view: &AppView, epoch: usize) -> Text<'static> {
     lines.push(field_line("atoms", &atoms.len().to_string()));
     let changed = atoms
         .iter()
-        .filter(|&&idx| matches!(leaf_at(view, idx), Some(LeafState::Changed { .. })))
+        .filter(|&&idx| {
+            matches!(
+                leaf_at(view, idx),
+                Some(LeafState::Changed { .. } | LeafState::Failed { .. })
+            )
+        })
         .count();
     lines.push(field_line("changed", &changed.to_string()));
     let change_phase_ops = view
@@ -2374,7 +2409,12 @@ fn format_epoch_header(
         .unwrap_or_else(|| "?".into());
     let changed = atoms
         .iter()
-        .filter(|&&idx| matches!(leaf_at(view, idx), Some(LeafState::Changed { .. })))
+        .filter(|&&idx| {
+            matches!(
+                leaf_at(view, idx),
+                Some(LeafState::Changed { .. } | LeafState::Failed { .. })
+            )
+        })
         .count();
     let handlers: usize = on_change_op_epochs
         .iter()
@@ -2662,6 +2702,7 @@ fn badge_for_leaf(state: &LeafState) -> Badge {
         LeafState::Probing { .. } | LeafState::Probed { .. } => Badge::Running,
         LeafState::NoChange { .. } => Badge::Ok,
         LeafState::Changed { .. } => Badge::Changed,
+        LeafState::Failed { .. } => Badge::Failed,
     }
 }
 
@@ -2866,6 +2907,65 @@ mod tests {
             .unwrap();
         let resources = view.resources.as_ref().unwrap();
         assert_eq!(rollup_for_branch(resources, 1), Badge::Changed);
+    }
+
+    /// `Failed` on one atom dominates `Ok` on its sibling: rollup precedence
+    /// is `Failed > Running > Changed > Ok > Planned`, so a branch with one
+    /// failed apply renders as Failed regardless of how well its siblings
+    /// did.
+    #[test]
+    fn rollup_failed_beats_ok() {
+        let view = view_with_two_branches()
+            // Atom 2 -> NoChange (Ok).
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 2,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 2,
+                change: None,
+            })
+            .unwrap()
+            // Atom 3 -> Changed -> Failed.
+            .update(AppUpdate::ResourceStatesNodeStart { index: 3 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 3,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 3,
+                change: Some(lusid_resource::ResourceChange::Apt(
+                    lusid_resource::apt::AptChange::Install {
+                        package: "nginx".into(),
+                    },
+                )),
+            })
+            .unwrap()
+            .update(AppUpdate::OperationsNode {
+                index: 3,
+                operations: PlanTree::Leaf {
+                    meta: PlanMeta::default(),
+                    node: lusid_operation::Operation::Command(
+                        lusid_operation::operations::command::CommandOperation {
+                            command: "true".into(),
+                            executor: lusid_operation::operations::command::CommandExecutor::Shell,
+                        },
+                    ),
+                },
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceApplyFailed {
+                index: 3,
+                error: "boom".into(),
+            })
+            .unwrap();
+        let resources = view.resources.as_ref().unwrap();
+        assert_eq!(rollup_for_branch(resources, 1), Badge::Failed);
     }
 
     #[test]

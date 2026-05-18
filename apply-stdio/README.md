@@ -59,6 +59,13 @@ Outline:
       `on_change` handlers for any plan-item branch whose latest atom landed
       in this epoch and which had at least one atom change.
 
+   On the first failing op, an extra `OperationApplyComplete { error: Some(..) }`
+   is emitted, followed by one `ResourceApplyFailed { index, error }` per
+   atom attributed to that op (single atom for change-phase ops; the
+   triggering atoms of the branch for on-change handlers), and the apply
+   halts. Atoms not attributed to the failed op keep whatever state their
+   prior events established.
+
 5. `ApplyComplete { had_changes }`. Terminal. `lusid-apply` exits 0
    immediately after; consumers should flush and close. Exit code is
    non-zero on `Abort` (`AbortedByUser`) or any apply error.
@@ -71,9 +78,10 @@ resource epochs / empty phases emit no event and consume no index.
 
 A per-leaf state machine over the atoms tree, plus the operations apply
 pane. Each resource atom advances through `Planned -> Probing -> Probed ->
-NoChange | Changed { ops: None } -> Changed { ops: Some }`; per-leaf events
-trigger transitions and invalid (state, event) pairs return
-`AppViewError::InvalidLeafTransition`. See [`LeafState`](src/lib.rs).
+NoChange | Changed { ops: None } -> Changed { ops: Some } -> Failed`;
+per-leaf events trigger transitions and invalid (state, event) pairs return
+`AppViewError::InvalidLeafTransition`. `Failed` is terminal and only
+reachable from `Changed { ops: Some }`. See [`LeafState`](src/lib.rs).
 
 The TUI navigates four per-stage projections (resources / states / changes /
 operations) of the leaf states, built on demand by

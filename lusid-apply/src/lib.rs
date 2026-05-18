@@ -4,7 +4,8 @@
 //! Stdout is reserved for the newline-delimited [`AppUpdate`] protocol;
 //! human-facing output goes to stderr via `tracing`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::mem::Discriminant;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -305,15 +306,18 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     // Within each epoch:
     //   - Change phase: probe state for atoms (after prior epochs' ops have
     //     already been applied, so probes see fresh-from-disk state),
-    //     compute changes, and apply the change ops. Atoms that change mark
-    //     their nearest handler-bearing ancestor branch in `changed_branches`.
+    //     compute changes, and apply the change ops. Atoms that change record
+    //     their arena index under their nearest handler-bearing ancestor in
+    //     `changed_atoms_by_branch`. Tracking *which* atoms changed (not just
+    //     which branches) lets handler-op failures attribute back to the exact
+    //     leaves whose changes triggered the handler.
     //   - On-change phase: for every handler-bearing branch whose latest
-    //     epoch is this one and which was marked changed, apply its
-    //     on_change operations. The on-change phase runs after the change
-    //     phase's ops complete and before the next epoch's change phase
+    //     epoch is this one and which has at least one changed atom recorded,
+    //     apply its on_change operations. The on-change phase runs after the
+    //     change phase's ops complete and before the next epoch's change phase
     //     begins, so handlers fire strictly after the resource atoms they
     //     watch and strictly before any dependent's atoms.
-    let mut changed_branches: HashSet<usize> = HashSet::new();
+    let mut changed_atoms_by_branch: HashMap<usize, BTreeSet<usize>> = HashMap::new();
     let mut had_changes = false;
     let mut op_epoch_counter: usize = 0;
 
@@ -339,7 +343,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         });
         let probed = futures_util::future::try_join_all(probes).await?;
 
-        let mut atom_op_subtrees: Vec<PlanTree<Operation>> = Vec::new();
+        let mut atom_op_subtrees: Vec<(BTreeSet<usize>, PlanTree<Operation>)> = Vec::new();
         let mut change_labels: Vec<ChangeLabel> = Vec::new();
         for (idx, resource, state) in probed {
             emit(AppUpdate::ResourceStatesNodeComplete {
@@ -353,7 +357,10 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
             if let Some(change) = &change {
                 had_changes = true;
                 if let Some(branch_idx) = nearest_handler_ancestor(idx, &parent_of, &atoms_flat) {
-                    changed_branches.insert(branch_idx);
+                    changed_atoms_by_branch
+                        .entry(branch_idx)
+                        .or_default()
+                        .insert(idx);
                 }
                 change_labels.push(ChangeLabel {
                     atom_id: resource.to_string(),
@@ -381,7 +388,8 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
                 })
                 .await?;
 
-                atom_op_subtrees.extend(scoped);
+                let source_atoms: BTreeSet<usize> = BTreeSet::from([idx]);
+                atom_op_subtrees.extend(scoped.into_iter().map(|s| (source_atoms.clone(), s)));
             }
         }
 
@@ -392,7 +400,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         let handlers_pending = latest_epoch_by_branch
             .iter()
             .filter(|(branch_idx, latest)| {
-                **latest == resource_epoch_idx && changed_branches.contains(branch_idx)
+                **latest == resource_epoch_idx && changed_atoms_by_branch.contains_key(branch_idx)
             })
             .count();
 
@@ -435,23 +443,37 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
         // On-change phase: collect handlers for branches whose latest epoch
         // is this one and which had at least one atom change during apply.
-        let mut handler_leaves: Vec<PlanTree<Operation>> = Vec::new();
+        // Each handler is attributed to the set of atoms whose changes
+        // triggered it (the branch's changed-atom set), so a handler-op
+        // failure can mark exactly those atoms as `Failed` without dragging
+        // in NoChange siblings under the same branch.
+        let mut handler_leaves: Vec<(BTreeSet<usize>, PlanTree<Operation>)> = Vec::new();
         for (branch_idx, latest) in &latest_epoch_by_branch {
-            if *latest != resource_epoch_idx || !changed_branches.contains(branch_idx) {
+            if *latest != resource_epoch_idx || !changed_atoms_by_branch.contains_key(branch_idx) {
                 continue;
             }
-            // Remove the branch as we fire so any unintended re-entry fails
+            // Take the entry as we fire so any unintended re-entry fails
             // loudly under the debug_assert below.
-            let removed = changed_branches.remove(branch_idx);
-            debug_assert!(removed, "on-change phase fired the same branch twice");
+            let trigger_atoms = changed_atoms_by_branch
+                .remove(branch_idx)
+                .expect("checked contains_key above");
+            debug_assert!(
+                !trigger_atoms.is_empty(),
+                "on-change phase fired without any triggering atoms",
+            );
 
             let handlers = match atoms_flat.get(*branch_idx) {
                 Ok(PlanFlatTreeNode::Branch { meta, .. }) => &meta.handlers,
                 _ => unreachable!("latest_epoch_by_branch only contains handler-bearing branches"),
             };
-            handler_leaves.extend(handlers.iter().cloned().map(|op| PlanTree::Leaf {
-                meta: PlanMeta::default(),
-                node: op,
+            handler_leaves.extend(handlers.iter().cloned().map(|op| {
+                (
+                    trigger_atoms.clone(),
+                    PlanTree::Leaf {
+                        meta: PlanMeta::default(),
+                        node: op,
+                    },
+                )
             }));
         }
         apply_op_phase(
@@ -484,11 +506,19 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 /// `OperationsApplyEpochAdded` so the consumer can group ops by outer epoch
 /// and separate change-phase ops from on-change-phase handlers.
 ///
-/// Returns early on the first operation failure, after emitting
-/// `OperationApplyComplete { error: Some(..) }` so the TUI can surface
-/// which op failed.
+/// Each subtree carries the set of atom arena indices that produced it: for
+/// change-phase ops that's the single atom whose `change.operations()`
+/// produced the subtree; for on-change handlers it's the set of atoms whose
+/// changes triggered the branch's handler. When merging coalesces ops across
+/// a family, the merged op inherits the union of its inputs' atom sets, so a
+/// failure maps back to every atom that contributed.
+///
+/// Returns early on the first operation failure. Before propagating the
+/// error, emits `OperationApplyComplete { error: Some(..) }` for the failed
+/// op and one `ResourceApplyFailed` per attributed atom so the TUI can
+/// surface both the failing op and the atoms it left in an unknown state.
 async fn apply_op_phase(
-    subtrees: Vec<PlanTree<Operation>>,
+    subtrees: Vec<(BTreeSet<usize>, PlanTree<Operation>)>,
     resource_epoch: usize,
     phase: Phase,
     op_epoch_counter: &mut usize,
@@ -499,9 +529,15 @@ async fn apply_op_phase(
         return Ok(());
     }
 
-    let combined: PlanTree<Operation> = PlanTree::Branch {
+    // Tag each operation leaf with its source-atom set so attributions ride
+    // alongside the op all the way through `compute_epochs` and merge.
+    let tagged_children: Vec<PlanTree<(BTreeSet<usize>, Operation)>> = subtrees
+        .into_iter()
+        .map(|(atoms, subtree)| tag_subtree_with_atoms(&atoms, subtree))
+        .collect();
+    let combined: PlanTree<(BTreeSet<usize>, Operation)> = PlanTree::Branch {
         meta: PlanMeta::default(),
-        children: subtrees,
+        children: tagged_children,
     };
     let op_epochs = compute_epochs(combined.map(Some).map_meta(PlanMeta::to_causality))?;
     debug!(
@@ -512,7 +548,8 @@ async fn apply_op_phase(
     );
 
     for ops_in_epoch in op_epochs {
-        let merged = Operation::merge(ops_in_epoch);
+        let merged_with_atoms = merge_with_attributions(ops_in_epoch);
+        let merged: Vec<Operation> = merged_with_atoms.iter().map(|(_, op)| op.clone()).collect();
 
         emit(AppUpdate::OperationsApplyEpochAdded {
             epoch_index: *op_epoch_counter,
@@ -522,7 +559,7 @@ async fn apply_op_phase(
         })
         .await?;
 
-        for (op_idx, operation) in merged.iter().enumerate() {
+        for (op_idx, (op_atoms, operation)) in merged_with_atoms.iter().enumerate() {
             let index = (*op_epoch_counter, op_idx);
             emit(AppUpdate::OperationApplyStart { index }).await?;
 
@@ -572,11 +609,19 @@ async fn apply_op_phase(
             };
 
             if let Err(error) = tokio::try_join!(output_task, stdout_task, stderr_task) {
+                let error_message = error.to_string();
                 emit(AppUpdate::OperationApplyComplete {
                     index,
-                    error: Some(error.to_string()),
+                    error: Some(error_message.clone()),
                 })
                 .await?;
+                for &atom_idx in op_atoms {
+                    emit(AppUpdate::ResourceApplyFailed {
+                        index: atom_idx,
+                        error: error_message.clone(),
+                    })
+                    .await?;
+                }
                 return Err(error);
             } else {
                 emit(AppUpdate::OperationApplyComplete { index, error: None }).await?;
@@ -587,6 +632,67 @@ async fn apply_op_phase(
     }
 
     Ok(())
+}
+
+/// Walk a `PlanTree<Operation>` and tag every leaf with `atoms`, preserving
+/// branch metadata. Used by `apply_op_phase` to thread per-subtree atom
+/// attributions through `compute_epochs` without changing the causality
+/// types.
+fn tag_subtree_with_atoms(
+    atoms: &BTreeSet<usize>,
+    subtree: PlanTree<Operation>,
+) -> PlanTree<(BTreeSet<usize>, Operation)> {
+    match subtree {
+        Tree::Leaf { meta, node } => Tree::Leaf {
+            meta,
+            node: (atoms.clone(), node),
+        },
+        Tree::Branch { meta, children } => Tree::Branch {
+            meta,
+            children: children
+                .into_iter()
+                .map(|c| tag_subtree_with_atoms(atoms, c))
+                .collect(),
+        },
+    }
+}
+
+/// Merge an op-epoch's worth of attributed ops, preserving each merged op's
+/// source-atom attribution.
+///
+/// Strategy: `Operation::merge` partitions inputs by family and produces
+/// merged outputs of the same family. So we pre-record the atom-set union per
+/// family discriminant, then look the union back up per merged op. Multiple
+/// merged ops from one family (rare: distinct verbs that don't coalesce, e.g.
+/// `apt install` vs `apt remove`) all inherit the same family-wide union,
+/// which over-attributes - acceptable because the apply halts on first
+/// failure anyway, and the operator gets one clear "these atoms were
+/// involved" set rather than a guessing game.
+fn merge_with_attributions(
+    ops: Vec<(BTreeSet<usize>, Operation)>,
+) -> Vec<(BTreeSet<usize>, Operation)> {
+    let mut atoms_per_family: HashMap<Discriminant<Operation>, BTreeSet<usize>> = HashMap::new();
+    let plain_ops: Vec<Operation> = ops
+        .into_iter()
+        .map(|(atoms, op)| {
+            atoms_per_family
+                .entry(std::mem::discriminant(&op))
+                .or_default()
+                .extend(atoms);
+            op
+        })
+        .collect();
+
+    Operation::merge(plain_ops)
+        .into_iter()
+        .map(|op| {
+            let atoms = atoms_per_family
+                .get(&std::mem::discriminant(&op))
+                .cloned()
+                .unwrap_or_default();
+            (atoms, op)
+        })
+        .collect()
 }
 
 /// Map every non-root arena index to its parent's arena index. The root has
@@ -1132,5 +1238,80 @@ mod tests {
         let msg = format_aborted_by_user(2, 4);
         assert!(msg.contains("resource epoch 3 of 4"));
         assert!(msg.contains("epochs 1 through 2"));
+    }
+
+    fn shell_op(cmd: &str) -> Operation {
+        Operation::Command(CommandOperation {
+            command: cmd.to_string(),
+            executor: CommandExecutor::Shell,
+        })
+    }
+
+    #[test]
+    fn tag_subtree_attaches_atoms_to_every_leaf() {
+        // Branch with two leaves: every descendant leaf inherits the same
+        // atom set; branch metadata is preserved.
+        let subtree: PlanTree<Operation> = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![
+                PlanTree::Leaf {
+                    meta: PlanMeta::default(),
+                    node: shell_op("echo a"),
+                },
+                PlanTree::Leaf {
+                    meta: PlanMeta::default(),
+                    node: shell_op("echo b"),
+                },
+            ],
+        };
+        let atoms: BTreeSet<usize> = [3, 4].into_iter().collect();
+        let tagged = tag_subtree_with_atoms(&atoms, subtree);
+        let leaves = collect_leaves(&tagged);
+        assert_eq!(leaves.len(), 2);
+        for (leaf_atoms, _) in &leaves {
+            assert_eq!(leaf_atoms, &atoms);
+        }
+    }
+
+    fn collect_leaves<T: Clone>(tree: &PlanTree<T>) -> Vec<T> {
+        match tree {
+            Tree::Leaf { node, .. } => vec![node.clone()],
+            Tree::Branch { children, .. } => children.iter().flat_map(collect_leaves).collect(),
+        }
+    }
+
+    #[test]
+    fn merge_with_attributions_unions_atoms_across_dedup() {
+        // Two identical Command ops from different atoms collapse to one
+        // merged op carrying the union of their atom sets.
+        let op = shell_op("reload nginx");
+        let merged = merge_with_attributions(vec![
+            (BTreeSet::from([1]), op.clone()),
+            (BTreeSet::from([7]), op),
+        ]);
+        assert_eq!(merged.len(), 1);
+        let (atoms, _) = &merged[0];
+        assert_eq!(atoms, &BTreeSet::from([1, 7]));
+    }
+
+    #[test]
+    fn merge_with_attributions_keeps_distinct_ops_separate_but_unions_family() {
+        // Two distinct Command ops won't dedup, but both inherit the family
+        // union - this is the conservative over-attribution noted in the
+        // function's doc-comment.
+        let merged = merge_with_attributions(vec![
+            (BTreeSet::from([1]), shell_op("echo a")),
+            (BTreeSet::from([2]), shell_op("echo b")),
+        ]);
+        assert_eq!(merged.len(), 2);
+        for (atoms, _) in &merged {
+            assert_eq!(atoms, &BTreeSet::from([1, 2]));
+        }
+    }
+
+    #[test]
+    fn merge_with_attributions_empty_input_is_empty_output() {
+        let merged = merge_with_attributions(Vec::new());
+        assert!(merged.is_empty());
     }
 }
