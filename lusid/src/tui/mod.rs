@@ -369,6 +369,11 @@ enum EpochsCursor {
     Atom { arena_index: usize },
     PhaseHeader { epoch: usize, phase: Phase },
     Op { epoch_index: usize, op_index: usize },
+    /// Non-selectable preview row under the pending epoch's header. Surfaces
+    /// the `EpochSummary` counts so the handler-count forecast remains visible
+    /// even before Phase B ops have arrived (which suppress their header).
+    /// Navigation skips this cursor.
+    PendingPreview { epoch: usize },
 }
 
 /// Top-level TUI state. Holds the folded `AppView` from the wire plus
@@ -862,25 +867,27 @@ impl TuiApp {
             .iter()
             .position(|r| Some(r.cursor) == self.epochs.selected)
             .unwrap_or(0);
-        let next = if delta >= 0 {
-            (current + delta as usize).min(rows.len() - 1)
-        } else {
-            current.saturating_sub((-delta) as usize)
-        };
+        let next = step_skipping_non_selectable(&rows, current, delta);
         self.epochs.selected = Some(rows[next].cursor);
         self.epochs.detail_scroll = 0;
     }
 
     fn epochs_jump_first(&mut self) {
         let rows = build_epochs_rows(&self.app_view, &self.epochs);
-        if let Some(first) = rows.first() {
+        if let Some(first) = rows
+            .iter()
+            .find(|r| !matches!(r.cursor, EpochsCursor::PendingPreview { .. }))
+        {
             self.epochs.selected = Some(first.cursor);
         }
     }
 
     fn epochs_jump_last(&mut self) {
         let rows = build_epochs_rows(&self.app_view, &self.epochs);
-        if let Some(last) = rows.last() {
+        if let Some(last) = rows
+            .iter()
+            .rfind(|r| !matches!(r.cursor, EpochsCursor::PendingPreview { .. }))
+        {
             self.epochs.selected = Some(last.cursor);
         }
     }
@@ -1793,6 +1800,24 @@ fn build_epochs_rows(view: &AppView, state: &EpochsPageState) -> Vec<EpochsRow> 
             continue;
         }
 
+        // Pending preview - surfaces EpochSummary counts under the awaiting
+        // epoch so the handler-count forecast doesn't vanish along with the
+        // suppressed Phase B header.
+        if let Some((pending_epoch, summary)) = view.pending_epoch.as_ref()
+            && *pending_epoch == epoch
+        {
+            rows.push(EpochsRow {
+                cursor: EpochsCursor::PendingPreview { epoch },
+                depth: 1,
+                badge: None,
+                label: format!(
+                    "Pending: {} atom changes, {} handlers",
+                    summary.atoms_changed, summary.handlers_pending,
+                ),
+                annotation: None,
+            });
+        }
+
         // Atoms.
         for arena_index in &atoms {
             let (badge, label) = atom_badge_and_label(resources, *arena_index);
@@ -1814,42 +1839,76 @@ fn build_epochs_rows(view: &AppView, state: &EpochsPageState) -> Vec<EpochsRow> 
             });
         }
 
-        // Phase A.
-        rows.push(EpochsRow {
-            cursor: EpochsCursor::PhaseHeader {
-                epoch,
-                phase: Phase::A,
-            },
-            depth: 1,
-            badge: None,
-            label: format!("Phase A · {} op event(s)", phase_a.len()),
-            annotation: None,
-        });
-        for &epoch_index in &phase_a {
-            push_op_rows(&mut rows, view, epoch_index);
+        // Plan Operations (Phase A) - only emitted once at least one op event
+        // has arrived. Suppressing the empty header keeps unrun epochs free of
+        // implementation jargon.
+        if !phase_a.is_empty() {
+            rows.push(EpochsRow {
+                cursor: EpochsCursor::PhaseHeader {
+                    epoch,
+                    phase: Phase::A,
+                },
+                depth: 1,
+                badge: None,
+                label: format!("Plan Operations · {} op event(s)", phase_a.len()),
+                annotation: None,
+            });
+            for &epoch_index in &phase_a {
+                push_op_rows(&mut rows, view, epoch_index);
+            }
         }
 
-        // Phase B.
-        rows.push(EpochsRow {
-            cursor: EpochsCursor::PhaseHeader {
-                epoch,
-                phase: Phase::B,
-            },
-            depth: 1,
-            badge: None,
-            label: if phase_b.is_empty() {
-                "Phase B · (no on_change handlers fired)".to_string()
-            } else {
-                format!("Phase B · {} op event(s)", phase_b.len())
-            },
-            annotation: None,
-        });
-        for &epoch_index in &phase_b {
-            push_op_rows(&mut rows, view, epoch_index);
+        // Change Event Operations (Phase B) - same suppression. We never
+        // synthesise an empty "(no handlers fired)" row.
+        if !phase_b.is_empty() {
+            rows.push(EpochsRow {
+                cursor: EpochsCursor::PhaseHeader {
+                    epoch,
+                    phase: Phase::B,
+                },
+                depth: 1,
+                badge: None,
+                label: format!("Change Event Operations · {} op event(s)", phase_b.len()),
+                annotation: None,
+            });
+            for &epoch_index in &phase_b {
+                push_op_rows(&mut rows, view, epoch_index);
+            }
         }
     }
 
     rows
+}
+
+/// Walk a `delta` of steps through `rows` starting at `current`, hopping over
+/// any rows whose cursor isn't navigable (e.g. `PendingPreview`). Clamps at
+/// either end. If every row is non-selectable, returns `current` unchanged.
+fn step_skipping_non_selectable(rows: &[EpochsRow], current: usize, delta: i32) -> usize {
+    if rows.is_empty() {
+        return current;
+    }
+    let step: i32 = if delta >= 0 { 1 } else { -1 };
+    let count = delta.unsigned_abs() as usize;
+    let mut idx = current;
+    for _ in 0..count {
+        let mut next = idx as i32;
+        loop {
+            next += step;
+            if next < 0 || next >= rows.len() as i32 {
+                // Hit the end; stop walking and return the last selectable
+                // position we reached.
+                return idx;
+            }
+            if !matches!(
+                rows[next as usize].cursor,
+                EpochsCursor::PendingPreview { .. }
+            ) {
+                break;
+            }
+        }
+        idx = next as usize;
+    }
+    idx
 }
 
 /// Append one OpRow per operation in the given op-epoch's apply pane.
@@ -1900,6 +1959,9 @@ fn draw_epochs_list(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp, ro
             let label_style = match row.cursor {
                 EpochsCursor::EpochHeader { .. } => Style::default().add_modifier(Modifier::BOLD),
                 EpochsCursor::PhaseHeader { .. } => Style::default().fg(Color::DarkGray),
+                EpochsCursor::PendingPreview { .. } => Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::DIM),
                 _ => Style::default(),
             };
             spans.push(Span::styled(row.label.clone(), label_style));
@@ -1981,6 +2043,9 @@ fn detail_for_epochs_cursor(
             epoch_index,
             op_index,
         } => detail_for_op(view, epoch_index, op_index, palette),
+        // PendingPreview is non-selectable - navigation skips it - so this
+        // arm exists only for type completeness.
+        EpochsCursor::PendingPreview { epoch } => detail_for_epoch_header(view, epoch),
     }
 }
 
@@ -2028,8 +2093,8 @@ fn detail_for_epoch_header(view: &AppView, epoch: usize) -> Text<'static> {
 fn detail_for_phase_header(view: &AppView, epoch: usize, phase: Phase) -> Text<'static> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let label = match phase {
-        Phase::A => "Phase A: change ops produced by this epoch's atoms",
-        Phase::B => "Phase B: on_change handlers fired by this epoch's branches",
+        Phase::A => "Plan Operations: change ops produced by this epoch's atoms",
+        Phase::B => "Change Event Operations: on_change handlers fired by this epoch's branches",
     };
     lines.push(section_header(label));
 
@@ -2331,9 +2396,9 @@ fn build_latest_epoch_by_branch(
 /// to find a still-visible header in the same section after a collapse.
 fn epochs_cursor_epoch(view: &AppView, cursor: EpochsCursor) -> Option<usize> {
     match cursor {
-        EpochsCursor::EpochHeader { epoch } | EpochsCursor::PhaseHeader { epoch, .. } => {
-            Some(epoch)
-        }
+        EpochsCursor::EpochHeader { epoch }
+        | EpochsCursor::PhaseHeader { epoch, .. }
+        | EpochsCursor::PendingPreview { epoch } => Some(epoch),
         EpochsCursor::Atom { arena_index } => view.epoch_of_atom(arena_index),
         EpochsCursor::Op { epoch_index, .. } => view
             .operation_epoch_meta(epoch_index)
@@ -2732,48 +2797,104 @@ mod tests {
         assert_eq!(atoms_epoch_0, vec![2, 3]);
     }
 
-    /// Each section must include both phase headers, even when no op events
-    /// have arrived. The Phase B header carries the explicit `(no on_change
-    /// handlers fired)` annotation so operators can tell empty-by-design from
-    /// missing-data.
+    /// Before any op events arrive, no phase headers are emitted. Operators
+    /// only see the section's atoms; the "Plan Operations" / "Change Event
+    /// Operations" labels appear once their respective ops materialise.
     #[test]
-    fn epochs_rows_include_phase_headers_with_empty_b_annotation() {
+    fn epochs_rows_suppress_phase_headers_until_ops_arrive() {
         let view = epochs_view();
         let state = EpochsPageState::default();
         let rows = build_epochs_rows(&view, &state);
-        let phase_a_rows: Vec<&EpochsRow> = rows
+        assert!(
+            rows.iter()
+                .all(|r| !matches!(r.cursor, EpochsCursor::PhaseHeader { .. })),
+            "no phase headers should be present before ops arrive: {:?}",
+            rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
+        );
+    }
+
+    /// Phase A header (re-labelled "Plan Operations") appears only once the
+    /// first op event for that epoch arrives.
+    #[test]
+    fn epochs_rows_emit_plan_operations_header_after_phase_a_op() {
+        let view = epochs_view()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::A,
+                operations: vec![command_op("op-a")],
+            })
+            .unwrap();
+        let rows = build_epochs_rows(&view, &EpochsPageState::default());
+        let header = rows
             .iter()
-            .filter(|r| {
+            .find(|r| {
                 matches!(
                     r.cursor,
                     EpochsCursor::PhaseHeader {
+                        epoch: 0,
+                        phase: Phase::A
+                    }
+                )
+            })
+            .expect("plan operations header");
+        assert!(
+            header.label.starts_with("Plan Operations"),
+            "label: {}",
+            header.label
+        );
+        // Epoch 1 has no Phase A ops yet - so still no header there.
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(
+                    r.cursor,
+                    EpochsCursor::PhaseHeader {
+                        epoch: 1,
                         phase: Phase::A,
-                        ..
                     }
-                )
+                )),
+            "epoch 1 should still suppress its phase A header",
+        );
+    }
+
+    /// Phase B header is labelled "Change Event Operations" and only appears
+    /// once a handler op event arrives. The "(no on_change handlers fired)"
+    /// row from Phase 1 is gone.
+    #[test]
+    fn epochs_rows_emit_change_event_operations_header_after_phase_b_op() {
+        let view = epochs_view()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::B,
+                operations: vec![command_op("reload")],
             })
-            .collect();
-        assert_eq!(phase_a_rows.len(), 2, "one Phase A header per epoch");
-        let phase_b_rows: Vec<&EpochsRow> = rows
+            .unwrap();
+        let rows = build_epochs_rows(&view, &EpochsPageState::default());
+        let header = rows
             .iter()
-            .filter(|r| {
+            .find(|r| {
                 matches!(
                     r.cursor,
                     EpochsCursor::PhaseHeader {
-                        phase: Phase::B,
-                        ..
+                        epoch: 0,
+                        phase: Phase::B
                     }
                 )
             })
-            .collect();
-        assert_eq!(phase_b_rows.len(), 2, "one Phase B header per epoch");
-        for r in phase_b_rows {
-            assert!(
-                r.label.contains("no on_change handlers fired"),
-                "phase B label: {}",
-                r.label,
-            );
-        }
+            .expect("change event operations header");
+        assert!(
+            header.label.starts_with("Change Event Operations"),
+            "label: {}",
+            header.label
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.label.contains("no on_change handlers fired")),
+            "the empty-Phase-B annotation row must be gone",
+        );
     }
 
     /// Collapsing an epoch header strips the section's atoms and phase rows
@@ -2807,8 +2928,8 @@ mod tests {
             .unwrap();
         let state = EpochsPageState::default();
         let rows = build_epochs_rows(&view, &state);
-        // Phase A op events should appear directly after Phase A's header,
-        // before Phase B's header for the same epoch.
+        // Phase A op events should appear directly after Phase A's header.
+        // (Phase B header is suppressed since no Phase B ops have arrived.)
         let phase_a_pos = rows
             .iter()
             .position(|r| {
@@ -2821,23 +2942,13 @@ mod tests {
                 )
             })
             .expect("phase A header");
-        let phase_b_pos = rows
+        // Walk forward from the Phase A header collecting Op rows; stop at the
+        // next non-Op, non-Op-adjacent row (the next epoch header).
+        let ops_after: Vec<&EpochsRow> = rows[phase_a_pos + 1..]
             .iter()
-            .position(|r| {
-                matches!(
-                    r.cursor,
-                    EpochsCursor::PhaseHeader {
-                        epoch: 0,
-                        phase: Phase::B
-                    }
-                )
-            })
-            .expect("phase B header");
-        let ops_between: Vec<&EpochsRow> = rows[phase_a_pos + 1..phase_b_pos]
-            .iter()
-            .filter(|r| matches!(r.cursor, EpochsCursor::Op { .. }))
+            .take_while(|r| matches!(r.cursor, EpochsCursor::Op { .. }))
             .collect();
-        assert_eq!(ops_between.len(), 2);
+        assert_eq!(ops_after.len(), 2);
     }
 
     /// Phase B handlers must surface under the epoch that scheduled them, not
@@ -2856,8 +2967,8 @@ mod tests {
         let state = EpochsPageState::default();
         let rows = build_epochs_rows(&view, &state);
         // The handler op should sit under epoch 1's Phase B section, after
-        // epoch 1's Phase B header. Epoch 0's Phase B should still show the
-        // empty annotation.
+        // epoch 1's "Change Event Operations" header. Epoch 0 has no Phase B
+        // ops so its header is suppressed entirely.
         let mut current_epoch = None;
         let mut current_phase = None;
         for row in &rows {
@@ -2967,8 +3078,8 @@ mod tests {
     }
 
     /// An empty resource epoch (no atoms map to it) is valid and must still
-    /// render: header, both phase headers, no atom rows. Operators see the
-    /// section so they know nothing was scheduled there.
+    /// render its header. Phase headers stay suppressed because no ops have
+    /// arrived (this matches Task 21's "headers only when ops exist" rule).
     #[test]
     fn epochs_empty_resource_epoch_still_renders_section() {
         let view = view_with_two_branches();
@@ -2992,17 +3103,17 @@ mod tests {
             "label: {}",
             epoch_1_header.label,
         );
-        // No atom rows under epoch 1; both its phase headers still present.
+        // No atom rows under epoch 1.
         let atom_rows_in_1 = rows
             .iter()
             .filter(|r| matches!(r.cursor, EpochsCursor::Atom { arena_index } if [2,3,5].contains(&arena_index) && view.epoch_of_atom(arena_index) == Some(1)))
             .count();
         assert_eq!(atom_rows_in_1, 0);
-        let phase_rows_in_1 = rows
-            .iter()
-            .filter(|r| matches!(r.cursor, EpochsCursor::PhaseHeader { epoch: 1, .. }))
-            .count();
-        assert_eq!(phase_rows_in_1, 2);
+        // No phase headers yet for either epoch - no ops have arrived.
+        assert!(
+            rows.iter()
+                .all(|r| !matches!(r.cursor, EpochsCursor::PhaseHeader { .. })),
+        );
     }
 
     /// A `requires` edge that resolves to the same epoch (or later) adds no
@@ -3065,6 +3176,116 @@ mod tests {
         let view = view_with_two_branches();
         let state = EpochsPageState::default();
         assert!(build_epochs_rows(&view, &state).is_empty());
+    }
+
+    fn empty_summary(atoms_changed: usize, handlers_pending: usize) -> lusid_apply_stdio::EpochSummary {
+        lusid_apply_stdio::EpochSummary {
+            atoms_total: 0,
+            atoms_changed,
+            handlers_pending,
+            change_labels: vec![],
+            truncated_count: 0,
+        }
+    }
+
+    /// `EpochReady` for an epoch surfaces a `PendingPreview` row right after
+    /// that epoch's header, showing the summary's change/handler counts.
+    /// Other epochs remain preview-free.
+    #[test]
+    fn epochs_rows_show_pending_preview_under_awaiting_epoch() {
+        let view = epochs_view()
+            .update(AppUpdate::EpochReady {
+                resource_epoch: 1,
+                summary: empty_summary(3, 2),
+            })
+            .unwrap();
+        let rows = build_epochs_rows(&view, &EpochsPageState::default());
+
+        let preview_pos = rows
+            .iter()
+            .position(|r| matches!(r.cursor, EpochsCursor::PendingPreview { epoch: 1 }))
+            .expect("pending preview row");
+        let header_pos = rows
+            .iter()
+            .position(|r| matches!(r.cursor, EpochsCursor::EpochHeader { epoch: 1 }))
+            .expect("epoch 1 header");
+        assert_eq!(
+            preview_pos,
+            header_pos + 1,
+            "pending preview must sit directly under the awaiting epoch's header",
+        );
+
+        let preview = &rows[preview_pos];
+        assert!(
+            preview.label.contains("3 atom changes")
+                && preview.label.contains("2 handlers"),
+            "label: {}",
+            preview.label
+        );
+
+        assert!(
+            !rows
+                .iter()
+                .any(|r| matches!(r.cursor, EpochsCursor::PendingPreview { epoch: 0 })),
+            "no pending preview for non-pending epoch 0",
+        );
+    }
+
+    /// `j`/`k` and friends must skip the non-selectable `PendingPreview`
+    /// cursor so it never lands as the selected row.
+    #[test]
+    fn epochs_move_skips_pending_preview_cursor() {
+        let view = epochs_view()
+            .update(AppUpdate::EpochReady {
+                resource_epoch: 0,
+                summary: empty_summary(1, 0),
+            })
+            .unwrap();
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view;
+        // Park selection on epoch 0's header; the next visible row is the
+        // PendingPreview, which `epochs_move` must hop over.
+        app.epochs.selected = Some(EpochsCursor::EpochHeader { epoch: 0 });
+        app.epochs_move(1);
+        assert!(
+            !matches!(app.epochs.selected, Some(EpochsCursor::PendingPreview { .. })),
+            "selection landed on PendingPreview: {:?}",
+            app.epochs.selected,
+        );
+        // Specifically: with epoch 0's atoms in arena indices 2 & 3, the next
+        // navigable row is the first atom.
+        assert!(matches!(
+            app.epochs.selected,
+            Some(EpochsCursor::Atom { arena_index: 2 })
+        ));
+    }
+
+    /// `gg`/`G` (jump-first / jump-last) must also avoid the non-selectable
+    /// `PendingPreview` cursor.
+    #[test]
+    fn epochs_jump_skips_pending_preview() {
+        let view = epochs_view()
+            .update(AppUpdate::EpochReady {
+                resource_epoch: 0,
+                summary: empty_summary(1, 0),
+            })
+            .unwrap();
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view;
+        // First row is the epoch 0 header, then PendingPreview - the jump
+        // would otherwise land on it.
+        app.epochs_jump_first();
+        assert!(matches!(
+            app.epochs.selected,
+            Some(EpochsCursor::EpochHeader { epoch: 0 })
+        ));
+        // No way for the last row to be a PendingPreview in this view, but
+        // verify the rfind path returns a normal cursor anyway.
+        app.epochs_jump_last();
+        assert!(!matches!(
+            app.epochs.selected,
+            Some(EpochsCursor::PendingPreview { .. })
+        ));
     }
 
     /// Op rows must derive their badge from the live `OperationView` so the
