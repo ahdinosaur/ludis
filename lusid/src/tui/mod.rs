@@ -488,13 +488,14 @@ impl TuiApp {
             return Ok(false);
         }
 
-        // While a per-epoch confirm is on screen, intercept the y/n/Enter/Esc
-        // keys before they reach the page handler. Other keys (j/k, page
-        // switches, q, ...) pass through so the operator can scroll the tree
-        // / detail pane to inspect what they're about to ack. The help
-        // overlay does not block these keys: the operator must never lose
-        // the ack channel while help is open. Answering the confirm clears
-        // follow-mode (the operator is now actively steering).
+        // While a per-epoch confirm is on screen, intercept y/Enter (apply)
+        // and Esc (abort) before they reach the page handler. Everything
+        // else passes through, including `n`/`N` change-walk, so the
+        // operator can inspect the pending epoch in the tree/detail pane
+        // before answering. The help overlay does not block these keys:
+        // the operator must never lose the ack channel while help is open.
+        // Answering the confirm clears follow-mode (the operator is now
+        // actively steering).
         if self.app_view.pending_epoch.is_some() {
             match code {
                 KeyCode::Char('y') | KeyCode::Enter => {
@@ -503,7 +504,7 @@ impl TuiApp {
                     self.follow = false;
                     return Ok(false);
                 }
-                KeyCode::Char('n') | KeyCode::Esc => {
+                KeyCode::Esc => {
                     self.pending_ack = Some(AckAction::Abort);
                     self.app_view.pending_epoch = None;
                     self.follow = false;
@@ -1217,7 +1218,7 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
             ),
             Span::styled("  ", Style::default()),
             Span::styled(
-                "n/Esc abort",
+                "Esc abort",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
             Span::styled("  ? help", Style::default().fg(Color::DarkGray)),
@@ -1277,7 +1278,7 @@ fn draw_help_overlay(frame: &mut Frame, body: Rect, _app: &TuiApp) {
         ),
         (
             "Confirm",
-            &["Enter / y    apply this epoch", "n / Esc      abort"],
+            &["Enter / y    apply this epoch", "Esc          abort"],
         ),
         ("Quit", &["q            quit lusid"]),
     ];
@@ -4040,7 +4041,7 @@ mod tests {
         app.app_view.pending_epoch = Some((0, summary));
         app.show_help = true;
 
-        app.handle_event(key_event(KeyCode::Char('n'))).unwrap();
+        app.handle_event(key_event(KeyCode::Esc)).unwrap();
         assert_eq!(app.pending_ack, Some(AckAction::Abort));
         assert!(app.show_help, "overlay stays open after confirm answer");
 
@@ -4271,7 +4272,7 @@ mod tests {
         assert!(app.follow);
     }
 
-    /// Answering the confirm prompt (Enter/y/n/Esc while pending_epoch is
+    /// Answering the confirm prompt (Enter/y/Esc while pending_epoch is
     /// set) clears follow.
     #[test]
     fn follow_confirm_answer_clears_follow() {
@@ -4287,9 +4288,43 @@ mod tests {
                 truncated_count: 0,
             },
         ));
-        app.handle_event(key_event(KeyCode::Char('n'))).unwrap();
+        app.handle_event(key_event(KeyCode::Esc)).unwrap();
         assert!(!app.follow);
         assert_eq!(app.pending_ack, Some(AckAction::Abort));
+    }
+
+    /// While an epoch ack is pending, `n` must reach the tree handler and
+    /// walk to the next change rather than being swallowed as an abort
+    /// alias. The change-count strip advertises `n/N walk`, so the operator
+    /// must be able to use it before answering the prompt.
+    #[test]
+    fn pending_epoch_lets_n_walk_changes() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_one_change();
+        app.app_view.pending_epoch = Some((
+            0,
+            lusid_apply_stdio::EpochSummary {
+                atoms_total: 1,
+                atoms_changed: 1,
+                handlers_pending: 0,
+                change_labels: vec![],
+                truncated_count: 0,
+            },
+        ));
+        app.tree.selected = Some(0);
+
+        app.handle_event(key_event(KeyCode::Char('n'))).unwrap();
+
+        assert_eq!(app.pending_ack, None, "n must not trigger ack");
+        assert!(
+            app.app_view.pending_epoch.is_some(),
+            "prompt stays up so the operator can still answer",
+        );
+        assert_eq!(
+            app.tree.selected,
+            Some(1),
+            "n walked to the first change-bearing row",
+        );
     }
 
     /// Hiding Ok leaves while one of them is selected must move the

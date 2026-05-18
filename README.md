@@ -97,7 +97,7 @@ lusid --config ./lusid.toml dev    parse --machine my-server
 lusid --config ./lusid.toml remote parse --machine my-server
 ```
 
-**Per-epoch confirm.** Apply pauses between resource epochs and shows a footer prompt summarising what's about to run; press `↵` to apply, `n`/`Esc` to abort. Pass `-y` / `--yes` to skip every prompt and run straight through. The confirm prompt is always interactive: lusid refuses to start an apply that would block on a prompt it cannot show, so any non-interactive invocation (CI, pipes, redirects, `--no-tui`) must pass `-y`.
+**Per-epoch confirm.** Apply pauses between resource epochs and shows a footer prompt summarising what's about to run; press `↵` to apply, `Esc` to abort. Pass `-y` / `--yes` to skip every prompt and run straight through. The confirm prompt is always interactive: lusid refuses to start an apply that would block on a prompt it cannot show, so any non-interactive invocation (CI, pipes, redirects, `--no-tui`) must pass `-y`.
 
 **Plain-log mode.** Pass `--no-tui` to skip the ratatui TUI and emit a line-buffered digest to stderr instead. lusid switches to plain-log automatically whenever stdout is not a terminal. This only affects rendering; the confirm requirement above is independent.
 
