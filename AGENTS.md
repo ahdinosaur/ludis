@@ -77,7 +77,7 @@ Implementation notes:
 `lusid-apply` emits **newline-delimited JSON** `AppUpdate` messages to stdout.
 The `lusid` TUI expects this exact protocol. Avoid printing human text to stdout from `lusid-apply`; use tracing/logging to stderr.
 
-`AppUpdate` variants carry the structured domain types directly (`ResourceParams`, `Resource`, `ResourceState`, `ResourceChange`, `Operation`, `PlanTree<...>`). The receiver lowers them to display text through `lusid-render`. There is no intermediate `View` layer; producer and consumer share the same serde types end to end. Add new payload fields to the matching domain type, not to a wire-shadow struct.
+`AppUpdate` variants carry the structured domain types directly (`ResourceParams`, `Resource`, `ResourceState`, `ResourceChange`, `Operation`, `PlanTree<...>`). The receiver lowers them to display text through `lusid-render`.
 
 The protocol is bidirectional: at each resource-epoch boundary the producer emits `AppUpdate::EpochReady` and blocks reading one line of `AckAction` JSON (`{"action":"apply"}` / `{"action":"abort"}`) from stdin before running any op. `--yes` skips both the emission and the read. EOF or a parse error halts the apply. The reverse channel sees no other traffic; never write anything else to the child's stdin.
 
