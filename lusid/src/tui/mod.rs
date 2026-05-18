@@ -332,6 +332,9 @@ struct EpochsPageState {
     detail_focus: DetailFocus,
     detail_scroll: u16,
     awaiting_g: bool,
+    /// Transient message shown in the footer until the next keypress.
+    /// Used today by `n`/`N` when the jump-to-change search finds nothing.
+    toast: Option<String>,
 }
 
 impl EpochsPageState {
@@ -673,6 +676,10 @@ impl TuiApp {
     }
 
     fn handle_event_epochs(&mut self, code: KeyCode) -> bool {
+        // Any keypress clears the prior `n`/`N` toast. Set again below if
+        // the next jump is still a no-op. Mirrors the Tree page.
+        self.epochs.toast = None;
+
         if is_disabling_nav_key(code) {
             self.follow = false;
         }
@@ -712,6 +719,9 @@ impl TuiApp {
                 }
             }
             KeyCode::Char('G') => self.epochs_jump_last(),
+
+            KeyCode::Char('n') => self.epochs_jump_to_change(true),
+            KeyCode::Char('N') => self.epochs_jump_to_change(false),
 
             KeyCode::Down | KeyCode::Char('j') => self.epochs_move_or_scroll(1),
             KeyCode::Up | KeyCode::Char('k') => self.epochs_move_or_scroll(-1),
@@ -940,6 +950,43 @@ impl TuiApp {
             .rfind(|r| !matches!(r.cursor, EpochsCursor::PendingPreview { .. }))
         {
             self.epochs.selected = Some(last.cursor);
+        }
+    }
+
+    /// Walk selection to the next (or previous) row whose badge marks a
+    /// change-bearing target on the Epochs page. Mirrors the Tree page's
+    /// `tree_jump_to_change`: epoch-header rollups count as change targets
+    /// alongside the atoms beneath them, so `n` from a Planned section first
+    /// lands on the section header, then on each Changed/Failed row inside.
+    /// Op rows whose badge resolves to Changed/Failed are included too.
+    /// Surfaces a one-shot footer toast when no such row exists.
+    fn epochs_jump_to_change(&mut self, forward: bool) {
+        let rows = build_epochs_rows(&self.app_view, &self.epochs);
+        if rows.is_empty() {
+            self.epochs.toast = Some("no more changes".into());
+            return;
+        }
+        let current = rows
+            .iter()
+            .position(|r| Some(r.cursor) == self.epochs.selected);
+        let target = if forward {
+            let start = current.map(|i| i + 1).unwrap_or(0);
+            rows[start..]
+                .iter()
+                .position(is_change_target_epochs)
+                .map(|i| start + i)
+        } else {
+            let end = current.unwrap_or(rows.len());
+            rows[..end].iter().rposition(is_change_target_epochs)
+        };
+        match target {
+            Some(idx) => {
+                self.epochs.selected = Some(rows[idx].cursor);
+                self.epochs.detail_scroll = 0;
+            }
+            None => {
+                self.epochs.toast = Some("no more changes".into());
+            }
         }
     }
 
@@ -1229,9 +1276,11 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
             ),
             Span::styled("  ? help", Style::default().fg(Color::DarkGray)),
         ])
-    } else if app.page == UiPage::Tree
-        && let Some(toast) = app.tree.toast.as_ref()
-    {
+    } else if let Some(toast) = match app.page {
+        UiPage::Tree => app.tree.toast.as_ref(),
+        UiPage::Epochs => app.epochs.toast.as_ref(),
+        UiPage::Stderr => None,
+    } {
         Line::from(Span::styled(
             toast.clone(),
             Style::default().fg(Color::Yellow),
@@ -2762,6 +2811,13 @@ fn is_change_target(row: &TreeRow) -> bool {
     matches!(row.badge, Badge::Changed | Badge::Failed)
 }
 
+/// Epochs-page analogue of [`is_change_target`]. `EpochsRow::badge` is
+/// optional (phase headers and `PendingPreview` carry no badge); rows
+/// without a badge can never be change targets.
+fn is_change_target_epochs(row: &EpochsRow) -> bool {
+    matches!(row.badge, Some(Badge::Changed | Badge::Failed))
+}
+
 /// Roll up the badges of every descendant atom under the branch at
 /// `arena_index`. Empty branches (no descendant atoms) report `Ok`; the
 /// rollup precedence in [`palette::rollup`] then composes children.
@@ -3768,6 +3824,124 @@ mod tests {
 
         app.handle_event_tree(KeyCode::Char('j'));
         assert!(app.tree.toast.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // n/N: walk to next/prev change (Epochs page)
+    // ------------------------------------------------------------------
+
+    /// Add `PipelineInfo` to `view_with_one_change` so the Epochs page has
+    /// something to render. Atom 3 (`/a/2`) lives in epoch 0 and is Changed;
+    /// every other atom is Ok or Planned.
+    fn epochs_view_with_one_change() -> AppView {
+        let atom_epoch: HashMap<usize, usize> = [(2, 0), (3, 0), (5, 1)].into_iter().collect();
+        view_with_one_change()
+            .update(AppUpdate::PipelineInfo {
+                resource_epochs_total: 2,
+                atom_epoch,
+            })
+            .unwrap()
+    }
+
+    /// `n` from the epoch-0 header advances to the Changed atom inside it
+    /// (the header itself is the current selection, so the search starts
+    /// past it).
+    #[test]
+    fn epochs_n_advances_past_header_to_changed_atom() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view_with_one_change();
+        app.epochs.selected = Some(EpochsCursor::EpochHeader { epoch: 0 });
+
+        app.handle_event_epochs(KeyCode::Char('n'));
+
+        assert_eq!(
+            app.epochs.selected,
+            Some(EpochsCursor::Atom { arena_index: 3 }),
+        );
+        assert!(app.epochs.toast.is_none());
+    }
+
+    /// With no current selection, `n` lands on the first change-target row.
+    /// Epoch 0's header rolls up Changed, so it's the first match.
+    #[test]
+    fn epochs_n_with_no_selection_jumps_to_first_change_target() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view_with_one_change();
+        app.epochs.selected = None;
+
+        app.handle_event_epochs(KeyCode::Char('n'));
+
+        assert_eq!(
+            app.epochs.selected,
+            Some(EpochsCursor::EpochHeader { epoch: 0 }),
+        );
+        assert!(app.epochs.toast.is_none());
+    }
+
+    /// Past the last change-bearing row, `n` is a no-op: selection stays
+    /// and the footer toast surfaces.
+    #[test]
+    fn epochs_n_past_last_change_sets_toast() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view_with_one_change();
+        app.epochs.selected = Some(EpochsCursor::Atom { arena_index: 3 });
+
+        app.handle_event_epochs(KeyCode::Char('n'));
+
+        assert_eq!(
+            app.epochs.selected,
+            Some(EpochsCursor::Atom { arena_index: 3 }),
+        );
+        assert_eq!(app.epochs.toast.as_deref(), Some("no more changes"));
+    }
+
+    /// `N` walks the same set in reverse. From Atom 3, the previous change
+    /// target is the epoch-0 header (the rollup).
+    #[test]
+    fn epochs_capital_n_walks_backward() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view_with_one_change();
+        app.epochs.selected = Some(EpochsCursor::Atom { arena_index: 3 });
+
+        app.handle_event_epochs(KeyCode::Char('N'));
+
+        assert_eq!(
+            app.epochs.selected,
+            Some(EpochsCursor::EpochHeader { epoch: 0 }),
+        );
+        assert!(app.epochs.toast.is_none());
+    }
+
+    /// `epochs_view()` has no Changed/Failed atoms anywhere; `n` is a no-op
+    /// and the toast appears so the operator isn't left wondering whether
+    /// the key did anything.
+    #[test]
+    fn epochs_n_with_no_changes_sets_toast() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view();
+        app.epochs.selected = Some(EpochsCursor::EpochHeader { epoch: 0 });
+
+        app.handle_event_epochs(KeyCode::Char('n'));
+
+        assert_eq!(
+            app.epochs.selected,
+            Some(EpochsCursor::EpochHeader { epoch: 0 }),
+        );
+        assert_eq!(app.epochs.toast.as_deref(), Some("no more changes"));
+    }
+
+    /// Any subsequent keypress clears the prior epochs `n`/`N` toast.
+    #[test]
+    fn epochs_toast_clears_on_next_keypress() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view();
+        app.epochs.selected = Some(EpochsCursor::EpochHeader { epoch: 0 });
+
+        app.handle_event_epochs(KeyCode::Char('n'));
+        assert!(app.epochs.toast.is_some());
+
+        app.handle_event_epochs(KeyCode::Char('j'));
+        assert!(app.epochs.toast.is_none());
     }
 
     // ------------------------------------------------------------------
