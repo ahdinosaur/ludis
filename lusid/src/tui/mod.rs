@@ -494,20 +494,18 @@ impl TuiApp {
         // operator can inspect the pending epoch in the tree/detail pane
         // before answering. The help overlay does not block these keys:
         // the operator must never lose the ack channel while help is open.
-        // Answering the confirm clears follow-mode (the operator is now
-        // actively steering).
+        // Follow-mode is preserved across the ack so the cursor can track
+        // the apply phase's ops as they stream in.
         if self.app_view.pending_epoch.is_some() {
             match code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     self.pending_ack = Some(AckAction::Apply);
                     self.app_view.pending_epoch = None;
-                    self.follow = false;
                     return Ok(false);
                 }
                 KeyCode::Esc => {
                     self.pending_ack = Some(AckAction::Abort);
                     self.app_view.pending_epoch = None;
-                    self.follow = false;
                     return Ok(false);
                 }
                 _ => {}
@@ -1348,8 +1346,9 @@ fn draw_tree_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
         app.tree.selected = rows.first().map(|r| r.arena_index);
     }
 
-    // Follow-mode: snap selection to the latest probed/changed atom and pin
-    // the detail pane to the bottom so streamed updates stay on screen.
+    // Follow-mode: snap selection to the latest probed/changed atom. The
+    // detail pane pins to the bottom inside `draw_detail_pane`, which knows
+    // the pane height and can clamp the scroll to actual content.
     if app.follow
         && let Some(candidate) = app.app_view.last_activity_atom
     {
@@ -1366,7 +1365,6 @@ fn draw_tree_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
             // / preceding row in arena order.
             app.tree.selected = Some(fallback.arena_index);
         }
-        app.tree.detail_scroll = u16::MAX;
     }
 
     // Body area spans the full terminal width, so this is the threshold the
@@ -1595,6 +1593,8 @@ fn draw_detail_pane(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
         None => Text::from("(no selection)"),
     };
 
+    app.tree.detail_scroll = resolve_detail_scroll(&text, area, app.follow, app.tree.detail_scroll);
+
     let title = if app.tree.detail_focus == DetailFocus::Detail {
         "detail (focused)"
     } else {
@@ -1605,6 +1605,45 @@ fn draw_detail_pane(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
         .wrap(Wrap { trim: false })
         .scroll((app.tree.detail_scroll, 0));
     frame.render_widget(widget, area);
+}
+
+/// Bounded scroll value for a bordered detail pane rendering `text` into
+/// `area`. In follow-mode we pin the scroll to the bottom so streamed output
+/// (op stdout/stderr) stays visible; otherwise we clamp the current scroll so
+/// stale values from a prior frame can never push content offscreen. The
+/// per-line wrap estimate is approximate (see [`approx_wrapped_line_count`]);
+/// for follow-pinning purposes a small undercount only shows a few extra rows
+/// of context above the latest line.
+fn resolve_detail_scroll(text: &Text<'_>, area: Rect, follow: bool, scroll: u16) -> u16 {
+    let inner_width = area.width.saturating_sub(2);
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let total_lines = approx_wrapped_line_count(text, inner_width);
+    let max_scroll = total_lines.saturating_sub(inner_height) as u16;
+    if follow {
+        max_scroll
+    } else {
+        scroll.min(max_scroll)
+    }
+}
+
+/// Approximate wrapped-line count for `text` rendered at `width`. Sums
+/// `ceil(line_width / width)` per source line (an empty line still occupies
+/// one row). WordWrapper may produce one extra row for an over-long single
+/// word, but the difference is small and only matters near the bottom edge
+/// when follow-mode pins scroll.
+fn approx_wrapped_line_count(text: &Text<'_>, width: u16) -> usize {
+    if width == 0 {
+        return text.lines.len().max(1);
+    }
+    let w = width as usize;
+    text.lines
+        .iter()
+        .map(|line| {
+            let lw = line.width();
+            if lw == 0 { 1 } else { lw.div_ceil(w) }
+        })
+        .sum::<usize>()
+        .max(1)
 }
 
 /// Translate detail-pane width + the operator's `s` toggle into renderer
@@ -1863,8 +1902,9 @@ fn draw_epochs_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
     }
 
     // Follow-mode: prefer the latest op (we're in apply phase) and fall back
-    // to the latest atom (probe/change phase). Detail pane pins to the bottom
-    // so streamed stdout/stderr stays on screen.
+    // to the latest atom (probe/change phase). The detail pane pins to the
+    // bottom inside `draw_epochs_detail`, which knows the pane height and
+    // can clamp the scroll to actual content.
     if app.follow {
         let candidate = app
             .app_view
@@ -1883,7 +1923,6 @@ fn draw_epochs_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
         {
             app.epochs.selected = Some(cursor);
         }
-        app.epochs.detail_scroll = u16::MAX;
     }
 
     let layout = if area.width >= 100 {
@@ -2195,6 +2234,9 @@ fn draw_epochs_detail(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) 
         Some(cursor) => detail_for_epochs_cursor(&app.app_view, cursor, &render_palette, diff_opts),
         None => Text::from("(no selection)"),
     };
+
+    app.epochs.detail_scroll =
+        resolve_detail_scroll(&text, area, app.follow, app.epochs.detail_scroll);
 
     let title = if app.epochs.detail_focus == DetailFocus::Detail {
         "detail (focused)"
@@ -4149,7 +4191,6 @@ mod tests {
             .draw(|f| draw_tree_page(f, f.area(), &mut app))
             .unwrap();
         assert_eq!(app.tree.selected, Some(3));
-        assert_eq!(app.tree.detail_scroll, u16::MAX);
     }
 
     /// With follow on, the epochs page prefers the latest op (we're in apply
@@ -4199,6 +4240,52 @@ mod tests {
         assert_eq!(
             app.epochs.selected,
             Some(EpochsCursor::Atom { arena_index: 3 }),
+        );
+    }
+
+    /// Follow-mode on the Epochs page pins the detail pane to the bottom of
+    /// the running op's stdout so the latest line stays visible. The previous
+    /// implementation pushed `detail_scroll` to `u16::MAX`, which the
+    /// `Paragraph` widget interprets as "skip every line" - the pane went
+    /// blank. The fix clamps to actual content height.
+    #[test]
+    fn follow_pins_op_detail_to_latest_stdout_line() {
+        let mut stdout = String::new();
+        for i in 0..40 {
+            stdout.push_str(&format!("line {i:03}\n"));
+        }
+        let mut view = epochs_view()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::Change,
+                operations: vec![command_op("noisy")],
+            })
+            .unwrap()
+            .update(AppUpdate::OperationApplyStart { index: (0, 0) })
+            .unwrap();
+        view = view
+            .update(AppUpdate::OperationApplyStdout {
+                index: (0, 0),
+                stdout,
+            })
+            .unwrap();
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view;
+        app.follow = true;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|f| draw_epochs_page(f, f.area(), &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let rendered: String = (0..buffer.area.height)
+            .map(|y| row_text(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("line 039"),
+            "expected last stdout line in follow-pinned detail pane; got:\n{rendered}",
         );
     }
 
@@ -4280,25 +4367,32 @@ mod tests {
         assert!(app.follow);
     }
 
-    /// Answering the confirm prompt (Enter/y/Esc while pending_epoch is
-    /// set) clears follow.
+    /// Answering the confirm prompt (Enter/y/Esc while pending_epoch is set)
+    /// preserves follow so the cursor can track ops streaming in during the
+    /// apply phase. Only nav keys disarm follow.
     #[test]
-    fn follow_confirm_answer_clears_follow() {
-        let mut app = TuiApp::new("test".into());
-        app.follow = true;
-        app.app_view.pending_epoch = Some((
-            0,
-            lusid_apply_stdio::EpochSummary {
-                atoms_total: 1,
-                atoms_changed: 1,
-                handlers_pending: 0,
-                change_labels: vec![],
-                truncated_count: 0,
-            },
-        ));
-        app.handle_event(key_event(KeyCode::Esc)).unwrap();
-        assert!(!app.follow);
-        assert_eq!(app.pending_ack, Some(AckAction::Abort));
+    fn follow_confirm_answer_preserves_follow() {
+        for (key, expected_ack) in [
+            (KeyCode::Char('y'), AckAction::Apply),
+            (KeyCode::Enter, AckAction::Apply),
+            (KeyCode::Esc, AckAction::Abort),
+        ] {
+            let mut app = TuiApp::new("test".into());
+            app.follow = true;
+            app.app_view.pending_epoch = Some((
+                0,
+                lusid_apply_stdio::EpochSummary {
+                    atoms_total: 1,
+                    atoms_changed: 1,
+                    handlers_pending: 0,
+                    change_labels: vec![],
+                    truncated_count: 0,
+                },
+            ));
+            app.handle_event(key_event(key)).unwrap();
+            assert!(app.follow, "follow must survive {key:?} at confirm");
+            assert_eq!(app.pending_ack, Some(expected_ack));
+        }
     }
 
     /// While an epoch ack is pending, `n` must reach the tree handler and
