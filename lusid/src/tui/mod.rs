@@ -1133,15 +1133,18 @@ fn draw_header(
 
 /// 1-based "epoch K/N" indicator. `?/?` until `PipelineInfo` arrives so the
 /// strip doesn't bake a `0/?` placeholder into the operator's first frame.
-/// During apply, `K` is the resource epoch the most recently emitted op
-/// epoch belongs to (both phases report the same K); after
-/// `ApplyComplete`, `K = N`.
+/// While an `EpochReady` is pending, `K` is the epoch the operator is being
+/// asked to confirm (the one about to run); during apply, `K` is the resource
+/// epoch the most recently emitted op epoch belongs to (both phases report
+/// the same K); after `ApplyComplete`, `K = N`.
 fn epoch_label(view: &AppView) -> String {
     let Some(total) = view.resource_epochs_total() else {
         return "epoch ?/?".to_string();
     };
     let current = if view.done {
         total
+    } else if let Some((pending_epoch, _)) = view.pending_epoch.as_ref() {
+        pending_epoch + 1
     } else if let Some(last) = view.operation_epoch_meta.last() {
         last.resource_epoch + 1
     } else {
@@ -1169,6 +1172,11 @@ fn status_summary(app: &TuiApp, outcome: Option<&Result<(), TuiError>>) -> (Stri
                 Style::default().fg(Color::Yellow),
             )
         }
+    } else if view.pending_epoch.is_some() {
+        (
+            "awaiting confirm".to_string(),
+            Style::default().fg(Color::Yellow),
+        )
     } else if !view.operations_epochs.is_empty() {
         ("applying".to_string(), Style::default().fg(Color::Blue))
     } else if view.resources.is_some() {
@@ -4513,6 +4521,50 @@ mod tests {
         assert!(
             !text.contains("changes (n/N walk)"),
             "header should suppress indicator below 80 cols: {text:?}",
+        );
+    }
+
+    /// At the boundary between epochs - epoch K's ops applied, `EpochReady`
+    /// for K+1 received - the header must advance with the footer prompt
+    /// instead of dangling on K with the "applying" status. Otherwise the
+    /// operator sees the footer ask about epoch 2 while the header still
+    /// reads "epoch 1 · applying", which contradicts what the prompt says.
+    #[test]
+    fn header_reflects_pending_epoch_at_boundary() {
+        let view = epochs_view()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::Change,
+                operations: vec![command_op("op-a")],
+            })
+            .unwrap()
+            .update(AppUpdate::EpochReady {
+                resource_epoch: 1,
+                summary: lusid_apply_stdio::EpochSummary {
+                    atoms_total: 1,
+                    atoms_changed: 1,
+                    handlers_pending: 0,
+                    change_labels: vec![],
+                    truncated_count: 0,
+                },
+            })
+            .unwrap();
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view;
+        let buffer = render_header(120, &app);
+        let text = row_text(&buffer, 0);
+        assert!(
+            text.contains("epoch 2/2"),
+            "header should advance to the pending epoch: {text:?}",
+        );
+        assert!(
+            text.contains("awaiting confirm"),
+            "status should reflect the confirm prompt, not 'applying': {text:?}",
+        );
+        assert!(
+            !text.contains("applying"),
+            "status must not still say 'applying' at the boundary: {text:?}",
         );
     }
 }
