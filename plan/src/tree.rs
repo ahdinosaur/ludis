@@ -127,7 +127,7 @@ mod tests {
 
     /// `requires: [<branch-id>]` puts the requirer in a strictly-later epoch
     /// than every leaf inside the required branch. This is the foundation the
-    /// apply layer's Phase A/B ordering relies on.
+    /// apply layer's change-phase / on-change-phase ordering relies on.
     #[test]
     fn dependent_lands_strictly_after_plan_item_atoms() {
         let p = PlanTree::Branch {

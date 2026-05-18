@@ -150,8 +150,8 @@ pub(crate) fn digest(update: &AppUpdate, app: &AppView) -> Option<String> {
             operations,
         } => {
             let phase_tag = match phase {
-                Phase::A => 'A',
-                Phase::B => 'B',
+                Phase::Change => "change",
+                Phase::OnChange => "on-change",
             };
             Some(format!(
                 "[epoch] #{epoch_index} (resource {resource_epoch} phase {phase_tag}): {} operation(s)",

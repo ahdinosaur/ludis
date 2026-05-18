@@ -4,8 +4,8 @@
 //!   detail pane on the right (or stacked vertically below 100 columns).
 //!   This is the default page and the surface most operators spend time on.
 //! - **Epochs** (`2`): one section per resource epoch, each showing the
-//!   epoch's atoms, Phase A ops, and Phase B handlers, with a detail pane on
-//!   the right (same layout breakpoint as Tree).
+//!   epoch's atoms, change-phase ops, and on-change-phase handlers, with a
+//!   detail pane on the right (same layout breakpoint as Tree).
 //! - **Stderr** (`e`): apply stderr scrollback.
 //!
 //! Input: crossterm events are read on a dedicated OS thread (blocking read)
@@ -365,15 +365,28 @@ impl EpochsPageState {
 /// the current row index each frame via [`build_epochs_rows`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EpochsCursor {
-    EpochHeader { epoch: usize },
-    Atom { arena_index: usize },
-    PhaseHeader { epoch: usize, phase: Phase },
-    Op { epoch_index: usize, op_index: usize },
+    EpochHeader {
+        epoch: usize,
+    },
+    Atom {
+        arena_index: usize,
+    },
+    PhaseHeader {
+        epoch: usize,
+        phase: Phase,
+    },
+    Op {
+        epoch_index: usize,
+        op_index: usize,
+    },
     /// Non-selectable preview row under the pending epoch's header. Surfaces
     /// the `EpochSummary` counts so the handler-count forecast remains visible
-    /// even before Phase B ops have arrived (which suppress their header).
+    /// even before on-change-phase ops have arrived (which suppress their
+    /// header).
     /// Navigation skips this cursor.
-    PendingPreview { epoch: usize },
+    PendingPreview {
+        epoch: usize,
+    },
 }
 
 /// Top-level TUI state. Holds the folded `AppView` from the wire plus
@@ -1120,7 +1133,7 @@ fn draw_header(
 /// 1-based "epoch K/N" indicator. `?/?` until `PipelineInfo` arrives so the
 /// strip doesn't bake a `0/?` placeholder into the operator's first frame.
 /// During apply, `K` is the resource epoch the most recently emitted op
-/// epoch belongs to (Phase A and B both report the same K); after
+/// epoch belongs to (both phases report the same K); after
 /// `ApplyComplete`, `K = N`.
 fn epoch_label(view: &AppView) -> String {
     let Some(total) = view.resource_epochs_total() else {
@@ -1816,12 +1829,13 @@ fn draw_epochs_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
     // to the latest atom (probe/change phase). Detail pane pins to the bottom
     // so streamed stdout/stderr stays on screen.
     if app.follow {
-        let candidate = app.app_view.last_activity_op.map(|(epoch_index, op_index)| {
-            EpochsCursor::Op {
+        let candidate = app
+            .app_view
+            .last_activity_op
+            .map(|(epoch_index, op_index)| EpochsCursor::Op {
                 epoch_index,
                 op_index,
-            }
-        });
+            });
         let candidate = candidate.or_else(|| {
             app.app_view
                 .last_activity_atom
@@ -1866,9 +1880,10 @@ struct EpochsRow {
 }
 
 /// Visible-row list for the Epochs page. Sections appear in resource-epoch
-/// order; within each section: epoch header → atoms → Phase A header → Phase A
-/// ops → Phase B header → Phase B ops. Collapsed sections render only their
-/// header. Atoms are sorted by arena index so navigation is deterministic.
+/// order; within each section: epoch header → atoms → change-phase header →
+/// change-phase ops → on-change-phase header → on-change-phase ops. Collapsed
+/// sections render only their header. Atoms are sorted by arena index so
+/// navigation is deterministic.
 fn build_epochs_rows(view: &AppView, state: &EpochsPageState) -> Vec<EpochsRow> {
     let mut rows = Vec::new();
     let Some(total) = view.resource_epochs_total() else {
@@ -1910,12 +1925,12 @@ fn build_epochs_rows(view: &AppView, state: &EpochsPageState) -> Vec<EpochsRow> 
 
     for epoch in 0..total {
         let atoms = atoms_by_epoch.get(&epoch).cloned().unwrap_or_default();
-        let phase_a = ops_by_epoch_phase
-            .get(&(epoch, Phase::A))
+        let change_op_epochs = ops_by_epoch_phase
+            .get(&(epoch, Phase::Change))
             .cloned()
             .unwrap_or_default();
-        let phase_b = ops_by_epoch_phase
-            .get(&(epoch, Phase::B))
+        let on_change_op_epochs = ops_by_epoch_phase
+            .get(&(epoch, Phase::OnChange))
             .cloned()
             .unwrap_or_default();
 
@@ -1924,7 +1939,7 @@ fn build_epochs_rows(view: &AppView, state: &EpochsPageState) -> Vec<EpochsRow> 
             cursor: EpochsCursor::EpochHeader { epoch },
             depth: 0,
             badge: Some(rollup_for_atoms(resources, &atoms)),
-            label: format_epoch_header(view, epoch, &atoms, &phase_b),
+            label: format_epoch_header(view, epoch, &atoms, &on_change_op_epochs),
             annotation: None,
         });
 
@@ -1934,7 +1949,7 @@ fn build_epochs_rows(view: &AppView, state: &EpochsPageState) -> Vec<EpochsRow> 
 
         // Pending preview - surfaces EpochSummary counts under the awaiting
         // epoch so the handler-count forecast doesn't vanish along with the
-        // suppressed Phase B header.
+        // suppressed on-change-phase header.
         if let Some((pending_epoch, summary)) = view.pending_epoch.as_ref()
             && *pending_epoch == epoch
         {
@@ -1971,39 +1986,42 @@ fn build_epochs_rows(view: &AppView, state: &EpochsPageState) -> Vec<EpochsRow> 
             });
         }
 
-        // Plan Operations (Phase A) - only emitted once at least one op event
-        // has arrived. Suppressing the empty header keeps unrun epochs free of
-        // implementation jargon.
-        if !phase_a.is_empty() {
+        // Plan Operations (change phase) - only emitted once at least one op
+        // event has arrived. Suppressing the empty header keeps unrun epochs
+        // free of implementation jargon.
+        if !change_op_epochs.is_empty() {
             rows.push(EpochsRow {
                 cursor: EpochsCursor::PhaseHeader {
                     epoch,
-                    phase: Phase::A,
+                    phase: Phase::Change,
                 },
                 depth: 1,
                 badge: None,
-                label: format!("Plan Operations · {} op event(s)", phase_a.len()),
+                label: format!("Plan Operations · {} op event(s)", change_op_epochs.len()),
                 annotation: None,
             });
-            for &epoch_index in &phase_a {
+            for &epoch_index in &change_op_epochs {
                 push_op_rows(&mut rows, view, epoch_index);
             }
         }
 
-        // Change Event Operations (Phase B) - same suppression. We never
-        // synthesise an empty "(no handlers fired)" row.
-        if !phase_b.is_empty() {
+        // Change Event Operations (on-change phase) - same suppression. We
+        // never synthesise an empty "(no handlers fired)" row.
+        if !on_change_op_epochs.is_empty() {
             rows.push(EpochsRow {
                 cursor: EpochsCursor::PhaseHeader {
                     epoch,
-                    phase: Phase::B,
+                    phase: Phase::OnChange,
                 },
                 depth: 1,
                 badge: None,
-                label: format!("Change Event Operations · {} op event(s)", phase_b.len()),
+                label: format!(
+                    "Change Event Operations · {} op event(s)",
+                    on_change_op_epochs.len()
+                ),
                 annotation: None,
             });
-            for &epoch_index in &phase_b {
+            for &epoch_index in &on_change_op_epochs {
                 push_op_rows(&mut rows, view, epoch_index);
             }
         }
@@ -2206,18 +2224,24 @@ fn detail_for_epoch_header(view: &AppView, epoch: usize) -> Text<'static> {
         .filter(|&&idx| matches!(leaf_at(view, idx), Some(LeafState::Changed { .. })))
         .count();
     lines.push(field_line("changed", &changed.to_string()));
-    let phase_a = view
+    let change_phase_ops = view
         .operation_epoch_meta
         .iter()
-        .filter(|m| m.resource_epoch == epoch && m.phase == Phase::A)
+        .filter(|m| m.resource_epoch == epoch && m.phase == Phase::Change)
         .count();
-    let phase_b = view
+    let on_change_phase_ops = view
         .operation_epoch_meta
         .iter()
-        .filter(|m| m.resource_epoch == epoch && m.phase == Phase::B)
+        .filter(|m| m.resource_epoch == epoch && m.phase == Phase::OnChange)
         .count();
-    lines.push(field_line("Phase A op events", &phase_a.to_string()));
-    lines.push(field_line("Phase B op events", &phase_b.to_string()));
+    lines.push(field_line(
+        "change phase op events",
+        &change_phase_ops.to_string(),
+    ));
+    lines.push(field_line(
+        "on-change phase op events",
+        &on_change_phase_ops.to_string(),
+    ));
 
     Text::from(lines)
 }
@@ -2225,8 +2249,10 @@ fn detail_for_epoch_header(view: &AppView, epoch: usize) -> Text<'static> {
 fn detail_for_phase_header(view: &AppView, epoch: usize, phase: Phase) -> Text<'static> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let label = match phase {
-        Phase::A => "Plan Operations: change ops produced by this epoch's atoms",
-        Phase::B => "Change Event Operations: on_change handlers fired by this epoch's branches",
+        Phase::Change => "Plan Operations: change ops produced by this epoch's atoms",
+        Phase::OnChange => {
+            "Change Event Operations: on_change handlers fired by this epoch's branches"
+        }
     };
     lines.push(section_header(label));
 
@@ -2246,8 +2272,8 @@ fn detail_for_phase_header(view: &AppView, epoch: usize, phase: Phase) -> Text<'
     if matching.is_empty() {
         lines.push(blank_line());
         let note = match phase {
-            Phase::A => "no op events yet (epoch may not have run, or had no changes)",
-            Phase::B => "no on_change handlers fired",
+            Phase::Change => "no op events yet (epoch may not have run, or had no changes)",
+            Phase::OnChange => "no on_change handlers fired",
         };
         lines.push(status_line(note));
     } else {
@@ -2298,8 +2324,8 @@ fn detail_for_op(
         lines.push(field_line(
             "phase",
             match meta.phase {
-                Phase::A => "A",
-                Phase::B => "B",
+                Phase::Change => "change",
+                Phase::OnChange => "on-change",
             },
         ));
     }
@@ -2332,11 +2358,16 @@ fn detail_for_op(
     Text::from(lines)
 }
 
-/// Header row text. `handlers` is the count of Phase B *operations* (sum over
-/// the relevant op-epochs), matching project terminology where handlers are
-/// the `on_change` ops fired in Phase B. Epoch number is 1-based to match
-/// the header strip (`epoch K/N`).
-fn format_epoch_header(view: &AppView, epoch: usize, atoms: &[usize], phase_b: &[usize]) -> String {
+/// Header row text. `handlers` is the count of on-change-phase *operations*
+/// (sum over the relevant op-epochs), matching project terminology where
+/// handlers are the `on_change` ops fired in that phase. Epoch number is
+/// 1-based to match the header strip (`epoch K/N`).
+fn format_epoch_header(
+    view: &AppView,
+    epoch: usize,
+    atoms: &[usize],
+    on_change_op_epochs: &[usize],
+) -> String {
     let total = view
         .resource_epochs_total()
         .map(|n| n.to_string())
@@ -2345,7 +2376,7 @@ fn format_epoch_header(view: &AppView, epoch: usize, atoms: &[usize], phase_b: &
         .iter()
         .filter(|&&idx| matches!(leaf_at(view, idx), Some(LeafState::Changed { .. })))
         .count();
-    let handlers: usize = phase_b
+    let handlers: usize = on_change_op_epochs
         .iter()
         .filter_map(|&i| view.operations_epochs.get(i).map(Vec::len))
         .sum();
@@ -2953,15 +2984,15 @@ mod tests {
         );
     }
 
-    /// Phase A header (re-labelled "Plan Operations") appears only once the
-    /// first op event for that epoch arrives.
+    /// The change-phase header (re-labelled "Plan Operations") appears only
+    /// once the first op event for that epoch arrives.
     #[test]
-    fn epochs_rows_emit_plan_operations_header_after_phase_a_op() {
+    fn epochs_rows_emit_plan_operations_header_after_change_phase_op() {
         let view = epochs_view()
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 0,
-                phase: Phase::A,
+                phase: Phase::Change,
                 operations: vec![command_op("op-a")],
             })
             .unwrap();
@@ -2973,7 +3004,7 @@ mod tests {
                     r.cursor,
                     EpochsCursor::PhaseHeader {
                         epoch: 0,
-                        phase: Phase::A
+                        phase: Phase::Change
                     }
                 )
             })
@@ -2983,31 +3014,30 @@ mod tests {
             "label: {}",
             header.label
         );
-        // Epoch 1 has no Phase A ops yet - so still no header there.
+        // Epoch 1 has no change-phase ops yet - so still no header there.
         assert!(
-            !rows
-                .iter()
-                .any(|r| matches!(
-                    r.cursor,
-                    EpochsCursor::PhaseHeader {
-                        epoch: 1,
-                        phase: Phase::A,
-                    }
-                )),
-            "epoch 1 should still suppress its phase A header",
+            !rows.iter().any(|r| matches!(
+                r.cursor,
+                EpochsCursor::PhaseHeader {
+                    epoch: 1,
+                    phase: Phase::Change,
+                }
+            )),
+            "epoch 1 should still suppress its change-phase header",
         );
     }
 
-    /// Phase B header is labelled "Change Event Operations" and only appears
-    /// once a handler op event arrives. The "(no on_change handlers fired)"
-    /// row from Phase 1 is gone.
+    /// The on-change-phase header is labelled "Change Event Operations" and
+    /// only appears once a handler op event arrives. An empty on-change
+    /// phase produces no synthetic annotation row; the header is suppressed
+    /// entirely.
     #[test]
-    fn epochs_rows_emit_change_event_operations_header_after_phase_b_op() {
+    fn epochs_rows_emit_change_event_operations_header_after_on_change_phase_op() {
         let view = epochs_view()
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 0,
-                phase: Phase::B,
+                phase: Phase::OnChange,
                 operations: vec![command_op("reload")],
             })
             .unwrap();
@@ -3019,7 +3049,7 @@ mod tests {
                     r.cursor,
                     EpochsCursor::PhaseHeader {
                         epoch: 0,
-                        phase: Phase::B
+                        phase: Phase::OnChange
                     }
                 )
             })
@@ -3033,7 +3063,7 @@ mod tests {
             !rows
                 .iter()
                 .any(|r| r.label.contains("no on_change handlers fired")),
-            "the empty-Phase-B annotation row must be gone",
+            "empty on-change phase must not synthesise an annotation row",
         );
     }
 
@@ -3057,58 +3087,59 @@ mod tests {
     }
 
     #[test]
-    fn epochs_phase_a_op_rows_appear_under_phase_header() {
+    fn epochs_change_phase_op_rows_appear_under_phase_header() {
         let view = epochs_view()
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 0,
-                phase: Phase::A,
+                phase: Phase::Change,
                 operations: vec![command_op("op-a"), command_op("op-b")],
             })
             .unwrap();
         let state = EpochsPageState::default();
         let rows = build_epochs_rows(&view, &state);
-        // Phase A op events should appear directly after Phase A's header.
-        // (Phase B header is suppressed since no Phase B ops have arrived.)
-        let phase_a_pos = rows
+        // Change-phase op events should appear directly after the
+        // change-phase header. (The on-change-phase header is suppressed since
+        // no on-change-phase ops have arrived.)
+        let change_phase_header_pos = rows
             .iter()
             .position(|r| {
                 matches!(
                     r.cursor,
                     EpochsCursor::PhaseHeader {
                         epoch: 0,
-                        phase: Phase::A
+                        phase: Phase::Change
                     }
                 )
             })
-            .expect("phase A header");
-        // Walk forward from the Phase A header collecting Op rows; stop at the
-        // next non-Op, non-Op-adjacent row (the next epoch header).
-        let ops_after: Vec<&EpochsRow> = rows[phase_a_pos + 1..]
+            .expect("change-phase header");
+        // Walk forward from the change-phase header collecting Op rows; stop
+        // at the next non-Op row (the next epoch header).
+        let ops_after: Vec<&EpochsRow> = rows[change_phase_header_pos + 1..]
             .iter()
             .take_while(|r| matches!(r.cursor, EpochsCursor::Op { .. }))
             .collect();
         assert_eq!(ops_after.len(), 2);
     }
 
-    /// Phase B handlers must surface under the epoch that scheduled them, not
-    /// under some other epoch. The wire ships `resource_epoch` per
+    /// On-change-phase handlers must surface under the epoch that scheduled
+    /// them, not under some other epoch. The wire ships `resource_epoch` per
     /// `OperationsApplyEpochAdded` event; the page groups by that field.
     #[test]
-    fn epochs_phase_b_handlers_land_under_their_resource_epoch() {
+    fn epochs_on_change_phase_handlers_land_under_their_resource_epoch() {
         let view = epochs_view()
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 1,
-                phase: Phase::B,
+                phase: Phase::OnChange,
                 operations: vec![command_op("reload-nginx")],
             })
             .unwrap();
         let state = EpochsPageState::default();
         let rows = build_epochs_rows(&view, &state);
-        // The handler op should sit under epoch 1's Phase B section, after
-        // epoch 1's "Change Event Operations" header. Epoch 0 has no Phase B
-        // ops so its header is suppressed entirely.
+        // The handler op should sit under epoch 1's on-change-phase section,
+        // after epoch 1's "Change Event Operations" header. Epoch 0 has no
+        // on-change-phase ops so its header is suppressed entirely.
         let mut current_epoch = None;
         let mut current_phase = None;
         for row in &rows {
@@ -3117,7 +3148,7 @@ mod tests {
                 EpochsCursor::PhaseHeader { phase, .. } => current_phase = Some(phase),
                 EpochsCursor::Op { .. } => {
                     assert_eq!(current_epoch, Some(1));
-                    assert_eq!(current_phase, Some(Phase::B));
+                    assert_eq!(current_phase, Some(Phase::OnChange));
                 }
                 _ => {}
             }
@@ -3318,7 +3349,10 @@ mod tests {
         assert!(build_epochs_rows(&view, &state).is_empty());
     }
 
-    fn empty_summary(atoms_changed: usize, handlers_pending: usize) -> lusid_apply_stdio::EpochSummary {
+    fn empty_summary(
+        atoms_changed: usize,
+        handlers_pending: usize,
+    ) -> lusid_apply_stdio::EpochSummary {
         lusid_apply_stdio::EpochSummary {
             atoms_total: 0,
             atoms_changed,
@@ -3357,8 +3391,7 @@ mod tests {
 
         let preview = &rows[preview_pos];
         assert!(
-            preview.label.contains("3 atom changes")
-                && preview.label.contains("2 handlers"),
+            preview.label.contains("3 atom changes") && preview.label.contains("2 handlers"),
             "label: {}",
             preview.label
         );
@@ -3388,7 +3421,10 @@ mod tests {
         app.epochs.selected = Some(EpochsCursor::EpochHeader { epoch: 0 });
         app.epochs_move(1);
         assert!(
-            !matches!(app.epochs.selected, Some(EpochsCursor::PendingPreview { .. })),
+            !matches!(
+                app.epochs.selected,
+                Some(EpochsCursor::PendingPreview { .. })
+            ),
             "selection landed on PendingPreview: {:?}",
             app.epochs.selected,
         );
@@ -3436,7 +3472,7 @@ mod tests {
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 0,
-                phase: Phase::A,
+                phase: Phase::Change,
                 operations: vec![command_op("op-x"), command_op("op-y")],
             })
             .unwrap()
@@ -4017,7 +4053,7 @@ mod tests {
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 0,
-                phase: Phase::A,
+                phase: Phase::Change,
                 operations: vec![command_op("op-a"), command_op("op-b")],
             })
             .unwrap()

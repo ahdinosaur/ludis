@@ -17,18 +17,19 @@
 //! 2. Resource expansion -> [`AppUpdate::ResourcesNode`] carrying the full
 //!    atoms tree (one event at index 0, bracketed by `ResourcesStart` and
 //!    `ResourcesComplete`). One leaf per resource atom; no synthetic nodes
-//!    for `on_change` handlers (those fire in Phase B and appear only in the
-//!    apply pane).
+//!    for `on_change` handlers (those fire in the `OnChange` phase and appear
+//!    only in the apply pane).
 //! 3. Per resource epoch (in causality order):
 //!    - state probe events for atoms in this epoch,
 //!    - change events,
 //!    - operations sub-tree events,
-//!    - Phase A: per-internal-operation-epoch
+//!    - `Change` phase: per-internal-operation-epoch
 //!      [`AppUpdate::OperationsApplyEpochAdded`] with merged change ops,
 //!      then per-op apply events,
-//!    - Phase B: handler ops for any plan item whose latest atom was in
-//!      this epoch and which had at least one atom change. Same lifecycle
-//!      events as Phase A, advancing the same `op_epoch_index` counter.
+//!    - `OnChange` phase: handler ops for any plan item whose latest atom was
+//!      in this epoch and which had at least one atom change. Same lifecycle
+//!      events as the `Change` phase, advancing the same `op_epoch_index`
+//!      counter.
 //! 4. [`AppUpdate::ApplyComplete`].
 //!
 //! Events for different leaves interleave: state events for atoms in epoch 1
@@ -87,8 +88,8 @@ pub enum AppUpdate {
 
     /// Begin filling in the atoms tree - the resource atoms produced by
     /// expanding each plan item's `ResourceParams`. One leaf per atom; no
-    /// synthetic nodes for `on_change` handlers (those fire in Phase B and
-    /// appear only in the apply pane).
+    /// synthetic nodes for `on_change` handlers (those fire in the `OnChange`
+    /// phase and appear only in the apply pane).
     ResourcesStart,
     ResourcesNode {
         index: usize,
@@ -124,12 +125,12 @@ pub enum AppUpdate {
     /// pane. The TUI grows `operations_epochs` as these arrive.
     ///
     /// `resource_epoch` identifies which outer resource epoch this internal
-    /// op epoch belongs to; `phase` distinguishes Phase A (atom change ops)
-    /// from Phase B (`on_change` handlers). Multiple `OperationsApplyEpochAdded`
-    /// events can share a `resource_epoch` value. `epoch_index` is strictly
-    /// contiguous from 0 across the apply (incremented per emitted event;
-    /// empty resource epochs / empty phases produce no event and so do not
-    /// consume an index).
+    /// op epoch belongs to; `phase` distinguishes `Change` (atom change ops)
+    /// from `OnChange` (`on_change` handlers). Multiple
+    /// `OperationsApplyEpochAdded` events can share a `resource_epoch` value.
+    /// `epoch_index` is strictly contiguous from 0 across the apply
+    /// (incremented per emitted event; empty resource epochs / empty phases
+    /// produce no event and so do not consume an index).
     OperationsApplyEpochAdded {
         epoch_index: usize,
         resource_epoch: usize,
@@ -156,7 +157,7 @@ pub enum AppUpdate {
         error: Option<String>,
     },
 
-    /// Emitted between Phase A's probe/change-computation and the first op
+    /// Emitted between the `Change` phase's probe/change-computation and the first op
     /// for a resource epoch, but only when the epoch has at least one atom
     /// change or one handler queued (empty epochs skip emission to avoid
     /// prompt fatigue). The producer then blocks reading one line of
@@ -210,13 +211,14 @@ pub struct EpochSummary {
 }
 
 /// Which phase of a resource epoch an [`AppUpdate::OperationsApplyEpochAdded`]
-/// belongs to. Phase A is the change ops produced by the epoch's atoms;
-/// Phase B is the `on_change` handlers fired after Phase A completes for any
-/// handler-bearing plan-item branch whose latest atom landed in this epoch.
+/// belongs to. `Change` is the change ops produced by the epoch's atoms;
+/// `OnChange` is the `on_change` handlers fired after `Change` completes for
+/// any handler-bearing plan-item branch whose latest atom landed in this
+/// epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Phase {
-    A,
-    B,
+    Change,
+    OnChange,
 }
 
 /// Per-internal-op-epoch metadata stored on [`AppView`] in parallel to
@@ -1638,7 +1640,7 @@ mod tests {
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 0,
-                phase: Phase::A,
+                phase: Phase::Change,
                 operations: vec![command_op("op")],
             })
             .unwrap();
@@ -1760,25 +1762,25 @@ mod tests {
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 1,
-                phase: Phase::A,
+                phase: Phase::Change,
                 operations: vec![command_op("op-a")],
             })
             .unwrap()
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 1,
                 resource_epoch: 1,
-                phase: Phase::B,
+                phase: Phase::OnChange,
                 operations: vec![command_op("op-b")],
             })
             .unwrap();
 
-        let a = v.operation_epoch_meta(0).expect("phase A meta");
-        assert_eq!(a.resource_epoch, 1);
-        assert_eq!(a.phase, Phase::A);
+        let change_meta = v.operation_epoch_meta(0).expect("change-phase meta");
+        assert_eq!(change_meta.resource_epoch, 1);
+        assert_eq!(change_meta.phase, Phase::Change);
 
-        let b = v.operation_epoch_meta(1).expect("phase B meta");
-        assert_eq!(b.resource_epoch, 1);
-        assert_eq!(b.phase, Phase::B);
+        let on_change_meta = v.operation_epoch_meta(1).expect("on-change-phase meta");
+        assert_eq!(on_change_meta.resource_epoch, 1);
+        assert_eq!(on_change_meta.phase, Phase::OnChange);
 
         assert!(
             v.operation_epoch_meta(2).is_none(),
@@ -1818,7 +1820,7 @@ mod tests {
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 0,
-                phase: Phase::A,
+                phase: Phase::Change,
                 operations: vec![command_op("op")],
             })
             .unwrap();
@@ -1847,7 +1849,7 @@ mod tests {
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 1,
-                phase: Phase::A,
+                phase: Phase::Change,
                 operations: vec![command_op("op")],
             })
             .unwrap();
@@ -1897,7 +1899,7 @@ mod tests {
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 0,
-                phase: Phase::A,
+                phase: Phase::Change,
                 operations: vec![command_op("op")],
             })
             .unwrap();
@@ -1910,7 +1912,7 @@ mod tests {
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 1,
-                phase: Phase::B,
+                phase: Phase::OnChange,
                 operations: vec![command_op("op2")],
             })
             .unwrap_err();
@@ -1990,7 +1992,7 @@ mod tests {
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
                 resource_epoch: 0,
-                phase: Phase::A,
+                phase: Phase::Change,
                 operations: vec![command_op("op-a"), command_op("op-b")],
             })
             .unwrap();

@@ -290,9 +290,9 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     }
 
     // For each handler-bearing plan-item branch, the latest resource epoch
-    // any of its descendant atoms appears in. Phase B fires that branch's
-    // handlers at the end of its latest epoch. BTreeMap so Phase B's
-    // iteration order is stable across runs.
+    // any of its descendant atoms appears in. The on-change phase fires that
+    // branch's handlers at the end of its latest epoch. BTreeMap so the
+    // on-change phase's iteration order is stable across runs.
     let latest_epoch_by_branch: BTreeMap<usize, usize> =
         build_latest_epoch_by_branch(&atom_epochs, &parent_of, &atoms_flat);
 
@@ -303,16 +303,16 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
     // Process each resource epoch in causality order.
     //
     // Within each epoch:
-    //   - Phase A: probe state for atoms (after prior epochs' ops have
+    //   - Change phase: probe state for atoms (after prior epochs' ops have
     //     already been applied, so probes see fresh-from-disk state),
     //     compute changes, and apply the change ops. Atoms that change mark
     //     their nearest handler-bearing ancestor branch in `changed_branches`.
-    //   - Phase B: for every handler-bearing branch whose latest epoch is
-    //     this one and which was marked changed, apply its on_change
-    //     operations. Phase B runs after Phase A's ops complete and before
-    //     the next epoch's Phase A begins, so handlers fire strictly after
-    //     the resource atoms they watch and strictly before any dependent's
-    //     atoms.
+    //   - On-change phase: for every handler-bearing branch whose latest
+    //     epoch is this one and which was marked changed, apply its
+    //     on_change operations. The on-change phase runs after the change
+    //     phase's ops complete and before the next epoch's change phase
+    //     begins, so handlers fire strictly after the resource atoms they
+    //     watch and strictly before any dependent's atoms.
     let mut changed_branches: HashSet<usize> = HashSet::new();
     let mut had_changes = false;
     let mut op_epoch_counter: usize = 0;
@@ -326,9 +326,9 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
         let atoms_total = atoms.len();
 
-        // Phase A: probe states in parallel, then walk results sequentially
-        // to emit events, compute changes, collect op subtrees, and mark
-        // each changed atom's nearest handler-bearing ancestor.
+        // Change phase: probe states in parallel, then walk results
+        // sequentially to emit events, compute changes, collect op subtrees,
+        // and mark each changed atom's nearest handler-bearing ancestor.
         let probes = atoms.into_iter().map(|(idx, resource)| {
             let mut ctx = ctx.clone();
             async move {
@@ -387,8 +387,8 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
         // Count handler-bearing plan-item branches whose latest atom landed
         // in this epoch and which have at least one descendant change marked
-        // (possibly from an earlier epoch). These are the Phase B handlers
-        // queued for after Phase A.
+        // (possibly from an earlier epoch). These are the on-change-phase
+        // handlers queued for after the change phase.
         let handlers_pending = latest_epoch_by_branch
             .iter()
             .filter(|(branch_idx, latest)| {
@@ -426,15 +426,15 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         apply_op_phase(
             atom_op_subtrees,
             resource_epoch_idx,
-            Phase::A,
+            Phase::Change,
             &mut op_epoch_counter,
             &mut ctx,
             &redactor,
         )
         .await?;
 
-        // Phase B: collect handlers for branches whose latest epoch is this
-        // one and which had at least one atom change during apply.
+        // On-change phase: collect handlers for branches whose latest epoch
+        // is this one and which had at least one atom change during apply.
         let mut handler_leaves: Vec<PlanTree<Operation>> = Vec::new();
         for (branch_idx, latest) in &latest_epoch_by_branch {
             if *latest != resource_epoch_idx || !changed_branches.contains(branch_idx) {
@@ -443,7 +443,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
             // Remove the branch as we fire so any unintended re-entry fails
             // loudly under the debug_assert below.
             let removed = changed_branches.remove(branch_idx);
-            debug_assert!(removed, "Phase B fired the same branch twice");
+            debug_assert!(removed, "on-change phase fired the same branch twice");
 
             let handlers = match atoms_flat.get(*branch_idx) {
                 Ok(PlanFlatTreeNode::Branch { meta, .. }) => &meta.handlers,
@@ -457,7 +457,7 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         apply_op_phase(
             handler_leaves,
             resource_epoch_idx,
-            Phase::B,
+            Phase::OnChange,
             &mut op_epoch_counter,
             &mut ctx,
             &redactor,
@@ -477,12 +477,12 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 
 /// Apply a batch of operation subtrees: compute their internal operation
 /// epochs, merge same-family ops within each, and execute sequentially.
-/// `op_epoch_counter` advances per internal op-epoch so Phase A and Phase B
-/// calls within the same resource epoch keep emitting strictly-increasing
-/// `OperationsApplyEpochAdded.epoch_index` values. `resource_epoch` and
-/// `phase` are stamped on every emitted `OperationsApplyEpochAdded` so the
-/// consumer can group ops by outer epoch and separate Phase A change ops from
-/// Phase B handlers.
+/// `op_epoch_counter` advances per internal op-epoch so the change and
+/// on-change phases within the same resource epoch keep emitting
+/// strictly-increasing `OperationsApplyEpochAdded.epoch_index` values.
+/// `resource_epoch` and `phase` are stamped on every emitted
+/// `OperationsApplyEpochAdded` so the consumer can group ops by outer epoch
+/// and separate change-phase ops from on-change-phase handlers.
 ///
 /// Returns early on the first operation failure, after emitting
 /// `OperationApplyComplete { error: Some(..) }` so the TUI can surface
@@ -504,7 +504,12 @@ async fn apply_op_phase(
         children: subtrees,
     };
     let op_epochs = compute_epochs(combined.map(Some).map_meta(PlanMeta::to_causality))?;
-    debug!("Phase produced {} internal op epoch(s)", op_epochs.len());
+    debug!(
+        ?phase,
+        resource_epoch,
+        op_epochs = op_epochs.len(),
+        "phase produced internal op epochs"
+    );
 
     for ops_in_epoch in op_epochs {
         let merged = Operation::merge(ops_in_epoch);
@@ -640,7 +645,7 @@ fn build_atom_epoch_map(epochs: &[Vec<(usize, Resource)>]) -> HashMap<usize, usi
 
 /// For every handler-bearing plan-item branch reachable from any leaf in
 /// `epochs`, record the max resource-epoch any descendant atom appears in.
-/// Used by Phase B to decide when to fire each branch's handlers.
+/// Used by the on-change phase to decide when to fire each branch's handlers.
 fn build_latest_epoch_by_branch(
     epochs: &[Vec<(usize, Resource)>],
     parent_of: &HashMap<usize, usize>,

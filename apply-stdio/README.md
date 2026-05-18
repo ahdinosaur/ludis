@@ -49,23 +49,23 @@ Outline:
       both the emission and the read; EOF or parse error is treated as
       `Abort` and halts the apply.
 
-   e. **Phase A**:
-      `OperationsApplyEpochAdded { epoch_index, resource_epoch, phase: A, operations }`
+   e. **Change phase**:
+      `OperationsApplyEpochAdded { epoch_index, resource_epoch, phase: Change, operations }`
       with merged change ops, then per-op
       `OperationApplyStart` / `OperationApplyStdout` / `OperationApplyStderr` /
       `OperationApplyComplete` events.
 
-   f. **Phase B**: same shape with `phase: B`, carrying the `on_change`
-      handlers for any plan-item branch whose latest atom landed in this
-      epoch and which had at least one atom change.
+   f. **On-change phase**: same shape with `phase: OnChange`, carrying the
+      `on_change` handlers for any plan-item branch whose latest atom landed
+      in this epoch and which had at least one atom change.
 
 5. `ApplyComplete { had_changes }`. Terminal. `lusid-apply` exits 0
    immediately after; consumers should flush and close. Exit code is
    non-zero on `Abort` (`AbortedByUser`) or any apply error.
 
 `epoch_index` on `OperationsApplyEpochAdded` is a global monotonic counter
-across Phase A and Phase B; multiple events can share a `resource_epoch`.
-Empty resource epochs / empty phases emit no event and consume no index.
+across both phases; multiple events can share a `resource_epoch`. Empty
+resource epochs / empty phases emit no event and consume no index.
 
 ## AppView
 

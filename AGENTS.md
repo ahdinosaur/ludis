@@ -13,7 +13,7 @@ Lusid takes a `.lusid` plan (written in the **Rimu** language), optionally a par
 3. Validates parameter schemas and values (with span/source error reporting).
 4. Expands ResourceParams into a tree of resource **atoms**. `on_change` operations stay on each plan-item branch's `PlanMeta::handlers`.
 5. Computes dependency **epochs** over the atom tree (topological layers via Kahn's algorithm).
-6. For each epoch in order: probe state for atoms in that epoch, compute changes, then pause for an operator ack (skipped with `--yes` or when the epoch is empty) before applying the change operations (Phase A), then applying `on_change` ops for any plan item whose last atom is in this epoch and which had at least one atom change (Phase B). Streams structured updates as JSON to stdout; reads `AckAction` JSON from stdin at each epoch boundary.
+6. For each epoch in order: probe state for atoms in that epoch, compute changes, then pause for an operator ack (skipped with `--yes` or when the epoch is empty) before applying the change operations (change phase, `Phase::Change`), then applying `on_change` ops for any plan item whose last atom is in this epoch and which had at least one atom change (on-change phase, `Phase::OnChange`). Streams structured updates as JSON to stdout; reads `AckAction` JSON from stdin at each epoch boundary.
 7. The `lusid` CLI renders a TUI from those updates.
 
 ## Principles
@@ -102,7 +102,7 @@ A resource may declare a list of operations to run when it changes. Hooks fire o
       params: { name: "nginx", action: "reload" }
 ```
 
-A plan item's `id` registers its hooks too: a `requires: [<id>]` dependent waits for both the resource and its hooks. The dependent's atoms are in a strictly-later resource epoch than the plan item's atoms, and hooks fire in Phase B of the latest of those epochs before the next epoch begins, so dependents see the post-hook state.
+A plan item's `id` registers its hooks too: a `requires: [<id>]` dependent waits for both the resource and its hooks. The dependent's atoms are in a strictly-later resource epoch than the plan item's atoms, and hooks fire in the on-change phase of the latest of those epochs before the next epoch begins, so dependents see the post-hook state.
 
 #### v1 limitations
 
@@ -113,7 +113,7 @@ A plan item's `id` registers its hooks too: a `requires: [<id>]` dependent waits
 - **Hook failure leaves you stuck.** If a hook fails, apply aborts. The resource is now in its target state, so re-applying will NOT re-trigger the hook. Recovery: either run the operation manually (e.g. `sudo systemctl reload nginx`), or briefly toggle a field on the resource (e.g. change `mode` on a `@resource/file`, or `enabled` on a `@resource/systemd`) and re-apply, then revert.
 - **`@operation/command` covers a lot.** Although only `command` and `systemd` are exposed as operations in v1, `@operation/command` shells out - logrotate signals, cron reloads, cache invalidation, etc. all fit under it.
 
-#### Implementation: Phase A / Phase B per resource epoch
+#### Implementation: change phase / on-change phase per resource epoch
 
 Handlers are parsed alongside the rest of a plan item and stashed in `PlanMeta::handlers` on the plan-item branch. They are never lifted into the atom tree.
 
@@ -121,10 +121,10 @@ Before the per-epoch loop, `lusid-apply::apply` walks the atom tree once to buil
 
 Per resource epoch K:
 
-- **Phase A**: probe each atom in parallel, compute its change, accumulate change ops, apply through `compute_epochs` + `Operation::merge`. When an atom changes, the apply loop walks `parent_of` upward to find the nearest enclosing plan-item branch whose `meta.handlers` is non-empty and inserts that branch's arena index into `changed_branches: HashSet<usize>`.
-- **Phase B**: iterate `latest_epoch_by_branch` in (deterministic) BTreeMap order. For each `(branch_idx, latest)` where `latest == K && changed_branches.contains(&branch_idx)`, read the handlers off `atoms_flat.get(branch_idx).meta.handlers` and apply them through the same merge + apply flow. The branch is removed from `changed_branches` to enforce fire-once via a `debug_assert!`.
+- **Change phase** (`Phase::Change`): probe each atom in parallel, compute its change, accumulate change ops, apply through `compute_epochs` + `Operation::merge`. When an atom changes, the apply loop walks `parent_of` upward to find the nearest enclosing plan-item branch whose `meta.handlers` is non-empty and inserts that branch's arena index into `changed_branches: HashSet<usize>`.
+- **On-change phase** (`Phase::OnChange`): iterate `latest_epoch_by_branch` in (deterministic) BTreeMap order. For each `(branch_idx, latest)` where `latest == K && changed_branches.contains(&branch_idx)`, read the handlers off `atoms_flat.get(branch_idx).meta.handlers` and apply them through the same merge + apply flow. The branch is removed from `changed_branches` to enforce fire-once via a `debug_assert!`.
 
-Phase B's ordering inside K means handlers fire strictly after the resource atoms they watch and strictly before the next epoch's Phase A. Since a dependent's atoms (with `requires: [<plan-item-id>]`) land in an epoch strictly later than the plan item's latest atom, Phase B of that latest epoch has already run before the dependent probes.
+The on-change phase's ordering inside K means handlers fire strictly after the resource atoms they watch and strictly before the next epoch's change phase. Since a dependent's atoms (with `requires: [<plan-item-id>]`) land in an epoch strictly later than the plan item's latest atom, the on-change phase of that latest epoch has already run before the dependent probes.
 
 
 ## Build / run / test (agent checklist)

@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use lusid_causality::CausalityTree;
 use lusid_ctx::Context;
 use lusid_fs::FsError;
-use lusid_operation::{operations::file::FilePath, Operation};
+use lusid_operation::{Operation, operations::file::FilePath};
 use lusid_params::ParseParams;
 use rimu::Span;
 use serde::{Deserialize, Serialize};
@@ -1239,9 +1239,7 @@ mod dispatch_tests {
                 "pacman",
             ),
             (
-                Resource::Podman(PodmanResource::Absent {
-                    name: "ctr".into(),
-                }),
+                Resource::Podman(PodmanResource::Absent { name: "ctr".into() }),
                 "podman",
             ),
             (
