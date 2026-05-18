@@ -943,6 +943,7 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut TuiApp, outcome: Option<&Result
         .constraints(
             [
                 Constraint::Length(1), // header strip
+                Constraint::Length(1), // tab strip
                 Constraint::Min(3),    // body
                 Constraint::Length(1), // footer hints / filter prompt
             ]
@@ -951,16 +952,48 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut TuiApp, outcome: Option<&Result
         .split(frame.area());
 
     draw_header(frame, layout[0], app, outcome);
-    let body = layout[1];
+    draw_tab_strip(frame, layout[1], app);
+    let body = layout[2];
     match app.page {
         UiPage::Tree => draw_tree_page(frame, body, app),
         UiPage::Epochs => draw_epochs_page(frame, body, app),
         UiPage::Stderr => draw_stderr_page(frame, body, app),
     }
-    draw_footer(frame, layout[2], app);
+    draw_footer(frame, layout[3], app);
     if app.show_help {
         draw_help_overlay(frame, body, app);
     }
+}
+
+/// One-line tab strip showing the three pages with their selector key. The
+/// active tab is bold + cyan + underlined; inactives are dimmed. Compact form
+/// (drops the labels) kicks in below 60 cols so the strip stays on one row on
+/// narrow terminals.
+fn draw_tab_strip(frame: &mut Frame, area: Rect, app: &TuiApp) {
+    let compact = area.width < 60;
+    let tabs: [(UiPage, &str, &str); 3] = [
+        (UiPage::Tree, "[1 Tree]", "[1]"),
+        (UiPage::Epochs, "[2 Epochs]", "[2]"),
+        (UiPage::Stderr, "[e Stderr]", "[e]"),
+    ];
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, (page, full, short)) in tabs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
+        }
+        let label = if compact { *short } else { *full };
+        let style = if *page == app.page {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(label.to_string(), style));
+    }
+    let widget = Paragraph::new(Line::from(spans)).alignment(Alignment::Left);
+    frame.render_widget(widget, area);
 }
 
 fn draw_header(
@@ -3293,6 +3326,77 @@ mod tests {
         assert!(app.show_help);
         let quit = app.handle_event(key_event(KeyCode::Char('q'))).unwrap();
         assert!(quit, "q must still quit while help is open");
+    }
+
+    // ------------------------------------------------------------------
+    // Tab strip
+    // ------------------------------------------------------------------
+
+    fn render_tab_strip(width: u16, app: &TuiApp) -> ratatui::buffer::Buffer {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(width, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_tab_strip(frame, area, app);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn row_text(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer.cell((x, y)).unwrap().symbol().to_string())
+            .collect()
+    }
+
+    fn segment_has_underline(buffer: &ratatui::buffer::Buffer, y: u16, needle: &str) -> bool {
+        let text = row_text(buffer, y);
+        let Some(start) = text.find(needle) else {
+            return false;
+        };
+        let end = start + needle.len();
+        // Map byte index back to a char index since text is ASCII here.
+        for x in start as u16..end as u16 {
+            let cell = buffer.cell((x, y)).unwrap();
+            if !cell.modifier.contains(Modifier::UNDERLINED) {
+                return false;
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn tab_strip_marks_active_page() {
+        for (page, label) in [
+            (UiPage::Tree, "[1 Tree]"),
+            (UiPage::Epochs, "[2 Epochs]"),
+            (UiPage::Stderr, "[e Stderr]"),
+        ] {
+            let mut app = TuiApp::new("test".into());
+            app.page = page;
+            let buffer = render_tab_strip(80, &app);
+            assert!(
+                segment_has_underline(&buffer, 0, label),
+                "page {page:?} should underline {label}; row: {:?}",
+                row_text(&buffer, 0)
+            );
+        }
+    }
+
+    #[test]
+    fn tab_strip_compacts_below_60_cols() {
+        let app = TuiApp::new("test".into());
+        let buffer = render_tab_strip(50, &app);
+        let text = row_text(&buffer, 0);
+        assert!(text.contains("[1]"), "row: {text:?}");
+        assert!(text.contains("[2]"), "row: {text:?}");
+        assert!(text.contains("[e]"), "row: {text:?}");
+        assert!(!text.contains("Tree"), "labels dropped: {text:?}");
+        assert!(!text.contains("Epochs"), "labels dropped: {text:?}");
+        assert!(!text.contains("Stderr"), "labels dropped: {text:?}");
     }
 
     #[test]
