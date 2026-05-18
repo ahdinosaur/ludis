@@ -1498,14 +1498,17 @@ fn detail_for_node(
         return Text::from("(missing slot)");
     };
     match slot {
-        ResourcesNode::Branch { meta, children } => detail_for_branch(meta, children, palette),
+        ResourcesNode::Branch { meta, .. } => {
+            detail_for_branch(resources, arena_index, meta, palette)
+        }
         ResourcesNode::Leaf { state } => detail_for_leaf(state, palette, diff_opts),
     }
 }
 
 fn detail_for_branch(
+    resources: &lusid_apply_stdio::ResourcesTree,
+    arena_index: usize,
     meta: &PlanMeta,
-    children: &[usize],
     palette: &RenderPalette,
 ) -> Text<'static> {
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -1516,10 +1519,22 @@ fn detail_for_branch(
         .map(|id| id.render().to_plain_string())
         .unwrap_or_else(|| "(anonymous)".to_string());
     lines.push(field_line("id", &id_text));
-    lines.push(field_line(
-        "children",
-        &format!("{} atom(s)", children.len()),
-    ));
+
+    let mut leaf_nodes: Vec<RenderedNode> = Vec::new();
+    walk_branch_leaves(resources, arena_index, &mut HashSet::new(), &mut |state| {
+        let resource = state.resource();
+        let display = resource.render().to_plain_string();
+        leaf_nodes.push(RenderedNode::plain(format!(
+            "{}  {display}",
+            resource.family_name(),
+        )));
+    });
+    if !leaf_nodes.is_empty() {
+        lines.push(blank_line());
+        let tree = RenderedNode::tree(RenderedNode::plain("Resources"), leaf_nodes);
+        extend_lines(&mut lines, &tree, palette);
+    }
+
     if !meta.requires.is_empty() {
         lines.push(blank_line());
         lines.push(section_header("Requires"));
@@ -2456,6 +2471,31 @@ fn walk_atoms<F: FnMut(Badge)>(
     }
 }
 
+/// Visit every descendant leaf under the branch at `arena_index` in arena
+/// order. Sibling of [`walk_atoms`] - splits at the visitor type rather than
+/// generalising it so the existing rollup call site stays terse.
+fn walk_branch_leaves<F: FnMut(&LeafState)>(
+    resources: &lusid_apply_stdio::ResourcesTree,
+    arena_index: usize,
+    visited: &mut HashSet<usize>,
+    visit: &mut F,
+) {
+    if !visited.insert(arena_index) {
+        return;
+    }
+    let Some(slot) = resources.nodes.get(arena_index).and_then(Option::as_ref) else {
+        return;
+    };
+    match slot {
+        ResourcesNode::Branch { children, .. } => {
+            for &child in children {
+                walk_branch_leaves(resources, child, visited, visit);
+            }
+        }
+        ResourcesNode::Leaf { state } => visit(state),
+    }
+}
+
 // --------------------------------------------------------------------------
 // Tests
 // --------------------------------------------------------------------------
@@ -3326,6 +3366,99 @@ mod tests {
         assert!(app.show_help);
         let quit = app.handle_event(key_event(KeyCode::Char('q'))).unwrap();
         assert!(quit, "q must still quit while help is open");
+    }
+
+    // ------------------------------------------------------------------
+    // Branch detail
+    // ------------------------------------------------------------------
+
+    fn text_to_plain(text: &Text<'static>) -> String {
+        text.lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A populated branch's detail pane drops `children: N atom(s)` and
+    /// surfaces a "Resources" tree listing every descendant leaf.
+    #[test]
+    fn detail_for_branch_lists_resources_under_indented_tree() {
+        let view = view_with_two_branches();
+        let resources = view.resources.as_ref().unwrap();
+        let palette = RenderPalette::default();
+        // Arena index 1 is the `alpha` branch with two file leaves.
+        let ResourcesNode::Branch { meta, .. } = resources
+            .nodes
+            .get(1)
+            .and_then(Option::as_ref)
+            .expect("alpha branch")
+        else {
+            panic!("expected branch at index 1");
+        };
+        let text = detail_for_branch(resources, 1, meta, &palette);
+        let plain = text_to_plain(&text);
+
+        assert!(
+            !plain.contains("children:"),
+            "children-count must be gone; rendered:\n{plain}"
+        );
+        assert!(
+            plain.contains("Resources"),
+            "Resources section header missing; rendered:\n{plain}"
+        );
+        // termtree adds ASCII connectors (├── / └──) and the leaf labels
+        // carry the resource family identifier.
+        assert!(
+            plain.contains("file  ") && plain.contains("/a/1") && plain.contains("/a/2"),
+            "expected both leaves listed with family prefix; rendered:\n{plain}"
+        );
+    }
+
+    /// A branch with no descendant leaves omits the Resources section
+    /// entirely so the pane doesn't show a header with no body.
+    #[test]
+    fn detail_for_branch_omits_resources_when_no_leaves() {
+        let empty = PlanTree::Branch {
+            meta: PlanMeta {
+                id: Some(pi_id("empty")),
+                ..PlanMeta::default()
+            },
+            children: vec![],
+        };
+        let root = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![empty],
+        };
+        let view = AppView::default()
+            .update(AppUpdate::ResourcesStart)
+            .unwrap()
+            .update(AppUpdate::ResourcesNode {
+                index: 0,
+                tree: root,
+            })
+            .unwrap();
+        let resources = view.resources.as_ref().unwrap();
+        let palette = RenderPalette::default();
+        let ResourcesNode::Branch { meta, .. } = resources
+            .nodes
+            .get(1)
+            .and_then(Option::as_ref)
+            .expect("empty branch")
+        else {
+            panic!("expected branch at index 1");
+        };
+        let text = detail_for_branch(resources, 1, meta, &palette);
+        let plain = text_to_plain(&text);
+        assert!(
+            !plain.contains("Resources"),
+            "empty branch must not render Resources section; rendered:\n{plain}"
+        );
     }
 
     // ------------------------------------------------------------------

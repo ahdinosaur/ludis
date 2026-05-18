@@ -604,6 +604,28 @@ impl Resource {
             _ => panic!("Unmatched resource and state"),
         }
     }
+
+    /// Stable lowercase identifier for the resource family. Used by the TUI's
+    /// branch detail pane to label resources without leaking the operator's
+    /// view to renderer-side formatting choices.
+    pub fn family_name(&self) -> &'static str {
+        match self {
+            Resource::Apt(_) => "apt",
+            Resource::AptRepo(_) => "apt_repo",
+            Resource::Aur(_) => "aur",
+            Resource::File(_) => "file",
+            Resource::Directory(_) => "directory",
+            Resource::Flatpak(_) => "flatpak",
+            Resource::FlatpakRemote(_) => "flatpak_remote",
+            Resource::Pacman(_) => "pacman",
+            Resource::Podman(_) => "podman",
+            Resource::Command(_) => "command",
+            Resource::Git(_) => "git",
+            Resource::Systemd(_) => "systemd",
+            Resource::User(_) => "user",
+            Resource::Group(_) => "group",
+        }
+    }
 }
 
 /// Errors from [`ResourceParams::validate_host_paths`] - pre-apply checks that a
@@ -1133,6 +1155,140 @@ mod dispatch_tests {
         match tree {
             Tree::Leaf { node, .. } => Some(node),
             Tree::Branch { children, .. } => children.iter().find_map(collect_first_leaf),
+        }
+    }
+
+    /// Walk every `Resource` variant and confirm [`Resource::family_name`]
+    /// returns the documented lowercase identifier. The match in
+    /// `family_name` is exhaustive on the enum, so when a new variant is
+    /// added this test forces the author to extend the mapping too.
+    #[test]
+    fn family_name_covers_every_resource_variant() {
+        use crate::resources::{
+            apt::AptResource,
+            apt_repo::AptRepoResource,
+            aur::AurResource,
+            command::{CommandResource, CommandStatus},
+            directory::DirectoryResource,
+            file::FileResource,
+            flatpak::FlatpakResource,
+            flatpak_remote::FlatpakRemoteResource,
+            git::GitResource,
+            group::GroupResource,
+            pacman::PacmanResource,
+            podman::PodmanResource,
+            systemd::SystemdResource,
+            user::UserResource,
+        };
+
+        let cases: Vec<(Resource, &'static str)> = vec![
+            (
+                Resource::Apt(AptResource {
+                    package: "nginx".into(),
+                }),
+                "apt",
+            ),
+            (
+                Resource::AptRepo(AptRepoResource {
+                    name: "nginx".into(),
+                    sources_path: FilePath::new("/etc/apt/sources.list.d/nginx.list"),
+                    sources_content: "deb https://example".into(),
+                    key_url: "https://example/key.gpg".into(),
+                    key_path: FilePath::new("/etc/apt/keyrings/nginx.gpg"),
+                }),
+                "apt_repo",
+            ),
+            (
+                Resource::Aur(AurResource {
+                    package: "yay".into(),
+                }),
+                "aur",
+            ),
+            (
+                Resource::File(FileResource::Linked {
+                    source: FilePath::new("/src"),
+                    path: FilePath::new("/dst"),
+                }),
+                "file",
+            ),
+            (
+                Resource::Directory(DirectoryResource::Present {
+                    path: FilePath::new("/dir"),
+                }),
+                "directory",
+            ),
+            (
+                Resource::Flatpak(FlatpakResource::Absent {
+                    name: "app".into(),
+                    user: false,
+                    delete_data: false,
+                }),
+                "flatpak",
+            ),
+            (
+                Resource::FlatpakRemote(FlatpakRemoteResource::Absent {
+                    name: "flathub".into(),
+                    user: false,
+                }),
+                "flatpak_remote",
+            ),
+            (
+                Resource::Pacman(PacmanResource {
+                    package: "zsh".into(),
+                }),
+                "pacman",
+            ),
+            (
+                Resource::Podman(PodmanResource::Absent {
+                    name: "ctr".into(),
+                }),
+                "podman",
+            ),
+            (
+                Resource::Command(CommandResource {
+                    status: CommandStatus::Install,
+                    is_installed: None,
+                    install: None,
+                    uninstall: None,
+                }),
+                "command",
+            ),
+            (
+                Resource::Git(GitResource {
+                    repo: "https://example/r.git".into(),
+                    path: FilePath::new("/repo"),
+                    version: None,
+                    update: false,
+                    force: false,
+                }),
+                "git",
+            ),
+            (
+                Resource::Systemd(SystemdResource {
+                    name: "nginx".into(),
+                    enabled: true,
+                    active: true,
+                    user: false,
+                }),
+                "systemd",
+            ),
+            (
+                Resource::User(UserResource::Absent {
+                    name: "alice".into(),
+                    remove_home: false,
+                }),
+                "user",
+            ),
+            (
+                Resource::Group(GroupResource::Absent {
+                    name: "wheel".into(),
+                }),
+                "group",
+            ),
+        ];
+
+        for (resource, expected) in cases {
+            assert_eq!(resource.family_name(), expected, "for {resource:?}");
         }
     }
 }
