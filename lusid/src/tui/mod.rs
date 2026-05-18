@@ -1091,6 +1091,18 @@ fn draw_header(
         Span::raw(" · "),
         Span::styled(status, status_style),
     ];
+    // Change-count indicator surfaces both the count and the n/N walk
+    // binding. Suppressed below 80 cols so the strip stays single-line on
+    // narrow terminals, and suppressed at zero so a no-change apply doesn't
+    // leak the suffix.
+    let changed = app.app_view.changed_count();
+    if changed > 0 && area.width >= 80 {
+        spans.push(Span::raw(" · "));
+        spans.push(Span::styled(
+            format!("~{changed} changes (n/N walk)"),
+            Style::default().fg(Color::Yellow),
+        ));
+    }
     if app.follow {
         spans.push(Span::raw(" · "));
         spans.push(Span::styled(
@@ -4176,6 +4188,162 @@ mod tests {
             app.tree.selected,
             Some(1),
             "selection should land on the parent branch (alpha), not bounce to root",
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Change-count header indicator (Task 23)
+    // ------------------------------------------------------------------
+
+    fn render_header(width: u16, app: &TuiApp) -> ratatui::buffer::Buffer {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(width, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_header(frame, area, app, None);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// One Changed leaf surfaces the indicator with the count and the
+    /// n/N walk binding.
+    #[test]
+    fn header_shows_change_indicator_when_one_changed() {
+        let view = view_with_two_branches()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 2,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 2,
+                change: Some(lusid_resource::ResourceChange::Apt(
+                    lusid_resource::apt::AptChange::Install {
+                        package: "nginx".into(),
+                    },
+                )),
+            })
+            .unwrap();
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view;
+        let buffer = render_header(120, &app);
+        let text = row_text(&buffer, 0);
+        assert!(
+            text.contains("~1 changes (n/N walk)"),
+            "header missing indicator: {text:?}",
+        );
+    }
+
+    /// Many Changed leaves: indicator displays the full count.
+    #[test]
+    fn header_shows_change_indicator_when_many_changed() {
+        let view = view_with_two_branches()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 2,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 2,
+                change: Some(lusid_resource::ResourceChange::Apt(
+                    lusid_resource::apt::AptChange::Install {
+                        package: "a".into(),
+                    },
+                )),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 3 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 3,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 3,
+                change: Some(lusid_resource::ResourceChange::Apt(
+                    lusid_resource::apt::AptChange::Install {
+                        package: "b".into(),
+                    },
+                )),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 5 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 5,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 5,
+                change: Some(lusid_resource::ResourceChange::Apt(
+                    lusid_resource::apt::AptChange::Install {
+                        package: "c".into(),
+                    },
+                )),
+            })
+            .unwrap();
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view;
+        let buffer = render_header(120, &app);
+        let text = row_text(&buffer, 0);
+        assert!(
+            text.contains("~3 changes (n/N walk)"),
+            "header missing indicator: {text:?}",
+        );
+    }
+
+    /// Zero changes: indicator absent (keeps the strip clean on a no-change
+    /// apply).
+    #[test]
+    fn header_suppresses_change_indicator_when_zero() {
+        let app = TuiApp::new("test".into());
+        let buffer = render_header(120, &app);
+        let text = row_text(&buffer, 0);
+        assert!(
+            !text.contains("changes (n/N walk)"),
+            "header should not show indicator at zero changes: {text:?}",
+        );
+    }
+
+    /// Below 80 cols the indicator is suppressed: the strip already crowds
+    /// at narrow widths so we drop the optional segment to keep the rest
+    /// of the strip visible on one line.
+    #[test]
+    fn header_suppresses_change_indicator_below_80_cols() {
+        let view = view_with_two_branches()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 2,
+                state: ResourceState::File(FileState::Absent),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 2,
+                change: Some(lusid_resource::ResourceChange::Apt(
+                    lusid_resource::apt::AptChange::Install {
+                        package: "nginx".into(),
+                    },
+                )),
+            })
+            .unwrap();
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view;
+        let buffer = render_header(70, &app);
+        let text = row_text(&buffer, 0);
+        assert!(
+            !text.contains("changes (n/N walk)"),
+            "header should suppress indicator below 80 cols: {text:?}",
         );
     }
 }

@@ -894,6 +894,18 @@ impl AppView {
         self.operation_epoch_meta.get(epoch_index)
     }
 
+    /// Count of leaves in `LeafState::Changed`. Branches contribute nothing
+    /// (the rollup is recomputed at draw time); other states don't count.
+    /// Drives the header strip's `~N changes` indicator.
+    pub fn changed_count(&self) -> usize {
+        let Some(tree) = self.resources.as_ref() else {
+            return 0;
+        };
+        tree.leaves()
+            .filter(|s| matches!(s, LeafState::Changed { .. }))
+            .count()
+    }
+
     /// Classify the pipeline's coarse stage from the leaf set in a single
     /// walk. Used by follow-mode advancement and the feedback line.
     pub fn progress(&self) -> PipelineProgress {
@@ -2012,6 +2024,83 @@ mod tests {
             })
             .unwrap();
         assert_eq!(v.last_activity_op, Some((0, 0)));
+    }
+
+    /// `changed_count` counts only `Changed` leaves; other states (Planned,
+    /// Probing, Probed, NoChange) and branches don't contribute.
+    #[test]
+    fn changed_count_counts_only_changed_leaves() {
+        // Zero before resources arrive.
+        assert_eq!(AppView::default().changed_count(), 0);
+
+        // Zero with two Planned leaves.
+        let v = app_view_with_two_leaves();
+        assert_eq!(v.changed_count(), 0);
+
+        // Move leaf 1 through to Changed; leaf 2 to NoChange. Only the
+        // Changed leaf counts (one).
+        let v = v
+            .update(AppUpdate::ResourceStatesNodeStart { index: 1 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 1,
+                state: file_state(),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 1,
+                change: Some(apt_change()),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 2,
+                state: file_state(),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 2,
+                change: None,
+            })
+            .unwrap();
+        assert_eq!(v.changed_count(), 1);
+    }
+
+    /// Many-changes case: build a fresh view with three leaves, all Changed.
+    /// Verifies the count scales (and that branches in the arena are
+    /// ignored).
+    #[test]
+    fn changed_count_with_many_changes() {
+        let tree = PlanTree::Branch {
+            meta: PlanMeta::default(),
+            children: vec![
+                resource_leaf("/a"),
+                resource_leaf("/b"),
+                resource_leaf("/c"),
+            ],
+        };
+        let mut v = AppView::default()
+            .update(AppUpdate::ResourcesStart)
+            .unwrap()
+            .update(AppUpdate::ResourcesNode { index: 0, tree })
+            .unwrap();
+        for idx in [1, 2, 3] {
+            v = v
+                .update(AppUpdate::ResourceStatesNodeStart { index: idx })
+                .unwrap()
+                .update(AppUpdate::ResourceStatesNodeComplete {
+                    index: idx,
+                    state: file_state(),
+                })
+                .unwrap()
+                .update(AppUpdate::ResourceChangesNode {
+                    index: idx,
+                    change: Some(apt_change()),
+                })
+                .unwrap();
+        }
+        assert_eq!(v.changed_count(), 3);
     }
 
     /// `auto_follow_armed` flips on the first Probing transition and stays
