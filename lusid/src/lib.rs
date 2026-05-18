@@ -854,6 +854,34 @@ async fn ssh_run(ssh: &mut Ssh, command: &str) -> Result<(Option<u32>, String, S
     Ok((exit, stdout, stderr))
 }
 
+/// Run the per-image `ready_check` snippet over SSH and block on its exit.
+///
+/// Bridges between "guest port 22 answers" (what `Vm::run` waits for) and
+/// "guest is done with first-boot races". The Arch cloud image, for
+/// example, runs cloud-init's package module and `reflector.service` after
+/// sshd is already listening; both take pacman's db lock, so a plan that
+/// starts with `pacman -Sy` would race them.
+///
+/// Non-zero exit is logged but not propagated: cloud-init's `--wait` exits
+/// 1 on warnings, 2 on errors, and aborting here would mask the more
+/// useful failure that the subsequent apply will surface.
+async fn wait_for_vm_ready(ssh: &mut Ssh, ready_check: Option<&str>) -> Result<(), AppError> {
+    let Some(snippet) = ready_check else {
+        return Ok(());
+    };
+    tracing::info!(snippet, "running VM ready_check");
+    let (exit, stdout, stderr) = ssh_run(ssh, snippet).await?;
+    if exit != Some(0) {
+        tracing::warn!(
+            exit = ?exit,
+            stdout,
+            stderr,
+            "VM ready_check exited non-zero; continuing"
+        );
+    }
+    Ok(())
+}
+
 /// Create `/var/lib/lusid` and its `plan` / `secrets` subdirs on the target
 /// and chown them to the SSH user. Idempotent. Only called when `user` is
 /// non-root; root SFTP can mkdir directly via `sftp_mkdirs`.
@@ -945,6 +973,8 @@ async fn cmd_dev_apply(
         host_key_verification: HostKeyVerification::Disabled,
     })
     .await?;
+
+    wait_for_vm_ready(&mut ssh, vm.ready_check.as_deref()).await?;
 
     let dev_dir = format!("/home/{}", vm.user);
     let plan_dir = plan.parent().unwrap();
@@ -1098,13 +1128,15 @@ async fn cmd_dev_ssh(config: Config, machine_id: String) -> Result<(), AppError>
     let mut ssh = Ssh::connect(SshConnectOptions {
         private_key: vm.ssh_keypair().await?.private_key,
         addrs: (Ipv4Addr::LOCALHOST, vm.ssh_port),
-        username: vm.user,
+        username: vm.user.clone(),
         config: Arc::new(Default::default()),
         timeout: Duration::from_secs(10),
         // Dev VM: ephemeral host key regenerated each boot, no point pinning.
         host_key_verification: HostKeyVerification::Disabled,
     })
     .await?;
+
+    wait_for_vm_ready(&mut ssh, vm.ready_check.as_deref()).await?;
 
     let _exit_code = ssh.terminal().await?;
 

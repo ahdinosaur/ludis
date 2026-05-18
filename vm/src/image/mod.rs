@@ -55,6 +55,7 @@ pub struct VmImage {
     pub image_path: PathBuf,
     pub kernel_root: String,
     pub user: String,
+    pub ready_check: Option<String>,
 }
 
 impl VmImage {
@@ -71,6 +72,7 @@ impl VmImage {
             hash: _,
             kernel_root,
             user,
+            ready_check,
         } = image_index;
         match os {
             Os::Linux(linux) => VmImage {
@@ -79,6 +81,7 @@ impl VmImage {
                 image_path,
                 kernel_root,
                 user,
+                ready_check,
             },
             _ => {
                 unimplemented!()

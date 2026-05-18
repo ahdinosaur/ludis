@@ -231,26 +231,35 @@ impl ResourceType for Git {
             });
         }
 
-        // Get whether git repo at path is dirty.
-        // Note(cc): a dirty working tree without `force` surfaces as a state error (not a
-        // no-op): the intent is to refuse to touch user changes. `force: true` carries the
-        // dirty flag forward into `change_for_present` where it gates pull/checkout.
         let status = git_run(resource, ["status", "--porcelain"]).await?;
         let is_dirty = !status.is_empty();
-        if is_dirty && !resource.force {
-            return Err(GitStateError::Dirty);
-        }
 
-        // Get head of git repo at path
         let head = git_run(resource, ["rev-parse", "HEAD"])
             .await
             .ok()
             .map(|s| String::from_utf8_lossy(&s).trim().to_string());
-        // Get branch of git repo at path
         let branch = git_run(resource, ["symbolic-ref", "--quiet", "--short", "HEAD"])
             .await
             .ok()
             .map(|s| String::from_utf8_lossy(&s).trim().to_string());
+
+        // Refuse a dirty working tree only when the resource would otherwise
+        // mutate it (pull/checkout). A clone whose tree is dirtied by some
+        // downstream resource but which lusid no longer intends to touch
+        // (e.g. `update: false`, no `version`) stays a no-op so re-applies
+        // remain idempotent. `force: true` defers the decision to the
+        // underlying git op: `pull --ff-only` still refuses non-fast-forward
+        // merges, but `checkout -f` will discard local changes - that is
+        // what `force` opts into.
+        if is_dirty && !resource.force {
+            let intended = change_for_present(resource, head.as_deref(), branch.as_deref());
+            if matches!(
+                intended,
+                Some(GitChange::Pull { .. } | GitChange::Checkout { .. })
+            ) {
+                return Err(GitStateError::Dirty);
+            }
+        }
 
         Ok(GitState::Present {
             head,
@@ -267,11 +276,9 @@ impl ResourceType for Git {
                 repo: resource.repo.clone(),
                 path: resource.path.clone(),
             }),
-            GitState::Present {
-                head,
-                branch,
-                is_dirty,
-            } => change_for_present(resource, head.as_deref(), branch.as_deref(), *is_dirty),
+            GitState::Present { head, branch, .. } => {
+                change_for_present(resource, head.as_deref(), branch.as_deref())
+            }
         }
     }
 
@@ -325,12 +332,11 @@ fn change_for_present(
     resource: &GitResource,
     head: Option<&str>,
     branch: Option<&str>,
-    is_dirty: bool,
 ) -> Option<GitChange> {
     if let Some(version) = resource.version.as_deref() {
         let matches = branch == Some(version) || head == Some(version);
         if matches {
-            if !is_dirty && resource.update && branch == Some(version) {
+            if resource.update && branch == Some(version) {
                 return Some(GitChange::Pull {
                     path: resource.path.clone(),
                 });
@@ -346,7 +352,7 @@ fn change_for_present(
         });
     }
 
-    if !is_dirty && resource.update && branch.is_some() {
+    if resource.update && branch.is_some() {
         return Some(GitChange::Pull {
             path: resource.path.clone(),
         });
@@ -371,4 +377,220 @@ async fn git_run(
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(resource.path.as_path()).args(args);
     cmd.run().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    fn resource(
+        version: Option<&str>,
+        update: bool,
+        force: bool,
+        path: &Path,
+        repo: &str,
+    ) -> GitResource {
+        GitResource {
+            repo: repo.to_string(),
+            path: FilePath::new(path.to_string_lossy().into_owned()),
+            version: version.map(str::to_string),
+            update,
+            force,
+        }
+    }
+
+    fn dummy(version: Option<&str>, update: bool, force: bool) -> GitResource {
+        // The `change_for_present` tests never touch the filesystem, so any
+        // path-shaped placeholder works.
+        resource(version, update, force, Path::new("/nonexistent"), "repo")
+    }
+
+    // --- change_for_present: no `version` -------------------------------
+
+    #[test]
+    fn no_version_update_false_is_noop() {
+        let r = dummy(None, false, false);
+        assert!(change_for_present(&r, Some("HEAD"), Some("main")).is_none());
+    }
+
+    #[test]
+    fn no_version_update_true_on_branch_pulls() {
+        let r = dummy(None, true, false);
+        let change = change_for_present(&r, Some("HEAD"), Some("main"));
+        assert!(matches!(change, Some(GitChange::Pull { .. })));
+    }
+
+    #[test]
+    fn no_version_update_true_detached_head_is_noop() {
+        // No branch to pull onto - nothing meaningful to do.
+        let r = dummy(None, true, false);
+        assert!(change_for_present(&r, Some("HEAD"), None).is_none());
+    }
+
+    // --- change_for_present: `version` matches --------------------------
+
+    #[test]
+    fn version_matches_branch_update_true_pulls() {
+        let r = dummy(Some("main"), true, false);
+        let change = change_for_present(&r, Some("HEAD"), Some("main"));
+        assert!(matches!(change, Some(GitChange::Pull { .. })));
+    }
+
+    #[test]
+    fn version_matches_branch_update_false_is_noop() {
+        let r = dummy(Some("main"), false, false);
+        assert!(change_for_present(&r, Some("HEAD"), Some("main")).is_none());
+    }
+
+    #[test]
+    fn version_matches_head_only_is_noop() {
+        // Pinned to a sha (or tag) that happens to be HEAD: no branch to pull,
+        // no checkout needed.
+        let r = dummy(Some("deadbeef"), true, false);
+        assert!(change_for_present(&r, Some("deadbeef"), Some("main")).is_none());
+    }
+
+    // --- change_for_present: `version` mismatches -----------------------
+
+    #[test]
+    fn version_mismatch_checks_out_with_resource_flags() {
+        let r = dummy(Some("v1"), true, true);
+        let change = change_for_present(&r, Some("HEAD"), Some("main")).expect("checkout");
+        match change {
+            GitChange::Checkout {
+                version,
+                force,
+                fetch,
+                ..
+            } => {
+                assert_eq!(version, "v1");
+                assert!(force, "force flag should follow resource.force");
+                assert!(fetch, "fetch flag should follow resource.update");
+            }
+            other => panic!("expected Checkout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn version_mismatch_no_update_no_force_checks_out_without_fetch() {
+        let r = dummy(Some("v1"), false, false);
+        let change = change_for_present(&r, Some("HEAD"), Some("main")).expect("checkout");
+        match change {
+            GitChange::Checkout { force, fetch, .. } => {
+                assert!(!force);
+                assert!(!fetch);
+            }
+            other => panic!("expected Checkout, got {other:?}"),
+        }
+    }
+
+    // --- state(): dirty refusal is conditional on intent ----------------
+    //
+    // These tests drive a real `git` against a tempdir. The `run_git`
+    // helper isolates the spawned process from the contributor's global
+    // git config (e.g. `commit.gpgsign`, `core.hooksPath`) by pointing
+    // `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` at `/dev/null`.
+
+    async fn run_git(dir: &Path, args: &[&str]) {
+        let status = tokio::process::Command::new("git")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .await
+            .expect("spawn git");
+        assert!(status.success(), "git {args:?} failed in {dir:?}");
+    }
+
+    /// Initialise a git repo at `path` with an initial commit on `main` and
+    /// `remote.origin.url` set to `repo_url` so the remote-mismatch check
+    /// in `state()` passes. No network access.
+    async fn init_repo(path: &Path, repo_url: &str) {
+        run_git(path, &["init", "--quiet", "--initial-branch=main", "."]).await;
+        run_git(path, &["config", "user.email", "test@example.invalid"]).await;
+        run_git(path, &["config", "user.name", "test"]).await;
+        run_git(path, &["commit", "--quiet", "--allow-empty", "-m", "init"]).await;
+        run_git(path, &["remote", "add", "origin", repo_url]).await;
+    }
+
+    const TEST_REPO_URL: &str = "https://example.invalid/repo.git";
+
+    #[tokio::test]
+    async fn dirty_tree_with_noop_intent_does_not_error() {
+        // Regression: `update: false`, no `version`. A dirty working tree
+        // left by some downstream resource must not block re-applies when
+        // lusid has no intent to mutate the tree.
+        let dir = tempdir().unwrap();
+        init_repo(dir.path(), TEST_REPO_URL).await;
+        tokio::fs::write(dir.path().join("artifact.bin"), b"x")
+            .await
+            .unwrap();
+
+        let r = resource(None, false, false, dir.path(), TEST_REPO_URL);
+        let mut ctx = lusid_ctx::Context::create(dir.path()).expect("ctx");
+        let state = Git::state(&mut ctx, &r).await.expect("state probe");
+        assert!(matches!(state, GitState::Present { is_dirty: true, .. }));
+    }
+
+    #[tokio::test]
+    async fn dirty_tree_with_pull_intent_errors() {
+        // `update: true`, on the named branch, dirty, no `force`: refuse to
+        // clobber user changes with a pull.
+        let dir = tempdir().unwrap();
+        init_repo(dir.path(), TEST_REPO_URL).await;
+        tokio::fs::write(dir.path().join("artifact.bin"), b"x")
+            .await
+            .unwrap();
+
+        let r = resource(None, true, false, dir.path(), TEST_REPO_URL);
+        let mut ctx = lusid_ctx::Context::create(dir.path()).expect("ctx");
+        let err = Git::state(&mut ctx, &r)
+            .await
+            .expect_err("dirty tree with pull intent should error");
+        assert!(matches!(err, GitStateError::Dirty));
+    }
+
+    #[tokio::test]
+    async fn dirty_tree_with_checkout_intent_errors() {
+        // `version` mismatches the current branch, dirty, no `force`:
+        // refuse to clobber user changes with a checkout.
+        let dir = tempdir().unwrap();
+        init_repo(dir.path(), TEST_REPO_URL).await;
+        tokio::fs::write(dir.path().join("artifact.bin"), b"x")
+            .await
+            .unwrap();
+
+        let r = resource(Some("v1"), false, false, dir.path(), TEST_REPO_URL);
+        let mut ctx = lusid_ctx::Context::create(dir.path()).expect("ctx");
+        let err = Git::state(&mut ctx, &r)
+            .await
+            .expect_err("dirty tree with checkout intent should error");
+        assert!(matches!(err, GitStateError::Dirty));
+    }
+
+    #[tokio::test]
+    async fn dirty_tree_with_force_passes_through() {
+        // `force: true`: the operator opts back into mutating a dirty tree;
+        // state() must not refuse, leaving the call to the downstream op.
+        let dir = tempdir().unwrap();
+        init_repo(dir.path(), TEST_REPO_URL).await;
+        tokio::fs::write(dir.path().join("artifact.bin"), b"x")
+            .await
+            .unwrap();
+
+        let r = resource(None, true, true, dir.path(), TEST_REPO_URL);
+        let mut ctx = lusid_ctx::Context::create(dir.path()).expect("ctx");
+        let state = Git::state(&mut ctx, &r).await.expect("state probe");
+        assert!(matches!(state, GitState::Present { is_dirty: true, .. }));
+
+        // And `change()` produces a Pull - the dirty gate no longer
+        // silently swallows the work; the downstream `pull --ff-only`
+        // either succeeds or fails loudly.
+        let change = Git::change(&r, &state);
+        assert!(matches!(change, Some(GitChange::Pull { .. })));
+    }
 }

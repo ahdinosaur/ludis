@@ -90,6 +90,7 @@ pub async fn setup_instance(
         image_path: source_image_path,
         kernel_root,
         user,
+        ready_check,
     } = source_image;
 
     let instance_dir = ctx.paths().instance_dir(instance_id);
@@ -134,5 +135,6 @@ pub async fn setup_instance(
         // on hosts without `/dev/kvm` access. `instance_start` currently
         // defaults this to `true`, which will fail on such hosts.
         kvm: None,
+        ready_check,
     })
 }
