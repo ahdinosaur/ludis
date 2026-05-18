@@ -411,6 +411,11 @@ struct TuiApp {
     /// prompt. The main loop drains it into the apply child's stdin after
     /// each event so the keypress and the wire write stay in lockstep.
     pending_ack: Option<AckAction>,
+
+    /// `?` toggles a modal help overlay listing every key binding. While on,
+    /// the page's per-key handler is bypassed (except for the confirm-prompt
+    /// keys, which must always reach the ack channel).
+    show_help: bool,
 }
 
 impl TuiApp {
@@ -430,6 +435,7 @@ impl TuiApp {
             side_by_side: false,
             last_detail_width: 0,
             pending_ack: None,
+            show_help: false,
         }
     }
 
@@ -453,7 +459,9 @@ impl TuiApp {
         // While a per-epoch confirm is on screen, intercept the y/n/Enter/Esc
         // keys before they reach the page handler. Other keys (j/k, page
         // switches, q, ...) pass through so the operator can scroll the tree
-        // / detail pane to inspect what they're about to ack.
+        // / detail pane to inspect what they're about to ack. The help
+        // overlay does not block these keys: the operator must never lose
+        // the ack channel while help is open.
         if self.app_view.pending_epoch.is_some() {
             match code {
                 KeyCode::Char('y') | KeyCode::Enter => {
@@ -468,6 +476,27 @@ impl TuiApp {
                 }
                 _ => {}
             }
+        }
+
+        // Help overlay is modal: while open, only `?`/`Esc` close it and
+        // `q` still quits. Everything else is swallowed so accidental page
+        // navigation doesn't happen behind the overlay.
+        if self.show_help {
+            match code {
+                KeyCode::Char('?') | KeyCode::Esc => {
+                    self.show_help = false;
+                }
+                KeyCode::Char('q') => return Ok(true),
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // `?` opens the overlay from any page. Cheap to intercept here so
+        // the per-page handlers don't each need to know about it.
+        if code == KeyCode::Char('?') {
+            self.show_help = true;
+            return Ok(false);
         }
 
         match self.page {
@@ -922,12 +951,16 @@ fn draw_ui(frame: &mut ratatui::Frame, app: &mut TuiApp, outcome: Option<&Result
         .split(frame.area());
 
     draw_header(frame, layout[0], app, outcome);
+    let body = layout[1];
     match app.page {
-        UiPage::Tree => draw_tree_page(frame, layout[1], app),
-        UiPage::Epochs => draw_epochs_page(frame, layout[1], app),
-        UiPage::Stderr => draw_stderr_page(frame, layout[1], app),
+        UiPage::Tree => draw_tree_page(frame, body, app),
+        UiPage::Epochs => draw_epochs_page(frame, body, app),
+        UiPage::Stderr => draw_stderr_page(frame, body, app),
     }
     draw_footer(frame, layout[2], app);
+    if app.show_help {
+        draw_help_overlay(frame, body, app);
+    }
 }
 
 fn draw_header(
@@ -1063,35 +1096,89 @@ fn draw_footer(frame: &mut ratatui::Frame, area: Rect, app: &TuiApp) {
     frame.render_widget(widget, area);
 }
 
-fn footer_hint(app: &TuiApp) -> String {
-    let s_hint = side_by_side_hint(app);
-    match app.page {
-        UiPage::Tree => format!(
-            "j/k move  h/l collapse/expand  Tab focus  / filter  n/N next/prev change  \
-             u show-unchanged  gg/G first/last  {s_hint}  1/2/e pages  q quit",
-        ),
-        UiPage::Epochs => format!(
-            "j/k move  h/l collapse/expand  Space toggle  Tab focus  gg/G first/last  \
-             {s_hint}  1/2/e pages  q quit",
-        ),
-        UiPage::Stderr => {
-            "j/k scroll  PgUp/PgDn page  g/G top/bottom  1/2/e pages  q quit".to_string()
-        }
-    }
+fn footer_hint(_app: &TuiApp) -> String {
+    "1/2/e pages · Tab focus · f follow · ? help · q quit".to_string()
 }
 
-/// Footer label for the `s` toggle, reflecting both the current setting and
-/// whether the detail pane is wide enough for side-by-side to take effect.
-fn side_by_side_hint(app: &TuiApp) -> &'static str {
-    if app.last_detail_width < 140 {
-        // Below the breakpoint the toggle is a no-op; hide the hint to
-        // avoid implying it does something here.
-        "s side-by-side (≥140 cols)"
-    } else if app.side_by_side {
-        "s unified"
-    } else {
-        "s side-by-side"
+/// Render the modal help overlay centred inside the body rect. Anchored to
+/// `body` (not the frame) so other top-level layout changes don't move the
+/// overlay around the operator's view.
+fn draw_help_overlay(frame: &mut Frame, body: Rect, _app: &TuiApp) {
+    let groups: &[(&str, &[&str])] = &[
+        (
+            "Navigation",
+            &[
+                "j/k or ↓/↑   move",
+                "h/l or ←/→   collapse/expand",
+                "Space        toggle collapse",
+                "gg / G       first / last",
+                "n / N        next / prev change",
+                "PgUp/PgDn    page up/down",
+            ],
+        ),
+        (
+            "View",
+            &[
+                "Tab          focus tree / detail",
+                "/ filter     (Enter apply, Esc clear)",
+                "u            show/hide unchanged",
+                "s            side-by-side diff (≥140 cols)",
+                "f            follow latest activity",
+            ],
+        ),
+        (
+            "Pages",
+            &[
+                "1            Tree",
+                "2            Epochs",
+                "e            Stderr",
+            ],
+        ),
+        (
+            "Confirm",
+            &["Enter / y    apply this epoch", "n / Esc      abort"],
+        ),
+        ("Quit", &["q            quit lusid"]),
+    ];
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, (title, entries)) in groups.iter().enumerate() {
+        if i > 0 {
+            lines.push(blank_line());
+        }
+        lines.push(Line::from(Span::styled(
+            title.to_string(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for entry in *entries {
+            lines.push(Line::from(Span::raw(format!("  {entry}"))));
+        }
     }
+    lines.push(blank_line());
+    lines.push(Line::from(Span::styled(
+        "? or Esc to close",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let content_height = lines.len() as u16;
+    let width = 60u16.min(body.width.saturating_sub(4));
+    let height = (content_height + 2).min(body.height.saturating_sub(2));
+    let x = body.x + body.width.saturating_sub(width) / 2;
+    let y = body.y + body.height.saturating_sub(height) / 2;
+    let area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+
+    let widget = Paragraph::new(Text::from(lines))
+        .block(Block::default().borders(Borders::ALL).title("Help"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(widget, area);
 }
 
 // --------------------------------------------------------------------------
@@ -3167,6 +3254,79 @@ mod tests {
             .find(|r| r.arena_index == 1)
             .expect("mixed branch");
         assert_eq!(mixed.epoch, Some(2));
+    }
+
+    // ------------------------------------------------------------------
+    // Help overlay
+    // ------------------------------------------------------------------
+
+    fn key_event(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn help_overlay_opens_and_closes_on_question_mark() {
+        let mut app = TuiApp::new("test".into());
+        assert!(!app.show_help);
+        app.handle_event(key_event(KeyCode::Char('?'))).unwrap();
+        assert!(app.show_help);
+        app.handle_event(key_event(KeyCode::Char('?'))).unwrap();
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn help_overlay_closes_on_esc() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_two_branches();
+        app.tree.selected = Some(3);
+        app.handle_event(key_event(KeyCode::Char('?'))).unwrap();
+        assert!(app.show_help);
+        app.handle_event(key_event(KeyCode::Esc)).unwrap();
+        assert!(!app.show_help);
+        assert_eq!(app.tree.selected, Some(3), "selection unchanged");
+    }
+
+    #[test]
+    fn help_overlay_does_not_block_quit() {
+        let mut app = TuiApp::new("test".into());
+        app.handle_event(key_event(KeyCode::Char('?'))).unwrap();
+        assert!(app.show_help);
+        let quit = app.handle_event(key_event(KeyCode::Char('q'))).unwrap();
+        assert!(quit, "q must still quit while help is open");
+    }
+
+    #[test]
+    fn help_overlay_passes_through_confirm_keys() {
+        let summary = lusid_apply_stdio::EpochSummary {
+            atoms_total: 1,
+            atoms_changed: 1,
+            handlers_pending: 0,
+            change_labels: vec![],
+            truncated_count: 0,
+        };
+        let mut app = TuiApp::new("test".into());
+        app.app_view.pending_epoch = Some((0, summary));
+        app.show_help = true;
+
+        app.handle_event(key_event(KeyCode::Char('n'))).unwrap();
+        assert_eq!(app.pending_ack, Some(AckAction::Abort));
+        assert!(app.show_help, "overlay stays open after confirm answer");
+
+        // Re-stage a pending confirm and try the Apply path.
+        app.pending_ack = None;
+        app.app_view.pending_epoch = Some((
+            0,
+            lusid_apply_stdio::EpochSummary {
+                atoms_total: 1,
+                atoms_changed: 1,
+                handlers_pending: 0,
+                change_labels: vec![],
+                truncated_count: 0,
+            },
+        ));
+        app.handle_event(key_event(KeyCode::Enter)).unwrap();
+        assert_eq!(app.pending_ack, Some(AckAction::Apply));
+        assert!(app.show_help);
     }
 
     /// Hiding Ok leaves while one of them is selected must move the
