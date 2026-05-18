@@ -104,14 +104,14 @@ A resource may declare a list of operations to run when it changes. Hooks fire o
 
 A plan item's `id` registers its hooks too: a `requires: [<id>]` dependent waits for both the resource and its hooks. The dependent's atoms are in a strictly-later resource epoch than the plan item's atoms, and hooks fire in the on-change phase of the latest of those epochs before the next epoch begins, so dependents see the post-hook state.
 
-#### v1 limitations
+#### Current limitations
 
 - Hooks are inline only - no by-reference (`on_change: ["handler-id"]`).
 - Inline operations cannot declare `id`, `requires`, or `required_by`.
 - Triggered on any change - no add/modify/remove distinction.
 - **Cross-epoch coalescing not handled.** If resource A reloads nginx, resource B also reloads nginx, and B `requires: ["A"]` (so they're in different resource epochs), nginx reloads twice. `Operation::merge` only coalesces handler ops fired by plan items that share a resource epoch. Workaround: factor the reload into a single dedicated `@resource/command` downstream, or accept the duplicate (nginx reload is idempotent).
 - **Hook failure leaves you stuck.** If a hook fails, apply aborts. The resource is now in its target state, so re-applying will NOT re-trigger the hook. Recovery: either run the operation manually (e.g. `sudo systemctl reload nginx`), or briefly toggle a field on the resource (e.g. change `mode` on a `@resource/file`, or `enabled` on a `@resource/systemd`) and re-apply, then revert.
-- **`@operation/command` covers a lot.** Although only `command` and `systemd` are exposed as operations in v1, `@operation/command` shells out - logrotate signals, cron reloads, cache invalidation, etc. all fit under it.
+- **`@operation/command` covers a lot.** Only `command` and `systemd` are currently exposed as operations, but `@operation/command` shells out - logrotate signals, cron reloads, cache invalidation, etc. all fit under it.
 
 #### Implementation: change phase / on-change phase per resource epoch
 

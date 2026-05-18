@@ -14,8 +14,14 @@ use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Plan-level parameters for the `@core/flatpak-remote` resource.
 ///
-/// Tagged by `state: "present" | "absent"`. URL is the only mutable field in
-/// v1: titles, gpg keys, and collection-ids are not surfaced.
+/// Tagged by `state: "present" | "absent"`. URL is the only mutable field
+/// today: titles, gpg keys, and collection-ids are not surfaced.
+///
+/// TODO(cc): surface title / gpg-key / collection-id. Title and gpg-key
+/// are straight additions (extend the Present variant + diff/apply); the
+/// `collection-id` interaction noted below in the `.flatpakrepo` Note is
+/// the hard part - any drift detection has to either resolve the
+/// `.flatpakrepo` and compare, or document that `Modify` won't catch it.
 ///
 /// Note(cc): `flatpak remote-modify --url` refuses when the new repo's
 /// `collection-id` differs from the configured one; the stderr will surface

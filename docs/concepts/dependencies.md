@@ -105,7 +105,7 @@ A `requires: [resource-id]` waits for both the resource's own operations *and* i
   requires: ["nginx-config"]   # waits for the reload too
 ```
 
-### Limitations (v1)
+### Current limitations
 
 - **Hooks are inline only** - you can't reference a named handler defined elsewhere.
 - **Inline operations can't declare `id`, `requires`, or `required_by`** - they inherit ordering from the resource that owns them.

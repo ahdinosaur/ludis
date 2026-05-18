@@ -244,7 +244,7 @@ pub enum AppError {
 
     #[error(
         "operator SSH private key at {} is passphrase-protected, which is \
-         unsupported in v1; decrypt with `ssh-keygen -p -f <path>` or use an \
+         not supported; decrypt with `ssh-keygen -p -f <path>` or use an \
          unencrypted key",
         path.display()
     )]

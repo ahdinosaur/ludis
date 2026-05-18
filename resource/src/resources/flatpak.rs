@@ -19,10 +19,13 @@ const DEFAULT_REMOTE: &str = "flathub";
 
 /// Plan-level parameters for the `@core/flatpak` resource.
 ///
-/// Tagged by `state: "present" | "absent"`. Apps only in v1 - `--app` is
-/// passed to flatpak so a runtime ref will surface a clear "no matching app"
-/// error instead of half-succeeding. Adding `kind: "app" | "runtime"` is the
-/// natural extension point.
+/// Tagged by `state: "present" | "absent"`. Apps only - `--app` is passed
+/// to flatpak so a runtime ref will surface a clear "no matching app"
+/// error instead of half-succeeding.
+///
+/// TODO(cc): runtime support. Add `kind: "app" | "runtime"` to both
+/// variants and switch the `--app` / `--runtime` flag on it; the
+/// `flatpak install` / `flatpak uninstall` call shapes stay identical.
 ///
 /// Note(cc): cross-scope dupes. Declaring `org.x` as `--user` when the same
 /// app is already installed `--system` (or vice versa) does NOT trigger a

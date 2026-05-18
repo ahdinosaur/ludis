@@ -76,11 +76,11 @@ pub enum AptRepoApplyError {
 #[derive(Debug, Clone)]
 pub struct AptRepo;
 
-// Note(cc): `merge()` is a no-op for v1 - see the parallel comment in
-// `git.rs`. Two apt-repo resources in one epoch will both emit
-// `EnsureKeyringsDir { path: /etc/apt/keyrings }`, but `install -d` is
-// already idempotent so the duplicate is just a wasted sudo round-trip.
-// Worth deduping by path if it ever shows up in profiles.
+// TODO(cc): dedup `EnsureKeyringsDir { path }` ops by path. Two apt-repo
+// resources in one epoch will both emit `EnsureKeyringsDir { path:
+// /etc/apt/keyrings }`; `install -d` is already idempotent so the dup is
+// just a wasted sudo round-trip. Unmotivated until it shows up in
+// profiles.
 #[async_trait]
 impl OperationType for AptRepo {
     type Operation = AptRepoOperation;

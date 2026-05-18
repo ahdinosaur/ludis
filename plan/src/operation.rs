@@ -15,11 +15,17 @@ use rimu::{Span, Spanned, Value};
 
 use crate::PlanItemToResourceError;
 
-/// Operations exposed in the `@operation/<id>` namespace for v1.
+/// Operations exposed in the `@operation/<id>` namespace.
 ///
 /// Single source of truth - the dispatcher in [`operation_module`] matches
 /// against these, and the [`PlanItemToResourceError::UnsupportedOperationModuleId`]
 /// error message reads from here so the two never drift.
+///
+/// TODO(cc): more operation modules. Each apt/pacman/file/etc. family
+/// exists internally as the result of a resource's change ops; promoting
+/// any of them to author-facing means adding the id here, a parser arm in
+/// `operation_module`, and a doc page. Workaround today is
+/// `@operation/command "sudo apt update"` and friends.
 pub const AVAILABLE_OPERATION_MODULES: &[&str] = &["command", "systemd"];
 
 /// Returns the operation id (e.g. `"systemd"`) if `module` uses the
