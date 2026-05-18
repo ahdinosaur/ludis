@@ -157,15 +157,13 @@ pub enum AppUpdate {
         error: Option<String>,
     },
 
-    /// One atom whose change-phase or on-change-phase op failed. Emitted once
-    /// per affected atom, after `OperationApplyComplete { error: Some(..) }`
-    /// and before the producer halts the apply. `index` is the atom's arena
-    /// index in the shipped atoms tree. The transition is
-    /// `Changed { ops: Some } -> Failed`; other prior states are rejected.
+    /// One atom whose change-phase or on-change-phase op failed. Emitted
+    /// once per affected atom, after `OperationApplyComplete { error: Some(..) }`
+    /// and before the producer halts. Transition is
+    /// `Changed { ops: Some } -> Failed`; any other prior state is rejected.
     ///
-    /// Why per-atom and not per-op: ops are merged by family across atoms (one
-    /// merged apt-install can cover N atoms' worth of installs), so a failed
-    /// merged op may attribute to multiple atoms.
+    /// Per-atom rather than per-op because op merging coalesces a family
+    /// across atoms (one merged apt-install can cover N atoms' installs).
     ResourceApplyFailed {
         index: usize,
         error: String,

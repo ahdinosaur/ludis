@@ -1,9 +1,5 @@
-//! Status badge palette for the Tree and Epochs pages.
-//!
-//! [`Badge`] captures the five rollup states the Task 12 spec defines:
-//! Planned / Running / Ok (no change) / Changed (pending or applied) / Failed.
-//! Glyph + colour come from this module so per-page rendering shares one
-//! source of truth.
+//! Status badge palette for the Tree and Epochs pages. Glyph and colour
+//! live in one place so per-page rendering shares one source of truth.
 
 use ratatui::style::{Color, Modifier, Style};
 

@@ -1751,12 +1751,10 @@ fn detail_for_leaf(
             error,
             ..
         } => {
-            // Note(cc): the error may be from this atom's own change op or
-            // from an on_change handler that the atom's change triggered.
-            // The latter case means the listed Operations all succeeded -
-            // the failure is on an op shown in the Epochs apply pane, not
-            // here. Section is labelled "Error" rather than "Apply failed"
-            // to avoid implying the listed ops were the failure.
+            // The error may originate from the listed ops (change phase) or
+            // from an on_change handler the change triggered (on-change
+            // phase); in the latter case the listed ops all succeeded.
+            // "Error" is a neutral label that fits both.
             lines.push(blank_line());
             lines.push(section_header("Current state"));
             extend_lines(&mut lines, &probed_state.render(), palette);
@@ -3350,7 +3348,7 @@ mod tests {
 
     /// An empty resource epoch (no atoms map to it) is valid and must still
     /// render its header. Phase headers stay suppressed because no ops have
-    /// arrived (this matches Task 21's "headers only when ops exist" rule).
+    /// arrived for them.
     #[test]
     fn epochs_empty_resource_epoch_still_renders_section() {
         let view = view_with_two_branches();
@@ -4064,7 +4062,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Follow mode (Task 22)
+    // Follow mode
     // ------------------------------------------------------------------
 
     /// `f` toggles follow on and off; the top-level handler swallows the key
@@ -4328,7 +4326,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Change-count header indicator (Task 23)
+    // Change-count header indicator
     // ------------------------------------------------------------------
 
     fn render_header(width: u16, app: &TuiApp) -> ratatui::buffer::Buffer {

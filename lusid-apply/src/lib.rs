@@ -442,11 +442,9 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         .await?;
 
         // On-change phase: collect handlers for branches whose latest epoch
-        // is this one and which had at least one atom change during apply.
-        // Each handler is attributed to the set of atoms whose changes
-        // triggered it (the branch's changed-atom set), so a handler-op
-        // failure can mark exactly those atoms as `Failed` without dragging
-        // in NoChange siblings under the same branch.
+        // is this one and which had at least one atom change. Each handler
+        // is attributed to its branch's triggering atoms so a failure marks
+        // only those, not unchanged siblings under the same branch.
         let mut handler_leaves: Vec<(BTreeSet<usize>, PlanTree<Operation>)> = Vec::new();
         for (branch_idx, latest) in &latest_epoch_by_branch {
             if *latest != resource_epoch_idx || !changed_atoms_by_branch.contains_key(branch_idx) {
@@ -506,17 +504,14 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
 /// `OperationsApplyEpochAdded` so the consumer can group ops by outer epoch
 /// and separate change-phase ops from on-change-phase handlers.
 ///
-/// Each subtree carries the set of atom arena indices that produced it: for
-/// change-phase ops that's the single atom whose `change.operations()`
-/// produced the subtree; for on-change handlers it's the set of atoms whose
-/// changes triggered the branch's handler. When merging coalesces ops across
-/// a family, the merged op inherits the union of its inputs' atom sets, so a
-/// failure maps back to every atom that contributed.
+/// Each subtree carries the atom arena indices that produced it - one atom
+/// for change-phase subtrees, the branch's triggering atoms for on-change
+/// handlers. Merging unions atom sets within a family, so a merged op's
+/// failure maps back to every contributing atom.
 ///
-/// Returns early on the first operation failure. Before propagating the
-/// error, emits `OperationApplyComplete { error: Some(..) }` for the failed
-/// op and one `ResourceApplyFailed` per attributed atom so the TUI can
-/// surface both the failing op and the atoms it left in an unknown state.
+/// Returns early on the first operation failure, emitting
+/// `OperationApplyComplete { error: Some(..) }` and one
+/// `ResourceApplyFailed` per attributed atom before propagating.
 async fn apply_op_phase(
     subtrees: Vec<(BTreeSet<usize>, PlanTree<Operation>)>,
     resource_epoch: usize,
@@ -660,14 +655,12 @@ fn tag_subtree_with_atoms(
 /// Merge an op-epoch's worth of attributed ops, preserving each merged op's
 /// source-atom attribution.
 ///
-/// Strategy: `Operation::merge` partitions inputs by family and produces
-/// merged outputs of the same family. So we pre-record the atom-set union per
-/// family discriminant, then look the union back up per merged op. Multiple
-/// merged ops from one family (rare: distinct verbs that don't coalesce, e.g.
-/// `apt install` vs `apt remove`) all inherit the same family-wide union,
-/// which over-attributes - acceptable because the apply halts on first
-/// failure anyway, and the operator gets one clear "these atoms were
-/// involved" set rather than a guessing game.
+/// `Operation::merge` partitions inputs by family and produces outputs of
+/// the same family, so we record the per-family atom-set union pre-merge
+/// and look it back up per merged op. Distinct ops within a family (e.g.
+/// `apt install` vs `apt remove`) all inherit that family-wide union -
+/// over-attribution that is acceptable since apply halts on the first
+/// failure anyway.
 fn merge_with_attributions(
     ops: Vec<(BTreeSet<usize>, Operation)>,
 ) -> Vec<(BTreeSet<usize>, Operation)> {
