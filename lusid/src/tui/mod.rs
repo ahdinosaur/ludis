@@ -421,6 +421,11 @@ struct TuiApp {
     /// the page's per-key handler is bypassed (except for the confirm-prompt
     /// keys, which must always reach the ack channel).
     show_help: bool,
+
+    /// `f` toggles follow-mode. Auto-arms once per apply on the first
+    /// Probing transition; never re-arms after the operator turns it off.
+    /// Any navigation key disables it so the operator stays in control.
+    follow: bool,
 }
 
 impl TuiApp {
@@ -441,12 +446,21 @@ impl TuiApp {
             last_detail_width: 0,
             pending_ack: None,
             show_help: false,
+            follow: false,
         }
     }
 
     fn apply_update(&mut self, update: AppUpdate) -> Result<(), TuiError> {
+        // Detect the one-shot transition from disarmed to armed inside the
+        // wire update. The arm fires at most once per apply (the first
+        // Probing transition); subsequent re-arms would flap follow back on
+        // after the operator has explicitly disabled it.
+        let pre_armed = self.app_view.auto_follow_armed;
         let current = std::mem::take(&mut self.app_view);
         self.app_view = current.update(update)?;
+        if !pre_armed && self.app_view.auto_follow_armed {
+            self.follow = true;
+        }
         Ok(())
     }
 
@@ -466,17 +480,20 @@ impl TuiApp {
         // switches, q, ...) pass through so the operator can scroll the tree
         // / detail pane to inspect what they're about to ack. The help
         // overlay does not block these keys: the operator must never lose
-        // the ack channel while help is open.
+        // the ack channel while help is open. Answering the confirm clears
+        // follow-mode (the operator is now actively steering).
         if self.app_view.pending_epoch.is_some() {
             match code {
                 KeyCode::Char('y') | KeyCode::Enter => {
                     self.pending_ack = Some(AckAction::Apply);
                     self.app_view.pending_epoch = None;
+                    self.follow = false;
                     return Ok(false);
                 }
                 KeyCode::Char('n') | KeyCode::Esc => {
                     self.pending_ack = Some(AckAction::Abort);
                     self.app_view.pending_epoch = None;
+                    self.follow = false;
                     return Ok(false);
                 }
                 _ => {}
@@ -504,6 +521,13 @@ impl TuiApp {
             return Ok(false);
         }
 
+        // `f` toggles follow-mode from any page. Page handlers see only the
+        // post-toggle state; they don't get the keypress.
+        if code == KeyCode::Char('f') {
+            self.follow = !self.follow;
+            return Ok(false);
+        }
+
         match self.page {
             UiPage::Tree => Ok(self.handle_event_tree(code)),
             UiPage::Epochs => Ok(self.handle_event_epochs(code)),
@@ -517,6 +541,13 @@ impl TuiApp {
         // the message visible without sticking around after the operator
         // moves on.
         self.tree.toast = None;
+
+        // Nav keys take manual control of the cursor; disable follow so it
+        // doesn't yank selection back to the latest activity next frame.
+        // Page switches, `Tab`, view toggles (u/s) and help don't count.
+        if is_disabling_nav_key(code) {
+            self.follow = false;
+        }
 
         // Filter input mode captures most keys; Enter/Esc end it.
         if self.tree.filter_editing {
@@ -630,6 +661,10 @@ impl TuiApp {
     }
 
     fn handle_event_epochs(&mut self, code: KeyCode) -> bool {
+        if is_disabling_nav_key(code) {
+            self.follow = false;
+        }
+
         let was_awaiting_g = self.epochs.awaiting_g;
         self.epochs.awaiting_g = false;
 
@@ -695,6 +730,10 @@ impl TuiApp {
     }
 
     fn handle_event_stderr(&mut self, code: KeyCode) -> bool {
+        if is_disabling_nav_key(code) {
+            self.follow = false;
+        }
+
         match code {
             KeyCode::Char('q') => return true,
             KeyCode::Esc => self.page = UiPage::Tree,
@@ -940,6 +979,34 @@ impl TuiApp {
     }
 }
 
+/// Keys that signal the operator is taking manual control. Pressing any of
+/// these disarms follow-mode so the cursor stops snapping back to the latest
+/// activity. Page switches (1/2/e), focus toggle (Tab), view toggles (u/s),
+/// help (?), and the follow toggle (f) itself are deliberately not in this set.
+fn is_disabling_nav_key(code: KeyCode) -> bool {
+    matches!(
+        code,
+        KeyCode::Char('j')
+            | KeyCode::Char('k')
+            | KeyCode::Char('h')
+            | KeyCode::Char('l')
+            | KeyCode::Char(' ')
+            | KeyCode::Char('g')
+            | KeyCode::Char('G')
+            | KeyCode::Char('n')
+            | KeyCode::Char('N')
+            | KeyCode::Char('/')
+            | KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End,
+    )
+}
+
 // --------------------------------------------------------------------------
 // Drawing
 // --------------------------------------------------------------------------
@@ -1010,7 +1077,7 @@ fn draw_header(
     outcome: Option<&Result<(), TuiError>>,
 ) {
     let (status, status_style) = status_summary(app, outcome);
-    let spans: Vec<Span> = vec![
+    let mut spans: Vec<Span> = vec![
         Span::styled(
             "lusid",
             Style::default()
@@ -1024,6 +1091,15 @@ fn draw_header(
         Span::raw(" · "),
         Span::styled(status, status_style),
     ];
+    if app.follow {
+        spans.push(Span::raw(" · "));
+        spans.push(Span::styled(
+            "[follow]",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
 
     let widget = Paragraph::new(Line::from(spans)).alignment(Alignment::Left);
     frame.render_widget(widget, area);
@@ -1236,6 +1312,27 @@ fn draw_tree_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
     if app.tree.selected.is_none() {
         let rows = build_visible_rows(&app.app_view, &app.tree);
         app.tree.selected = rows.first().map(|r| r.arena_index);
+    }
+
+    // Follow-mode: snap selection to the latest probed/changed atom and pin
+    // the detail pane to the bottom so streamed updates stay on screen.
+    if app.follow
+        && let Some(candidate) = app.app_view.last_activity_atom
+    {
+        let rows = build_visible_rows(&app.app_view, &app.tree);
+        if rows.iter().any(|r| r.arena_index == candidate) {
+            app.tree.selected = Some(candidate);
+        } else if let Some(fallback) = rows
+            .iter()
+            .filter(|r| r.arena_index <= candidate)
+            .max_by_key(|r| r.arena_index)
+        {
+            // Candidate is hidden (collapsed branch, filtered out, etc).
+            // Mirror the clamp routine: land on the nearest visible ancestor
+            // / preceding row in arena order.
+            app.tree.selected = Some(fallback.arena_index);
+        }
+        app.tree.detail_scroll = u16::MAX;
     }
 
     // Body area spans the full terminal width, so this is the threshold the
@@ -1701,6 +1798,29 @@ fn draw_epochs_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
     // Lazy-default the selection to the first visible row (an epoch header).
     if app.epochs.selected.is_none() {
         app.epochs.selected = rows.first().map(|r| r.cursor);
+    }
+
+    // Follow-mode: prefer the latest op (we're in apply phase) and fall back
+    // to the latest atom (probe/change phase). Detail pane pins to the bottom
+    // so streamed stdout/stderr stays on screen.
+    if app.follow {
+        let candidate = app.app_view.last_activity_op.map(|(epoch_index, op_index)| {
+            EpochsCursor::Op {
+                epoch_index,
+                op_index,
+            }
+        });
+        let candidate = candidate.or_else(|| {
+            app.app_view
+                .last_activity_atom
+                .map(|arena_index| EpochsCursor::Atom { arena_index })
+        });
+        if let Some(cursor) = candidate
+            && rows.iter().any(|r| r.cursor == cursor)
+        {
+            app.epochs.selected = Some(cursor);
+        }
+        app.epochs.detail_scroll = u16::MAX;
     }
 
     let layout = if area.width >= 100 {
@@ -2413,6 +2533,14 @@ fn epochs_cursor_epoch(view: &AppView, cursor: EpochsCursor) -> Option<usize> {
 fn draw_stderr_page(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) {
     let inner_height = area.height.saturating_sub(2) as usize;
     app.stderr_view_height = inner_height as u16;
+
+    // Follow-mode pins stderr to the bottom by setting the page's own follow
+    // flag. The flag stays true as long as global follow is on; stderr's
+    // built-in `g`/`G` toggles still flip it independently when global follow
+    // is off.
+    if app.follow {
+        app.stderr_follow = true;
+    }
 
     let total_lines = app.stderr_lines_count.max(1);
     let max_scroll = total_lines.saturating_sub(inner_height) as u16;
@@ -3785,6 +3913,237 @@ mod tests {
         app.handle_event(key_event(KeyCode::Enter)).unwrap();
         assert_eq!(app.pending_ack, Some(AckAction::Apply));
         assert!(app.show_help);
+    }
+
+    // ------------------------------------------------------------------
+    // Follow mode (Task 22)
+    // ------------------------------------------------------------------
+
+    /// `f` toggles follow on and off; the top-level handler swallows the key
+    /// so per-page handlers never see it.
+    #[test]
+    fn follow_key_toggles_follow_state() {
+        let mut app = TuiApp::new("test".into());
+        assert!(!app.follow);
+        app.handle_event(key_event(KeyCode::Char('f'))).unwrap();
+        assert!(app.follow);
+        app.handle_event(key_event(KeyCode::Char('f'))).unwrap();
+        assert!(!app.follow);
+    }
+
+    /// The wire's first `Probing` transition auto-arms follow exactly once.
+    /// `apply_update`'s pre/post check on `auto_follow_armed` is the gate.
+    #[test]
+    fn follow_auto_arms_on_first_probing_transition() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_two_branches();
+        assert!(!app.follow);
+
+        app.apply_update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap();
+        assert!(app.follow, "follow arms on first Probing transition");
+    }
+
+    /// After the operator turns follow off, subsequent Probing transitions
+    /// must not re-arm it. The pre-check in `apply_update` skips the flip if
+    /// `auto_follow_armed` was already true.
+    #[test]
+    fn follow_does_not_re_arm_after_disabled() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_two_branches();
+
+        app.apply_update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap();
+        assert!(app.follow);
+
+        // Operator turns it off via a nav key.
+        app.handle_event_tree(KeyCode::Char('j'));
+        assert!(!app.follow);
+
+        // A second Probing on a different atom must NOT re-arm follow.
+        app.apply_update(AppUpdate::ResourceStatesNodeComplete {
+            index: 2,
+            state: ResourceState::File(FileState::Absent),
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::ResourceChangesNode {
+            index: 2,
+            change: None,
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::ResourceStatesNodeStart { index: 3 })
+            .unwrap();
+        assert!(
+            !app.follow,
+            "follow must not re-arm after operator disabled it",
+        );
+    }
+
+    /// With follow on, drawing the tree page snaps selection to the latest
+    /// probed atom recorded on the AppView.
+    #[test]
+    fn follow_selects_latest_atom_on_tree_page() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_two_branches();
+        app.follow = true;
+        // Simulate the wire arriving with last_activity_atom set to leaf 3.
+        app.app_view.last_activity_atom = Some(3);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|f| draw_tree_page(f, f.area(), &mut app))
+            .unwrap();
+        assert_eq!(app.tree.selected, Some(3));
+        assert_eq!(app.tree.detail_scroll, u16::MAX);
+    }
+
+    /// With follow on, the epochs page prefers the latest op (we're in apply
+    /// phase) and falls back to the latest atom otherwise.
+    #[test]
+    fn follow_selects_latest_op_then_atom_on_epochs_page() {
+        let view = epochs_view()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::A,
+                operations: vec![command_op("op-a"), command_op("op-b")],
+            })
+            .unwrap()
+            .update(AppUpdate::OperationApplyStart { index: (0, 1) })
+            .unwrap();
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view;
+        app.follow = true;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|f| draw_epochs_page(f, f.area(), &mut app))
+            .unwrap();
+        assert_eq!(
+            app.epochs.selected,
+            Some(EpochsCursor::Op {
+                epoch_index: 0,
+                op_index: 1,
+            }),
+        );
+    }
+
+    /// With follow on but no ops yet, the epochs page follows the latest
+    /// atom instead.
+    #[test]
+    fn follow_falls_back_to_atom_on_epochs_page_without_ops() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view();
+        app.app_view.last_activity_atom = Some(3);
+        app.follow = true;
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|f| draw_epochs_page(f, f.area(), &mut app))
+            .unwrap();
+        assert_eq!(
+            app.epochs.selected,
+            Some(EpochsCursor::Atom { arena_index: 3 }),
+        );
+    }
+
+    /// Any nav key (j/k/h/l/Space/n/N/PgUp/PgDn/Home/End/g/G/arrow/`/`)
+    /// clears follow on each page. The exhaustive table here is so a future
+    /// reader doesn't accidentally drop one of the bindings.
+    #[test]
+    fn follow_clears_on_nav_keys() {
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::Char(' '),
+            KeyCode::Char('n'),
+            KeyCode::Char('N'),
+            KeyCode::Char('g'),
+            KeyCode::Char('G'),
+            KeyCode::Char('/'),
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Home,
+            KeyCode::End,
+        ] {
+            assert!(
+                is_disabling_nav_key(code),
+                "nav key {code:?} should disable follow",
+            );
+        }
+    }
+
+    /// Tab/focus toggle, page switches (1/2/e), view toggles (u/s),
+    /// the follow toggle itself (f), and help (?) must NOT clear follow.
+    #[test]
+    fn follow_survives_non_nav_keys() {
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Char('1'),
+            KeyCode::Char('2'),
+            KeyCode::Char('e'),
+            KeyCode::Char('u'),
+            KeyCode::Char('s'),
+            KeyCode::Char('f'),
+            KeyCode::Char('?'),
+            KeyCode::Char('q'),
+        ] {
+            assert!(
+                !is_disabling_nav_key(code),
+                "non-nav key {code:?} should not disable follow",
+            );
+        }
+    }
+
+    /// Pressing `j` on the Tree page clears follow.
+    #[test]
+    fn follow_pressing_j_on_tree_clears_follow() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_two_branches();
+        app.tree.selected = Some(0);
+        app.follow = true;
+        app.handle_event_tree(KeyCode::Char('j'));
+        assert!(!app.follow);
+    }
+
+    /// `Tab` swaps focus and must NOT clear follow. Operators want to be
+    /// able to inspect the detail pane while their cursor still tracks the
+    /// latest activity.
+    #[test]
+    fn follow_pressing_tab_on_tree_keeps_follow() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = view_with_two_branches();
+        app.tree.selected = Some(0);
+        app.follow = true;
+        app.handle_event_tree(KeyCode::Tab);
+        assert!(app.follow);
+    }
+
+    /// Answering the confirm prompt (Enter/y/n/Esc while pending_epoch is
+    /// set) clears follow.
+    #[test]
+    fn follow_confirm_answer_clears_follow() {
+        let mut app = TuiApp::new("test".into());
+        app.follow = true;
+        app.app_view.pending_epoch = Some((
+            0,
+            lusid_apply_stdio::EpochSummary {
+                atoms_total: 1,
+                atoms_changed: 1,
+                handlers_pending: 0,
+                change_labels: vec![],
+                truncated_count: 0,
+            },
+        ));
+        app.handle_event(key_event(KeyCode::Char('n'))).unwrap();
+        assert!(!app.follow);
+        assert_eq!(app.pending_ack, Some(AckAction::Abort));
     }
 
     /// Hiding Ok leaves while one of them is selected must move the

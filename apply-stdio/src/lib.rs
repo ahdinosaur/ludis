@@ -558,6 +558,21 @@ pub struct AppView {
     /// progress for that epoch (the next `OperationsApplyEpochAdded`, or
     /// `ApplyComplete`). Consumers consult this to show the confirm prompt.
     pub pending_epoch: Option<(usize, EpochSummary)>,
+    /// Most recent atom (leaf arena index) touched by a probe/result event.
+    /// Updated by transitions to `Probing`, `Probed`, and `Changed` so
+    /// follow-mode can track which atom the producer is working on.
+    /// `NoChange` transitions are skipped - those produce no operator-facing
+    /// activity worth following to.
+    pub last_activity_atom: Option<usize>,
+    /// Most recent op (epoch_index, op_index) touched by an `OperationApply*`
+    /// event. Follow-mode pins selection here on the Epochs page so the
+    /// running op is always on screen.
+    pub last_activity_op: Option<(usize, usize)>,
+    /// Latch flipped to `true` on the first transition that enters `Probing`.
+    /// The TUI checks pre/post around `update` to detect the one-shot edge and
+    /// arms follow-mode exactly once. Stays `true` for the rest of the apply
+    /// (we never re-arm, even if the operator turns follow back off).
+    pub auto_follow_armed: bool,
     /// Monotonic counter stamped on each successful `OperationsNode` event
     /// so the operations projection can splice in arrival order.
     ops_seq_counter: u64,
@@ -734,6 +749,7 @@ impl AppView {
                 op.stderr.clear();
                 op.is_complete = false;
                 op.error = None;
+                self.last_activity_op = Some((e, o));
             }
             OperationApplyStdout {
                 index: (e, o),
@@ -742,6 +758,7 @@ impl AppView {
                 let op = self.op_mut(e, o)?;
                 op.stdout.push_str(&stdout);
                 op.stdout.push('\n');
+                self.last_activity_op = Some((e, o));
             }
             OperationApplyStderr {
                 index: (e, o),
@@ -750,6 +767,7 @@ impl AppView {
                 let op = self.op_mut(e, o)?;
                 op.stderr.push_str(&stderr);
                 op.stderr.push('\n');
+                self.last_activity_op = Some((e, o));
             }
             OperationApplyComplete {
                 index: (e, o),
@@ -758,6 +776,7 @@ impl AppView {
                 let op = self.op_mut(e, o)?;
                 op.is_complete = true;
                 op.error = error;
+                self.last_activity_op = Some((e, o));
             }
 
             ApplyComplete { had_changes } => {
@@ -771,6 +790,8 @@ impl AppView {
 
     /// Apply a per-leaf transition. The closure receives the current state
     /// and returns either the next state or the rejection's state name.
+    /// After a successful transition, updates `last_activity_atom` for
+    /// follow-mode and arms `auto_follow_armed` on the first Probing entry.
     fn transition_leaf<F>(
         &mut self,
         event: &'static str,
@@ -800,6 +821,20 @@ impl AppView {
             index,
             state: name,
         })?;
+        // Follow-mode tracking: refresh `last_activity_atom` for operator-
+        // facing transitions. `NoChange` is intentionally skipped - the leaf
+        // resolved without anything happening, so there's no activity to
+        // follow.
+        match &next {
+            LeafState::Probing { .. } => {
+                self.last_activity_atom = Some(index);
+                self.auto_follow_armed = true;
+            }
+            LeafState::Probed { .. } | LeafState::Changed { .. } => {
+                self.last_activity_atom = Some(index);
+            }
+            LeafState::Planned { .. } | LeafState::NoChange { .. } => {}
+        }
         *state = next;
         Ok(())
     }
@@ -1877,5 +1912,135 @@ mod tests {
 
         // Original view's parallel-vec invariant is untouched.
         assert_eq!(v.operations_epochs.len(), v.operation_epoch_meta.len());
+    }
+
+    /// `last_activity_atom` advances on probe/result transitions but stays put
+    /// when a leaf resolves to `NoChange` (operators don't follow to a
+    /// "nothing happened" terminal).
+    #[test]
+    fn last_activity_atom_tracks_probing_probed_changed_skips_no_change() {
+        let v = app_view_with_two_leaves();
+        assert!(v.last_activity_atom.is_none());
+
+        // ResourceStatesNodeStart drives Planned -> Probing for leaf 1.
+        let v = v
+            .update(AppUpdate::ResourceStatesNodeStart { index: 1 })
+            .unwrap();
+        assert_eq!(v.last_activity_atom, Some(1));
+
+        let v = v
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 1,
+                state: file_state(),
+            })
+            .unwrap();
+        assert_eq!(v.last_activity_atom, Some(1));
+
+        let v = v
+            .update(AppUpdate::ResourceChangesNode {
+                index: 1,
+                change: Some(apt_change()),
+            })
+            .unwrap();
+        assert_eq!(v.last_activity_atom, Some(1));
+
+        // Move on to leaf 2; resolve it to NoChange. last_activity_atom
+        // shifts on Probing (2) and Probed (still 2), but does NOT shift on
+        // the terminal NoChange.
+        let v = v
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap();
+        assert_eq!(v.last_activity_atom, Some(2));
+        let v = v
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 2,
+                state: file_state(),
+            })
+            .unwrap();
+        assert_eq!(v.last_activity_atom, Some(2));
+        let v = v
+            .update(AppUpdate::ResourceChangesNode {
+                index: 2,
+                change: None,
+            })
+            .unwrap();
+        // NoChange must not advance the pointer past its prior position;
+        // since we're at 2 already this just asserts it didn't get cleared
+        // or reset.
+        assert_eq!(v.last_activity_atom, Some(2));
+    }
+
+    /// `last_activity_op` updates on every op lifecycle event so follow-mode
+    /// can pin selection to the running op on the Epochs page.
+    #[test]
+    fn last_activity_op_tracks_every_op_lifecycle_event() {
+        let v = app_view_with_two_leaves()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::A,
+                operations: vec![command_op("op-a"), command_op("op-b")],
+            })
+            .unwrap();
+        assert!(v.last_activity_op.is_none());
+
+        let v = v
+            .update(AppUpdate::OperationApplyStart { index: (0, 0) })
+            .unwrap();
+        assert_eq!(v.last_activity_op, Some((0, 0)));
+
+        let v = v
+            .update(AppUpdate::OperationApplyStdout {
+                index: (0, 0),
+                stdout: "line".into(),
+            })
+            .unwrap();
+        assert_eq!(v.last_activity_op, Some((0, 0)));
+
+        let v = v
+            .update(AppUpdate::OperationApplyStderr {
+                index: (0, 1),
+                stderr: "warn".into(),
+            })
+            .unwrap();
+        assert_eq!(v.last_activity_op, Some((0, 1)));
+
+        let v = v
+            .update(AppUpdate::OperationApplyComplete {
+                index: (0, 0),
+                error: None,
+            })
+            .unwrap();
+        assert_eq!(v.last_activity_op, Some((0, 0)));
+    }
+
+    /// `auto_follow_armed` flips on the first Probing transition and stays
+    /// `true` forever after. The TUI uses a pre/post check around `update`
+    /// to detect the one-shot edge.
+    #[test]
+    fn auto_follow_armed_flips_on_first_probing_only() {
+        let v = app_view_with_two_leaves();
+        assert!(!v.auto_follow_armed, "starts disarmed");
+
+        let v = v
+            .update(AppUpdate::ResourceStatesNodeStart { index: 1 })
+            .unwrap();
+        assert!(v.auto_follow_armed, "armed on first Probing");
+
+        // A second Probing keeps the flag on; the flag never falls back.
+        let v = v
+            .update(AppUpdate::ResourceStatesNodeComplete {
+                index: 1,
+                state: file_state(),
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceChangesNode {
+                index: 1,
+                change: None,
+            })
+            .unwrap()
+            .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
+            .unwrap();
+        assert!(v.auto_follow_armed, "stays armed after second Probing");
     }
 }
