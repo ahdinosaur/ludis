@@ -53,7 +53,6 @@ pub struct VmImage {
     pub arch: Arch,
     pub linux: Linux,
     pub image_path: PathBuf,
-    pub kernel_root: String,
     pub user: String,
     pub ready_check: Option<String>,
 }
@@ -70,7 +69,6 @@ impl VmImage {
             os,
             image: _,
             hash: _,
-            kernel_root,
             user,
             ready_check,
         } = image_index;
@@ -79,7 +77,6 @@ impl VmImage {
                 arch,
                 linux,
                 image_path,
-                kernel_root,
                 user,
                 ready_check,
             },

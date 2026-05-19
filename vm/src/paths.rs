@@ -45,7 +45,6 @@ pub struct ExecutablePathsError(#[from] which::Error);
 /// ENOENT deep inside setup.
 #[derive(Debug, Clone)]
 pub struct ExecutablePaths {
-    virt_get_kernel: PathBuf,
     qemu_x86_64: PathBuf,
     qemu_aarch64: PathBuf,
     qemu_img: PathBuf,
@@ -54,23 +53,17 @@ pub struct ExecutablePaths {
 
 impl ExecutablePaths {
     pub fn new() -> Result<ExecutablePaths, ExecutablePathsError> {
-        let virt_get_kernel = which_global("virt-get-kernel")?;
         let qemu_x86_64 = which_global("qemu-system-x86_64")?;
         let qemu_aarch64 = which_global("qemu-system-aarch64")?;
         let qemu_img = which_global("qemu-img")?;
         let mkisofs = which_global("mkisofs")?;
 
         Ok(ExecutablePaths {
-            virt_get_kernel,
             qemu_x86_64,
             qemu_aarch64,
             qemu_img,
             mkisofs,
         })
-    }
-
-    pub fn virt_get_kernel(&self) -> &Path {
-        &self.virt_get_kernel
     }
 
     pub fn qemu_x86_64(&self) -> &Path {

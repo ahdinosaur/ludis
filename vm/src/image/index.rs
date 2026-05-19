@@ -8,7 +8,6 @@ pub struct VmImageIndex {
     pub os: Os,
     pub image: VmImageRef,
     pub hash: VmImageHashRef,
-    pub kernel_root: String,
     pub user: String,
     /// Shell snippet to run over SSH after the guest's port 22 opens, before
     /// the caller drives the VM. Lets per-image defaults drain first-boot

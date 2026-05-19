@@ -1,10 +1,9 @@
 //! One-time per-instance setup: download the guest image, build the overlay,
-//! extract the kernel, make UEFI vars writeable, mint SSH keys, seed
-//! cloud-init. Each sub-step is idempotent (skips work if the output file
-//! already exists), so partial runs can be resumed by re-invoking.
+//! make UEFI vars writeable, mint SSH keys, seed cloud-init. Each sub-step is
+//! idempotent (skips work if the output file already exists), so partial runs
+//! can be resumed by re-invoking.
 
 mod cloud_init;
-mod kernel;
 mod overlay;
 mod ovmf;
 
@@ -21,7 +20,6 @@ use crate::{
         Vm, VmPaths, VmPort,
         setup::{
             cloud_init::{CloudInitError, setup_cloud_init},
-            kernel::{ExtractKernelError, VmKernelDetails, setup_kernel},
             overlay::{CreateOverlayImageError, setup_overlay},
             ovmf::{ConvertOvmfVarsError, setup_ovmf_uefi_variables},
         },
@@ -41,9 +39,6 @@ pub enum VmSetupError {
 
     #[error(transparent)]
     ConvertOvmfVars(#[from] ConvertOvmfVarsError),
-
-    #[error(transparent)]
-    ExtractKernel(#[from] ExtractKernelError),
 
     #[error(transparent)]
     CreateOverlayImage(#[from] CreateOverlayImageError),
@@ -88,7 +83,6 @@ pub async fn setup_instance(
         arch,
         linux,
         image_path: source_image_path,
-        kernel_root,
         user,
         ready_check,
     } = source_image;
@@ -101,9 +95,6 @@ pub async fn setup_instance(
 
     setup_overlay(&instance_paths, &source_image_path, disk_size).await?;
     setup_ovmf_uefi_variables(executables, &instance_paths).await?;
-
-    let VmKernelDetails { has_initrd } =
-        setup_kernel(executables, &instance_paths, &source_image_path).await?;
 
     let ssh_keypair = SshKeypair::load_or_create(&instance_dir).await?;
     let ssh_port = get_free_tcp_port().ok_or(VmSetupError::NoOpenPortsAvailable)?;
@@ -122,9 +113,7 @@ pub async fn setup_instance(
         dir: instance_dir,
         arch,
         linux,
-        kernel_root,
         user,
-        has_initrd,
         ssh_port,
         memory_size,
         cpu_count,

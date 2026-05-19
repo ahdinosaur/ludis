@@ -2,6 +2,11 @@
 //! launches it daemonized; the pid ends up in `<instance_dir>/qemu.pid` where
 //! [`Vm::stop`](super::Vm::stop) can find it later.
 //!
+//! OVMF firmware boots the overlay's ESP via the UEFI removable-media fallback
+//! path (`\EFI\BOOT\BOOTX64.EFI`), so the guest's own bootloader picks up the
+//! kernel and initramfs from its `/boot`. This survives in-guest kernel
+//! upgrades, which is the whole point of doing it this way.
+//!
 //! Defaults when the [`Vm`]'s optional fields are `None`: 8 GiB memory, 2
 //! CPUs, graphics on, KVM on. The SSH forward is always prepended to the
 //! caller-supplied `ports` so it survives any reordering.
@@ -31,9 +36,7 @@ pub(super) async fn instance_start(
         dir: _instance_dir,
         arch,
         linux: _,
-        kernel_root,
         user: _,
-        has_initrd,
         ssh_port,
         memory_size,
         cpu_count,
@@ -70,23 +73,29 @@ pub(super) async fn instance_start(
         .memory(memory_size_in_gb)
         .plash_drives(paths.ovmf_code_system_path(), &paths.ovmf_vars_path());
 
-    qemu.kernel(
-        &paths.kernel_path(),
-        Some(&format!("rw root={}", kernel_root)),
-    );
-    if *has_initrd {
-        qemu.initrd(&paths.initrd_path());
-    }
-
     qemu.qmp_socket(&paths.qemu_qmp_socket_path())
         .kvm(kvm)
         .pid_file(paths.qemu_pid_path())
         .graphics(graphics)
         .ports(&ports);
 
-    // Overlay and cloud-init drives
-    qemu.virtio_drive("overlay-disk", "qcow2", &paths.overlay_image_path())
-        .virtio_drive("cloud-init", "raw", &paths.cloud_init_image_path());
+    // Overlay (bootable) and cloud-init seed (data-only). `bootindex=0`
+    // tells OVMF to scan the overlay's ESP first; cloud-init.iso has no EFI
+    // bootloader so it'd be skipped anyway, but being explicit avoids future
+    // surprises if the ISO ever grows an El-Torito EFI entry or the drive
+    // order changes.
+    qemu.virtio_drive(
+        "overlay-disk",
+        "qcow2",
+        &paths.overlay_image_path(),
+        Some(0),
+    )
+    .virtio_drive(
+        "cloud-init",
+        "raw",
+        &paths.cloud_init_image_path(),
+        None,
+    );
 
     tracing::debug!(cmd = ?qemu, "spawning QEMU");
 

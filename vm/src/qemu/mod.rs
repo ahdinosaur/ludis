@@ -73,31 +73,24 @@ impl Qemu {
         self
     }
 
-    /// Kernel, append, and optional initrd.
-    pub fn kernel(&mut self, kernel_path: &Path, kernel_args: Option<&str>) -> &mut Self {
-        self.command
-            .args(["-kernel", &kernel_path.to_string_lossy()]);
-        if let Some(kernel_args) = kernel_args {
-            self.command.args(["-append", kernel_args]);
-        }
-
-        self
-    }
-
-    pub fn initrd(&mut self, initrd_path: &Path) -> &mut Self {
-        self.command
-            .args(["-initrd", &initrd_path.to_string_lossy()]);
-
-        self
-    }
-
-    /// Add a virtio drive with explicit node name, format and file path.
-    pub fn virtio_drive(&mut self, node_name: &str, format: &str, file: &Path) -> &mut Self {
+    /// Add a virtio drive with explicit node name, format and file path. A
+    /// `bootindex` of `Some(n)` makes OVMF prefer this drive when scanning for
+    /// an EFI System Partition; without one, OVMF falls back to PCI bus order,
+    /// which is fine but implicit.
+    pub fn virtio_drive(
+        &mut self,
+        node_name: &str,
+        format: &str,
+        file: &Path,
+        bootindex: Option<u32>,
+    ) -> &mut Self {
         let file = file.display();
-        self.command.args([
-            "-drive",
-            &format!("if=virtio,node-name={node_name},format={format},file={file}"),
-        ]);
+        let mut spec = format!("if=virtio,node-name={node_name},format={format},file={file}");
+        if let Some(bootindex) = bootindex {
+            use std::fmt::Write;
+            let _ = write!(spec, ",bootindex={bootindex}");
+        }
+        self.command.args(["-drive", &spec]);
 
         self
     }

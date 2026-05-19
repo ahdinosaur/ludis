@@ -18,7 +18,7 @@ pub enum ContextError {
 
 /// VM-crate-internal context: the pieces of the base [`BaseContext`] that the
 /// VM pipeline touches (HTTP for image downloads, filesystem paths for
-/// images/instances, resolved executable paths for qemu/virt-get-kernel/etc.).
+/// images/instances, resolved executable paths for qemu/qemu-img/mkisofs).
 #[derive(Debug, Clone)]
 pub struct Context {
     http_client: HttpClient,

@@ -34,7 +34,7 @@ This is the iteration loop: change your plan, `dev apply`, see what happens, rep
 
 ### Resources / prerequisites
 
-You need QEMU, libguestfs, and mkisofs installed locally - see [installation](../installation.md#for-dev-apply-local-qemu-vms).
+You need QEMU and mkisofs installed locally - see [installation](../installation.md#for-dev-apply-local-qemu-vms).
 
 ## Remote
 
