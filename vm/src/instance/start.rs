@@ -79,23 +79,14 @@ pub(super) async fn instance_start(
         .graphics(graphics)
         .ports(&ports);
 
-    // Overlay (bootable) and cloud-init seed (data-only). `bootindex=0`
-    // tells OVMF to scan the overlay's ESP first; cloud-init.iso has no EFI
-    // bootloader so it'd be skipped anyway, but being explicit avoids future
-    // surprises if the ISO ever grows an El-Torito EFI entry or the drive
-    // order changes.
-    qemu.virtio_drive(
-        "overlay-disk",
-        "qcow2",
-        &paths.overlay_image_path(),
-        Some(0),
-    )
-    .virtio_drive(
-        "cloud-init",
-        "raw",
-        &paths.cloud_init_image_path(),
-        None,
-    );
+    // Note(cc): the overlay must come before the cloud-init ISO. OVMF picks
+    // a boot device by scanning attached drives in PCI bus order; we want it
+    // to find the overlay's ESP first. cloud-init.iso has no EFI bootloader
+    // (it's a plain Rock Ridge / Joliet ISO from `mkisofs -RJ`), so OVMF
+    // would skip it regardless - but the order is still load-bearing if the
+    // ISO ever grows an El-Torito EFI entry.
+    qemu.virtio_drive("overlay-disk", "qcow2", &paths.overlay_image_path())
+        .virtio_drive("cloud-init", "raw", &paths.cloud_init_image_path());
 
     tracing::debug!(cmd = ?qemu, "spawning QEMU");
 

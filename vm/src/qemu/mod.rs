@@ -73,24 +73,13 @@ impl Qemu {
         self
     }
 
-    /// Add a virtio drive with explicit node name, format and file path. A
-    /// `bootindex` of `Some(n)` makes OVMF prefer this drive when scanning for
-    /// an EFI System Partition; without one, OVMF falls back to PCI bus order,
-    /// which is fine but implicit.
-    pub fn virtio_drive(
-        &mut self,
-        node_name: &str,
-        format: &str,
-        file: &Path,
-        bootindex: Option<u32>,
-    ) -> &mut Self {
+    /// Add a virtio drive with explicit node name, format and file path.
+    pub fn virtio_drive(&mut self, node_name: &str, format: &str, file: &Path) -> &mut Self {
         let file = file.display();
-        let mut spec = format!("if=virtio,node-name={node_name},format={format},file={file}");
-        if let Some(bootindex) = bootindex {
-            use std::fmt::Write;
-            let _ = write!(spec, ",bootindex={bootindex}");
-        }
-        self.command.args(["-drive", &spec]);
+        self.command.args([
+            "-drive",
+            &format!("if=virtio,node-name={node_name},format={format},file={file}"),
+        ]);
 
         self
     }
