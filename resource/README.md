@@ -22,5 +22,5 @@ Each resource implements [`ResourceType`], a five-step pipeline:
 
 ## Notes
 
-- Resource types implement `Display` via `impl_display_render!`, which gives them a `Render` impl for the TUI.
+- Resource types implement `Display` for human-facing text. [`lusid-render`](../render) attaches a `Render` impl per type via its `display_render!` macro so the TUI can lower the structured wire to ratatui output.
 - Params types use `#[serde(tag = "...")]` or `#[serde(untagged)]` to match the union arms in `param_types()`. Keep the two in sync.

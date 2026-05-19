@@ -1,5 +1,5 @@
 [package]
-name = "lusid-apply-stdio"
+name = "lusid-render"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,9 +7,6 @@ edition = "2024"
 lusid-operation = { path = "../operation", version = "0.1" }
 lusid-plan = { path = "../plan", version = "0.1" }
 lusid-resource = { path = "../resource", version = "0.1" }
-lusid-tree = { path = "../tree", version = "0.1" }
-serde.workspace = true
-thiserror.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
+ratatui = "0.30"
+similar = { version = "2", default-features = false, features = ["text"] }
+termtree = "1.0.0"

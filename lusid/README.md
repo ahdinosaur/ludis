@@ -16,7 +16,7 @@ lusid CLI ──spawn──> lusid-apply ──stdout: AppUpdate JSON──> TUI
                                  ──stderr: text lines ─────> stderr pane
 ```
 
-The TUI doesn't know lusid's domain types - only [`AppView`](../apply-stdio) / [`FlatViewTree`](../apply-stdio). `lusid-apply` renders everything to [`lusid-view`](../view) values before they hit the wire.
+`lusid-apply` ships the structured domain types ([`ResourceParams`](../resource), [`Resource`](../resource), [`Operation`](../operation), …) on the wire; the TUI folds them into [`AppView`](../apply-stdio) and lowers them to ratatui text through [`lusid-render`](../render).
 
 ## `lusid.toml`
 

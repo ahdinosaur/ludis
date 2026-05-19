@@ -1,4 +1,5 @@
 use std::fmt::{self, Display};
+use std::path::Path;
 
 use async_trait::async_trait;
 use lusid_causality::{CausalityMeta, CausalityTree};
@@ -9,14 +10,119 @@ use lusid_operation::{
     operations::file::{FileGroup, FileMode, FileOperation, FilePath, FileSource, FileUser},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Span, Spanned, Value};
 use secrecy::ExposeSecret;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
-#[derive(Debug, Clone)]
+/// Byte payload of a file as it appears in [`FileState`] / [`FileChange`].
+///
+/// Carrying the bytes lets downstream renderers (the TUI detail pane in
+/// particular) show unified diffs of the change. For sources flagged as
+/// secret, we ship `Redacted { len, sha256 }` instead so the plaintext never
+/// hits operator scrollback. The hash still answers "did this secret
+/// change?" without revealing the content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Content {
+    Bytes(#[serde(with = "base64_bytes")] Vec<u8>),
+    Redacted { len: usize, sha256: String },
+}
+
+impl Content {
+    /// Construct from raw bytes. When `redact` is set, the bytes are hashed
+    /// and dropped; otherwise they're carried verbatim.
+    pub fn from_bytes(bytes: Vec<u8>, redact: bool) -> Self {
+        if redact {
+            Content::redacted(&bytes)
+        } else {
+            Content::Bytes(bytes)
+        }
+    }
+
+    /// Hash `bytes` into a [`Content::Redacted`] without ever storing them.
+    pub fn redacted(bytes: &[u8]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(bytes);
+        let digest: [u8; 32] = hasher.finalize().into();
+        Content::Redacted {
+            len: bytes.len(),
+            sha256: hex_encode(&digest),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Content::Bytes(b) => b.len(),
+            Content::Redacted { len, .. } => *len,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Display for Content {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Content::Bytes(b) => write!(f, "Bytes({} bytes)", b.len()),
+            Content::Redacted { len, sha256 } => {
+                let prefix = sha256.get(..16).unwrap_or(sha256.as_str());
+                write!(f, "Redacted({len} bytes, sha256:{prefix})")
+            }
+        }
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(&mut s, "{b:02x}");
+    }
+    s
+}
+
+/// True when `source` points into (or under) `secrets_dir`.
+///
+/// Comparison is lexical path-prefix-based; both arguments are expected to
+/// be absolute and free of `.`/`..` components. The caller (`lusid-apply`)
+/// canonicalises `secrets_dir` before passing it in. A non-absolute
+/// `secrets_dir` short-circuits to `false` rather than producing a
+/// confusing false match.
+///
+/// Note(cc): a `source` containing `..` segments that walks through
+/// `secrets_dir` (e.g. `/proj/secrets/../leaked/api.txt`) will not match -
+/// future hardening could canonicalise `source` too, but that requires
+/// the file to exist (cleared by `validate_host_paths`) and an async
+/// I/O hop at construction time.
+pub fn is_secret_source(source: &FilePath, secrets_dir: &Path) -> bool {
+    if !secrets_dir.is_absolute() {
+        return false;
+    }
+    source.as_path().starts_with(secrets_dir)
+}
+
+mod base64_bytes {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use serde::Serializer;
+    use serde::de::{self, Deserialize, Deserializer};
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let s = String::deserialize(d)?;
+        STANDARD.decode(s.as_bytes()).map_err(de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileParams {
     /// Byte-copy from `source` (a host-path) into `path` (a target-path),
     /// atomically. Edits to `source` only propagate on the next apply. Use
@@ -27,6 +133,9 @@ pub enum FileParams {
         source: FilePath,
         /// Span of the `source` value in the plan source. Carried so
         /// host-path validation errors can point at the offending line.
+        /// Skipped on the wire: validation runs pre-emit, so the span
+        /// is unused downstream.
+        #[serde(skip, default)]
         source_span: Span,
         path: FilePath,
         mode: Option<FileMode>,
@@ -53,6 +162,7 @@ pub enum FileParams {
         source: FilePath,
         /// Span of the `source` value in the plan source. See
         /// [`FileParams::Sourced::source_span`] for rationale.
+        #[serde(skip, default)]
         source_span: Span,
         path: FilePath,
     },
@@ -134,13 +244,17 @@ impl Display for FileParams {
     }
 }
 
-impl_display_render!(FileParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileResource {
     Sourced {
         source: FilePath,
         path: FilePath,
+        /// True when `source` lies under the project's secrets directory.
+        /// Set by [`ResourceParams::resources`](crate::ResourceParams::resources)
+        /// using its `secrets_dir` argument; downstream `state`/`change`
+        /// use it to decide whether file content is shipped verbatim or as
+        /// [`Content::Redacted`].
+        is_secret: bool,
     },
     Linked {
         source: FilePath,
@@ -176,7 +290,7 @@ pub enum FileResource {
 impl Display for FileResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FileResource::Sourced { source, path } => {
+            FileResource::Sourced { source, path, .. } => {
                 write!(f, "FileSourced({source} -> {path})")
             }
             FileResource::Linked { source, path } => {
@@ -194,12 +308,22 @@ impl Display for FileResource {
     }
 }
 
-impl_display_render!(FileResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileState {
-    Sourced,
-    NotSourced,
+    /// File at `path` matches its declared `source`/`secret` byte-for-byte.
+    /// `content` is the matching bytes (or redacted equivalent for secrets).
+    Sourced {
+        content: Content,
+    },
+
+    /// File at `path` differs from (or is absent versus) its declared
+    /// `source`/`secret`. `current` is `None` when the target doesn't
+    /// exist yet; `desired` is the source bytes (or redacted equivalent).
+    NotSourced {
+        current: Option<Content>,
+        desired: Content,
+    },
+
     Linked,
     NotLinked,
     Present,
@@ -215,25 +339,25 @@ pub enum FileState {
 impl Display for FileState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use FileState::*;
-        let text = match self {
-            Sourced => "Sourced",
-            NotSourced => "NotSourced",
-            Linked => "Linked",
-            NotLinked => "NotLinked",
-            Present => "Present",
-            Absent => "Absent",
-            ModeCorrect => "ModeCorrect",
-            ModeIncorrect => "ModeIncorrect",
-            UserCorrect => "UserCorrect",
-            UserIncorrect => "UserIncorrect",
-            GroupCorrect => "GroupCorrect",
-            GroupIncorrect => "GroupIncorrect",
-        };
-        write!(f, "{text}")
+        match self {
+            Sourced { content } => write!(f, "Sourced({content})"),
+            NotSourced { current, desired } => match current {
+                Some(current) => write!(f, "NotSourced(current = {current}, desired = {desired})"),
+                None => write!(f, "NotSourced(absent, desired = {desired})"),
+            },
+            Linked => write!(f, "Linked"),
+            NotLinked => write!(f, "NotLinked"),
+            Present => write!(f, "Present"),
+            Absent => write!(f, "Absent"),
+            ModeCorrect => write!(f, "ModeCorrect"),
+            ModeIncorrect => write!(f, "ModeIncorrect"),
+            UserCorrect => write!(f, "UserCorrect"),
+            UserIncorrect => write!(f, "UserIncorrect"),
+            GroupCorrect => write!(f, "GroupCorrect"),
+            GroupIncorrect => write!(f, "GroupIncorrect"),
+        }
     }
 }
-
-impl_display_render!(FileState);
 
 #[derive(Error, Debug)]
 pub enum FileStateError {
@@ -249,11 +373,17 @@ pub enum FileStateError {
     MissingSecret { name: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileChange {
+    /// Apply-time write of `source`'s bytes to `path`. `before` and `after`
+    /// are present-time snapshots (current target bytes, desired source
+    /// bytes) carried for diff display; the operation still resolves
+    /// `source` at apply time and is the authoritative byte sink.
     Write {
         path: FilePath,
         source: FileSource,
+        before: Option<Content>,
+        after: Content,
     },
     CreateSymlink {
         source: FilePath,
@@ -276,7 +406,7 @@ pub enum FileChange {
 impl Display for FileChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FileChange::Write { path, source } => match source {
+            FileChange::Write { path, source, .. } => match source {
                 FileSource::Contents(contents) => write!(
                     f,
                     "File::Write(path = {}, source = Contents({} bytes))",
@@ -307,7 +437,22 @@ impl Display for FileChange {
     }
 }
 
-impl_display_render!(FileChange);
+impl ResourceChangeTrait for FileChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            // `before: None` means the target did not previously have these
+            // bytes (no file or non-regular file), so the write introduces
+            // new state. `Some` means we are overwriting existing bytes.
+            FileChange::Write { before: None, .. } => ChangeKind::Added,
+            FileChange::Write {
+                before: Some(_), ..
+            } => ChangeKind::Modified,
+            FileChange::CreateSymlink { .. } => ChangeKind::Added,
+            FileChange::Remove { .. } => ChangeKind::Removed,
+            FileChange::ChangeMode { .. } | FileChange::ChangeOwner { .. } => ChangeKind::Modified,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct File;
@@ -373,6 +518,10 @@ impl ResourceType for File {
                     FileResource::Sourced {
                         source,
                         path: path.clone(),
+                        // Real value set by `ResourceParams::resources`,
+                        // which knows the secrets dir; leaving false here
+                        // keeps `File` itself secrets-agnostic.
+                        is_secret: false,
                     },
                 )];
                 nodes.extend(permission_atoms(&path, mode, user, group));
@@ -417,16 +566,28 @@ impl ResourceType for File {
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
         let state = match resource {
-            FileResource::Sourced { source, path } => {
+            FileResource::Sourced {
+                source,
+                path,
+                is_secret,
+            } => {
+                let source_bytes = fs::read_file_to_bytes(source.as_path()).await?;
                 if !fs::path_exists(path.as_path()).await? {
-                    FileState::NotSourced
+                    FileState::NotSourced {
+                        current: None,
+                        desired: Content::from_bytes(source_bytes, *is_secret),
+                    }
                 } else {
-                    let source_contents = fs::read_file_to_bytes(source.as_path()).await?;
-                    let path_contents = fs::read_file_to_bytes(path.as_path()).await?;
-                    if source_contents == path_contents {
-                        FileState::Sourced
+                    let path_bytes = fs::read_file_to_bytes(path.as_path()).await?;
+                    if path_bytes == source_bytes {
+                        FileState::Sourced {
+                            content: Content::from_bytes(path_bytes, *is_secret),
+                        }
                     } else {
-                        FileState::NotSourced
+                        FileState::NotSourced {
+                            current: Some(Content::from_bytes(path_bytes, *is_secret)),
+                            desired: Content::from_bytes(source_bytes, *is_secret),
+                        }
                     }
                 }
             }
@@ -434,22 +595,32 @@ impl ResourceType for File {
             FileResource::Linked { source, path } => probe_linked_state(source, path).await?,
 
             FileResource::Secret { name, path } => {
+                // Compare the file's current contents against the
+                // decrypted secret plaintext. A missing secret here
+                // (e.g. typo in the plan's `name` field) surfaces as
+                // `MissingSecret` rather than a silent NotSourced.
+                let secret = ctx
+                    .secrets()
+                    .get(name)
+                    .ok_or_else(|| FileStateError::MissingSecret { name: name.clone() })?;
+                let secret_bytes = secret.expose_secret().as_bytes();
+                let desired = Content::redacted(secret_bytes);
                 if !fs::path_exists(path.as_path()).await? {
-                    FileState::NotSourced
+                    FileState::NotSourced {
+                        current: None,
+                        desired,
+                    }
                 } else {
-                    // Compare the file's current contents against the
-                    // decrypted secret plaintext. A missing secret here
-                    // (e.g. typo in the plan's `name` field) surfaces as
-                    // `MissingSecret` rather than a silent NotSourced.
-                    let secret = ctx
-                        .secrets()
-                        .get(name)
-                        .ok_or_else(|| FileStateError::MissingSecret { name: name.clone() })?;
-                    let path_contents = fs::read_file_to_bytes(path.as_path()).await?;
-                    if path_contents.as_slice() == secret.expose_secret().as_bytes() {
-                        FileState::Sourced
+                    let path_bytes = fs::read_file_to_bytes(path.as_path()).await?;
+                    if path_bytes.as_slice() == secret_bytes {
+                        FileState::Sourced {
+                            content: Content::redacted(&path_bytes),
+                        }
                     } else {
-                        FileState::NotSourced
+                        FileState::NotSourced {
+                            current: Some(Content::redacted(&path_bytes)),
+                            desired,
+                        }
                     }
                 }
             }
@@ -512,14 +683,17 @@ impl ResourceType for File {
 
     fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change> {
         match (resource, state) {
-            (FileResource::Sourced { source, path }, FileState::NotSourced) => {
-                Some(FileChange::Write {
-                    path: path.clone(),
-                    source: FileSource::Path(source.clone()),
-                })
-            }
+            (
+                FileResource::Sourced { source, path, .. },
+                FileState::NotSourced { current, desired },
+            ) => Some(FileChange::Write {
+                path: path.clone(),
+                source: FileSource::Path(source.clone()),
+                before: current.clone(),
+                after: desired.clone(),
+            }),
 
-            (FileResource::Sourced { .. }, FileState::Sourced) => None,
+            (FileResource::Sourced { .. }, FileState::Sourced { .. }) => None,
 
             (FileResource::Linked { source, path }, FileState::NotLinked) => {
                 Some(FileChange::CreateSymlink {
@@ -530,18 +704,22 @@ impl ResourceType for File {
 
             (FileResource::Linked { .. }, FileState::Linked) => None,
 
-            (FileResource::Secret { name, path }, FileState::NotSourced) => {
+            (FileResource::Secret { name, path }, FileState::NotSourced { current, desired }) => {
                 Some(FileChange::Write {
                     path: path.clone(),
                     source: FileSource::Secret(name.clone()),
+                    before: current.clone(),
+                    after: desired.clone(),
                 })
             }
 
-            (FileResource::Secret { .. }, FileState::Sourced) => None,
+            (FileResource::Secret { .. }, FileState::Sourced { .. }) => None,
 
             (FileResource::Present { path }, FileState::Absent) => Some(FileChange::Write {
                 path: path.clone(),
                 source: FileSource::Contents(Vec::new()),
+                before: None,
+                after: Content::Bytes(Vec::new()),
             }),
 
             (FileResource::Present { .. }, FileState::Present) => None,
@@ -592,9 +770,12 @@ impl ResourceType for File {
 
     fn operations(change: Self::Change) -> Vec<CausalityTree<Operation>> {
         let op = match change {
-            FileChange::Write { path, source } => {
-                Operation::File(FileOperation::Write { path, source })
-            }
+            FileChange::Write {
+                path,
+                source,
+                before: _,
+                after: _,
+            } => Operation::File(FileOperation::Write { path, source }),
             FileChange::CreateSymlink { source, path } => {
                 Operation::File(FileOperation::CreateSymlink { source, path })
             }
@@ -655,10 +836,16 @@ mod tests {
         let resource = FileResource::Sourced {
             source: file_path(&source),
             path: file_path(&target),
+            is_secret: false,
         };
         let mut ctx = lusid_ctx::Context::create(dir.path()).unwrap();
         let state = File::state(&mut ctx, &resource).await.unwrap();
-        assert!(matches!(state, FileState::Sourced));
+        match state {
+            FileState::Sourced {
+                content: Content::Bytes(bytes),
+            } => assert_eq!(bytes, b"hello"),
+            other => panic!("expected Sourced(Bytes), got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -672,10 +859,20 @@ mod tests {
         let resource = FileResource::Sourced {
             source: file_path(&source),
             path: file_path(&target),
+            is_secret: false,
         };
         let mut ctx = lusid_ctx::Context::create(dir.path()).unwrap();
         let state = File::state(&mut ctx, &resource).await.unwrap();
-        assert!(matches!(state, FileState::NotSourced));
+        match state {
+            FileState::NotSourced {
+                current: Some(Content::Bytes(c)),
+                desired: Content::Bytes(d),
+            } => {
+                assert_eq!(c, b"old");
+                assert_eq!(d, b"new");
+            }
+            other => panic!("expected NotSourced(Bytes, Bytes), got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -688,10 +885,43 @@ mod tests {
         let resource = FileResource::Sourced {
             source: file_path(&source),
             path: file_path(&target),
+            is_secret: false,
         };
         let mut ctx = lusid_ctx::Context::create(dir.path()).unwrap();
         let state = File::state(&mut ctx, &resource).await.unwrap();
-        assert!(matches!(state, FileState::NotSourced));
+        match state {
+            FileState::NotSourced {
+                current: None,
+                desired: Content::Bytes(d),
+            } => assert_eq!(d, b"x"),
+            other => panic!("expected NotSourced(None, Bytes), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sourced_with_is_secret_redacts_content() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("src.txt");
+        let target = dir.path().join("dest.txt");
+        tokio::fs::write(&source, b"super-secret").await.unwrap();
+
+        let resource = FileResource::Sourced {
+            source: file_path(&source),
+            path: file_path(&target),
+            is_secret: true,
+        };
+        let mut ctx = lusid_ctx::Context::create(dir.path()).unwrap();
+        let state = File::state(&mut ctx, &resource).await.unwrap();
+        match state {
+            FileState::NotSourced {
+                current: None,
+                desired: Content::Redacted { len, sha256 },
+            } => {
+                assert_eq!(len, "super-secret".len());
+                assert_eq!(sha256.len(), 64);
+            }
+            other => panic!("expected NotSourced with Redacted desired, got {other:?}"),
+        }
     }
 
     // --- Linked state probe (lexical-symlink-target) --------------------
@@ -760,15 +990,27 @@ mod tests {
         let resource = FileResource::Sourced {
             source: FilePath::new("/host/src.txt"),
             path: FilePath::new("/target/dest.txt"),
+            is_secret: false,
         };
-        let change = File::change(&resource, &FileState::NotSourced).expect("some change");
+        let change = File::change(
+            &resource,
+            &FileState::NotSourced {
+                current: None,
+                desired: Content::Bytes(b"hello".to_vec()),
+            },
+        )
+        .expect("some change");
         match change {
             FileChange::Write {
                 path,
                 source: FileSource::Path(s),
+                before,
+                after,
             } => {
                 assert_eq!(path.as_path(), std::path::Path::new("/target/dest.txt"));
                 assert_eq!(s.as_path(), std::path::Path::new("/host/src.txt"));
+                assert!(before.is_none());
+                assert!(matches!(after, Content::Bytes(b) if b == b"hello"));
             }
             other => panic!("expected Write{{Path}}, got {other:?}"),
         }
@@ -788,5 +1030,103 @@ mod tests {
             }
             other => panic!("expected CreateSymlink, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn content_redacts_with_stable_hash() {
+        let bytes = b"the password is hunter2";
+        let redacted = Content::redacted(bytes);
+        match redacted {
+            Content::Redacted { len, sha256 } => {
+                assert_eq!(len, bytes.len());
+                assert_eq!(sha256.len(), 64);
+                // Identical bytes hash identically.
+                let again = Content::redacted(bytes);
+                match again {
+                    Content::Redacted { sha256: again, .. } => assert_eq!(again, sha256),
+                    _ => unreachable!(),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn content_bytes_round_trip_through_base64() {
+        let original = Content::Bytes(vec![0, 1, 2, 0xff, 0xfe]);
+        let json = serde_json::to_string(&original).unwrap();
+        // Encoded as base64 string, not a JSON array.
+        assert!(json.contains('"'), "expected base64 string, got {json}");
+        let back: Content = serde_json::from_str(&json).unwrap();
+        assert_eq!(original, back);
+    }
+
+    #[test]
+    fn wire_payload_redacts_plaintext_for_secret_state() {
+        // FileState carrying a redacted Content must not include the
+        // plaintext anywhere in its JSON representation - the whole point
+        // of redaction is that operator terminal scrollback never sees it.
+        let plaintext = "the-password-is-hunter2";
+        let not_sourced = FileState::NotSourced {
+            current: Some(Content::redacted(plaintext.as_bytes())),
+            desired: Content::redacted(plaintext.as_bytes()),
+        };
+        let json = serde_json::to_string(&not_sourced).unwrap();
+        assert!(
+            !json.contains(plaintext),
+            "plaintext leaked into NotSourced wire payload: {json}"
+        );
+
+        let sourced = FileState::Sourced {
+            content: Content::redacted(plaintext.as_bytes()),
+        };
+        let json = serde_json::to_string(&sourced).unwrap();
+        assert!(
+            !json.contains(plaintext),
+            "plaintext leaked into Sourced wire payload: {json}"
+        );
+    }
+
+    #[test]
+    fn wire_payload_redacts_plaintext_for_secret_change() {
+        let plaintext = "topsecret-api-key-value";
+        let change = FileChange::Write {
+            path: FilePath::new("/etc/secret"),
+            source: FileSource::Secret("api-key".into()),
+            before: Some(Content::redacted(plaintext.as_bytes())),
+            after: Content::redacted(plaintext.as_bytes()),
+        };
+        let json = serde_json::to_string(&change).unwrap();
+        assert!(
+            !json.contains(plaintext),
+            "plaintext leaked into wire payload: {json}"
+        );
+    }
+
+    #[test]
+    fn is_secret_source_matches_prefix() {
+        let secrets_dir = Path::new("/proj/secrets");
+        assert!(is_secret_source(
+            &FilePath::new("/proj/secrets/api.txt"),
+            secrets_dir
+        ));
+        assert!(is_secret_source(
+            &FilePath::new("/proj/secrets/nested/api.txt"),
+            secrets_dir
+        ));
+        assert!(!is_secret_source(
+            &FilePath::new("/proj/other/api.txt"),
+            secrets_dir
+        ));
+        // Non-absolute secrets_dir short-circuits to false.
+        assert!(!is_secret_source(
+            &FilePath::new("/proj/secrets/api.txt"),
+            Path::new("relative/secrets"),
+        ));
     }
 }

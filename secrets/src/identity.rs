@@ -9,8 +9,13 @@
 //!   handed to [`age::ssh::Identity::from_buffer`].
 //!
 //! Passphrase-protected SSH keys are rejected up-front
-//! ([`IdentityError::EncryptedSsh`]): decrypting them would require prompting
-//! during `lusid-apply`, which is outside the v1 scope.
+//! ([`IdentityError::EncryptedSsh`]) because decrypting them would require
+//! prompting during `lusid-apply`.
+//!
+//! TODO(cc): support passphrase-protected SSH identities. Needs an
+//! interactive prompt path (or ssh-agent integration) wired through the
+//! secrets pipeline so the decryption credential can arrive after the
+//! apply process has started.
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -166,7 +171,7 @@ pub enum IdentityError {
         source: std::io::Error,
     },
 
-    /// SSH identity {path:?} is passphrase-protected; v1 does not support these
+    /// SSH identity {path:?} is passphrase-protected, which is not supported
     EncryptedSsh { path: Option<PathBuf> },
 
     /// SSH identity {path:?} uses an unsupported key type (supported: ed25519, rsa)

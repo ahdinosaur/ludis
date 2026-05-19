@@ -66,8 +66,15 @@ pub struct PlanItem {
 ///
 /// Shape mirrors [`PlanItem`] but is restricted: only `module` and `params`
 /// are accepted (and `module` must be `@operation/<id>`). Declaring `id`,
-/// `requires`, or `required_by` on an inline operation is rejected with a
-/// v1-specific error pointing to the offending field's span.
+/// `requires`, or `required_by` on an inline operation is rejected with an
+/// error pointing to the offending field's span.
+///
+/// TODO(cc): named, by-reference hooks. Today hooks are inline only, which
+/// rules out reuse (`on_change: ["reload-nginx"]`) and any per-hook id /
+/// requires / required_by. A fix needs a registry of named handlers
+/// resolved before causality runs, plus a relaxation of the rejections in
+/// `parse_inline_operation` for handler items whose module is a registered
+/// handler reference.
 #[derive(Debug, Clone)]
 pub struct InlineOperation {
     pub module: Spanned<String>,
@@ -101,7 +108,7 @@ pub enum IntoPlanItemError {
     OnChangeItemModuleMissing { item_span: Span },
     /// "on_change" item property "module" must be a string
     OnChangeItemModuleNotAString { item_span: Span },
-    /// "on_change" items cannot declare "id" - hooks are anonymous in v1 and cannot be referenced from elsewhere. If you need a named, reusable action, declare a separate `@resource/command` with an `is_installed` probe.
+    /// "on_change" items cannot declare "id" - hooks are anonymous and cannot be referenced from elsewhere. If you need a named, reusable action, declare a separate `@resource/command` with an `is_installed` probe.
     InlineOperationHasId { span: Span },
     /// "on_change" items cannot declare "requires" - handlers run after the resource they're attached to. To order one hook before another, combine them into a single shell operation, or attach the second hook to a downstream resource.
     InlineOperationHasRequires { span: Span },
@@ -237,7 +244,9 @@ fn parse_inline_operation(
         return Err(IntoPlanItemError::OnChangeItemNotAnObject { item_span });
     };
 
-    // Reject v1 disallowed fields with span pointing at the offending key's value.
+    // Reject disallowed fields with span pointing at the offending key's
+    // value. See `InlineOperation`'s TODO(cc) for the named-hooks fix that
+    // would lift these rejections.
     if let Some(sp) = object.swap_remove("id") {
         let (_, span) = sp.take();
         return Err(IntoPlanItemError::InlineOperationHasId { span });

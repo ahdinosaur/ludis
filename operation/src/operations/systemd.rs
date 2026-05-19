@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -11,7 +11,7 @@ use tracing::info;
 
 use crate::OperationType;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SystemdOperation {
     Enable { name: String, user: bool },
     Disable { name: String, user: bool },
@@ -35,8 +35,6 @@ impl Display for SystemdOperation {
         write!(f, "Systemd::{verb}({name}){scope}")
     }
 }
-
-impl_display_render!(SystemdOperation);
 
 impl ParseParams for SystemdOperation {
     fn parse_params(value: Spanned<Value>) -> Result<Self, Spanned<ParseError>> {

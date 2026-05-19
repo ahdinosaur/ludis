@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
-use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -17,7 +17,7 @@ use crate::OperationType;
 // re-using this exact command shape.
 const AUR_HELPER: &str = "paru";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AurOperation {
     Install { packages: Vec<String> },
 }
@@ -31,8 +31,6 @@ impl Display for AurOperation {
         }
     }
 }
-
-impl_display_render!(AurOperation);
 
 #[derive(Error, Debug)]
 pub enum AurApplyError {

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
-use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use std::{fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -11,7 +11,7 @@ use crate::OperationType;
 
 use crate::operations::file::FilePath;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserOperation {
     Add {
         name: String,
@@ -58,8 +58,6 @@ impl Display for UserOperation {
         }
     }
 }
-
-impl_display_render!(UserOperation);
 
 #[derive(Error, Debug)]
 pub enum UserApplyError {

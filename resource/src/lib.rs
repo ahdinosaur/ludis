@@ -2,7 +2,7 @@
 //! and the conventions for adding a new resource.
 
 use std::fmt::Display;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use crate::resources::*;
 
@@ -12,8 +12,8 @@ use lusid_ctx::Context;
 use lusid_fs::FsError;
 use lusid_operation::{Operation, operations::file::FilePath};
 use lusid_params::ParseParams;
-use lusid_view::Render;
 use rimu::Span;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod resources;
@@ -47,6 +47,35 @@ use crate::resources::systemd::{
 };
 use crate::resources::user::{User, UserChange, UserParams, UserResource, UserState};
 
+/// Coarse classification of a [`ResourceChange`], used by the apply pipeline
+/// to size the per-epoch confirm prompt and label each pending change with one
+/// of three buckets. Finer-grained intent (e.g. the specific change variant)
+/// stays on the structured change itself; this is only the headline.
+///
+/// - [`Added`](Self::Added) - the change introduces new state on the target
+///   (install a package, create a file/symlink/dir/user/group).
+/// - [`Removed`](Self::Removed) - the change deletes existing state.
+/// - [`Modified`](Self::Modified) - everything else (writes-over-existing,
+///   mode/owner adjustments, vcs updates, service config tweaks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChangeKind {
+    Added,
+    Removed,
+    Modified,
+}
+
+/// Classify a resource's change value into the coarse [`ChangeKind`] bucket
+/// shown in the confirm prompt summary.
+///
+/// Each resource module implements this on its own `*Change` type so the
+/// add/remove/modify mapping lives next to the variants themselves - adding a
+/// new variant cannot silently drift from the apply-time UI because the
+/// match is local. The [`ResourceChange`] dispatcher implements this too, by
+/// delegating to whichever per-resource variant it carries.
+pub trait ResourceChangeTrait {
+    fn kind(&self) -> ChangeKind;
+}
+
 /// The full pipeline for a single resource type.
 ///
 /// Implementors are zero-sized marker types (e.g. `Apt`, `File`); all the real data lives
@@ -62,18 +91,18 @@ pub trait ResourceType {
     /// via [`ParseParams`]. Each variant of the struct/enum corresponds to an
     /// allowed shape - the parser does shape validation and typed extraction
     /// in one pass.
-    type Params: Render + ParseParams;
+    type Params: ParseParams;
 
     /// Indivisible unit of managed state. One `Params` may produce many atoms (e.g. one
     /// per package in a packages list).
-    type Resource: Render;
+    type Resource;
 
     /// Expand params into one or more resource atoms, organised as a causality tree so
     /// intra-resource ordering (e.g. "chmod after write") can be declared via meta ids.
     fn resources(params: Self::Params) -> Vec<CausalityTree<Self::Resource>>;
 
     /// Observed state of a single atom on the target machine.
-    type State: Render;
+    type State;
 
     /// Failures that can occur while observing state (command exec, parse errors, etc.).
     type StateError;
@@ -85,7 +114,7 @@ pub trait ResourceType {
     ) -> Result<Self::State, Self::StateError>;
 
     /// The delta from `State` to the desired `Resource`.
-    type Change: Render;
+    type Change: ResourceChangeTrait;
 
     /// Compute the change needed to reach `resource` from `state`. `None` means no-op.
     fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change>;
@@ -104,7 +133,7 @@ pub trait ResourceType {
 /// produces are ordinary `Resource::File` atoms. The provenance ("this
 /// file was written for a @resource/secret plan item") is preserved only at
 /// this `ResourceParams` layer.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResourceParams {
     Apt(AptParams),
     AptRepo(AptRepoParams),
@@ -146,30 +175,7 @@ impl Display for ResourceParams {
     }
 }
 
-impl Render for ResourceParams {
-    fn render(&self) -> lusid_view::View {
-        use ResourceParams::*;
-        match self {
-            Apt(params) => params.render(),
-            AptRepo(params) => params.render(),
-            Aur(params) => params.render(),
-            File(params) => params.render(),
-            Directory(params) => params.render(),
-            Flatpak(params) => params.render(),
-            FlatpakRemote(params) => params.render(),
-            Pacman(params) => params.render(),
-            Podman(params) => params.render(),
-            Command(params) => params.render(),
-            Git(params) => params.render(),
-            Secret(params) => params.render(),
-            Systemd(params) => params.render(),
-            User(params) => params.render(),
-            Group(params) => params.render(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Resource {
     Apt(AptResource),
     AptRepo(AptRepoResource),
@@ -209,33 +215,11 @@ impl Display for Resource {
     }
 }
 
-impl Render for Resource {
-    fn render(&self) -> lusid_view::View {
-        use Resource::*;
-        match self {
-            Apt(params) => params.render(),
-            AptRepo(params) => params.render(),
-            Aur(params) => params.render(),
-            File(params) => params.render(),
-            Directory(params) => params.render(),
-            Flatpak(params) => params.render(),
-            FlatpakRemote(params) => params.render(),
-            Pacman(params) => params.render(),
-            Podman(params) => params.render(),
-            Command(params) => params.render(),
-            Git(params) => params.render(),
-            Systemd(params) => params.render(),
-            User(params) => params.render(),
-            Group(params) => params.render(),
-        }
-    }
-}
-
 /// Dispatcher over every resource's observed `State`.
 ///
 /// Invariant: the variant always matches the originating `Resource` variant - see
 /// [`Resource::change`] for the enforcement point.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResourceState {
     Apt(AptState),
     AptRepo(AptRepoState),
@@ -271,28 +255,6 @@ impl Display for ResourceState {
             Systemd(systemd) => systemd.fmt(f),
             User(user) => user.fmt(f),
             Group(group) => group.fmt(f),
-        }
-    }
-}
-
-impl Render for ResourceState {
-    fn render(&self) -> lusid_view::View {
-        use ResourceState::*;
-        match self {
-            Apt(params) => params.render(),
-            AptRepo(params) => params.render(),
-            Aur(params) => params.render(),
-            File(params) => params.render(),
-            Directory(params) => params.render(),
-            Flatpak(params) => params.render(),
-            FlatpakRemote(params) => params.render(),
-            Pacman(params) => params.render(),
-            Podman(params) => params.render(),
-            Command(params) => params.render(),
-            Git(params) => params.render(),
-            Systemd(params) => params.render(),
-            User(params) => params.render(),
-            Group(params) => params.render(),
         }
     }
 }
@@ -344,7 +306,7 @@ pub enum ResourceStateError {
     Group(#[from] <Group as ResourceType>::StateError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResourceChange {
     Apt(AptChange),
     AptRepo(AptRepoChange),
@@ -384,24 +346,24 @@ impl Display for ResourceChange {
     }
 }
 
-impl Render for ResourceChange {
-    fn render(&self) -> lusid_view::View {
+impl ResourceChangeTrait for ResourceChange {
+    fn kind(&self) -> ChangeKind {
         use ResourceChange::*;
         match self {
-            Apt(params) => params.render(),
-            AptRepo(params) => params.render(),
-            Aur(params) => params.render(),
-            File(params) => params.render(),
-            Directory(params) => params.render(),
-            Flatpak(params) => params.render(),
-            FlatpakRemote(params) => params.render(),
-            Pacman(params) => params.render(),
-            Podman(params) => params.render(),
-            Command(params) => params.render(),
-            Git(params) => params.render(),
-            Systemd(params) => params.render(),
-            User(params) => params.render(),
-            Group(params) => params.render(),
+            Apt(c) => c.kind(),
+            AptRepo(c) => c.kind(),
+            Aur(c) => c.kind(),
+            File(c) => c.kind(),
+            Directory(c) => c.kind(),
+            Flatpak(c) => c.kind(),
+            FlatpakRemote(c) => c.kind(),
+            Pacman(c) => c.kind(),
+            Podman(c) => c.kind(),
+            Command(c) => c.kind(),
+            Git(c) => c.kind(),
+            Systemd(c) => c.kind(),
+            User(c) => c.kind(),
+            Group(c) => c.kind(),
         }
     }
 }
@@ -409,7 +371,12 @@ impl Render for ResourceChange {
 impl ResourceParams {
     /// Expand params into resource atoms and lift each per-type tree into the
     /// top-level [`Resource`] dispatcher.
-    pub fn resources(self) -> Vec<CausalityTree<Resource>> {
+    ///
+    /// `secrets_dir` is consulted when expanding `@resource/file` so any
+    /// `FileResource::Sourced` atom whose source lies under that directory
+    /// is tagged `is_secret`. Downstream `state`/`change` honour the tag by
+    /// shipping [`file::Content::Redacted`] rather than raw bytes.
+    pub fn resources(self, secrets_dir: &Path) -> Vec<CausalityTree<Resource>> {
         fn typed<R: ResourceType>(
             params: R::Params,
             map: impl Fn(R::Resource) -> Resource + Copy,
@@ -424,7 +391,10 @@ impl ResourceParams {
             ResourceParams::Apt(params) => typed::<Apt>(params, Resource::Apt),
             ResourceParams::AptRepo(params) => typed::<AptRepo>(params, Resource::AptRepo),
             ResourceParams::Aur(params) => typed::<Aur>(params, Resource::Aur),
-            ResourceParams::File(params) => typed::<File>(params, Resource::File),
+            ResourceParams::File(params) => typed::<File>(params, Resource::File)
+                .into_iter()
+                .map(|tree| tree.map(|r| mark_file_secret_source(r, secrets_dir)))
+                .collect(),
             ResourceParams::Directory(params) => typed::<Directory>(params, Resource::Directory),
             ResourceParams::Flatpak(params) => typed::<Flatpak>(params, Resource::Flatpak),
             ResourceParams::FlatpakRemote(params) => {
@@ -434,11 +404,31 @@ impl ResourceParams {
             ResourceParams::Podman(params) => typed::<Podman>(params, Resource::Podman),
             ResourceParams::Command(params) => typed::<Command>(params, Resource::Command),
             ResourceParams::Git(params) => typed::<Git>(params, Resource::Git),
+            // `@resource/secret` lowers to `FileResource::Secret`, which is
+            // always redacted in `state`; the path-based `is_secret` flag is
+            // not consulted for that variant.
             ResourceParams::Secret(params) => typed::<Secret>(params, Resource::File),
             ResourceParams::Systemd(params) => typed::<Systemd>(params, Resource::Systemd),
             ResourceParams::User(params) => typed::<User>(params, Resource::User),
             ResourceParams::Group(params) => typed::<Group>(params, Resource::Group),
         }
+    }
+}
+
+/// Stamp `is_secret` on `FileResource::Sourced` atoms whose `source` lives
+/// under `secrets_dir`. Other resource variants pass through untouched.
+fn mark_file_secret_source(resource: Resource, secrets_dir: &Path) -> Resource {
+    match resource {
+        Resource::File(file::FileResource::Sourced {
+            source,
+            path,
+            is_secret: _,
+        }) => Resource::File(file::FileResource::Sourced {
+            is_secret: file::is_secret_source(&source, secrets_dir),
+            source,
+            path,
+        }),
+        other => other,
     }
 }
 
@@ -612,6 +602,28 @@ impl Resource {
                 typed::<Group>(resource, state, ResourceChange::Group)
             }
             _ => panic!("Unmatched resource and state"),
+        }
+    }
+
+    /// Stable lowercase identifier for the resource family. Used by the TUI's
+    /// branch detail pane to label resources without leaking the operator's
+    /// view to renderer-side formatting choices.
+    pub fn family_name(&self) -> &'static str {
+        match self {
+            Resource::Apt(_) => "apt",
+            Resource::AptRepo(_) => "apt_repo",
+            Resource::Aur(_) => "aur",
+            Resource::File(_) => "file",
+            Resource::Directory(_) => "directory",
+            Resource::Flatpak(_) => "flatpak",
+            Resource::FlatpakRemote(_) => "flatpak_remote",
+            Resource::Pacman(_) => "pacman",
+            Resource::Podman(_) => "podman",
+            Resource::Command(_) => "command",
+            Resource::Git(_) => "git",
+            Resource::Systemd(_) => "systemd",
+            Resource::User(_) => "user",
+            Resource::Group(_) => "group",
         }
     }
 }
@@ -1080,5 +1092,201 @@ mod tests {
             err,
             HostPathValidationError::DirectorySourceMissing { .. }
         ));
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use crate::resources::file::FileResource;
+    use lusid_operation::operations::file::FilePath;
+    use rimu::SourceId;
+
+    fn empty_span() -> Span {
+        Span::new(SourceId::empty(), 0, 0)
+    }
+
+    #[test]
+    fn resources_tag_is_secret_when_source_under_secrets_dir() {
+        let params = ResourceParams::File(FileParams::Sourced {
+            source: FilePath::new("/proj/secrets/api.txt"),
+            source_span: empty_span(),
+            path: FilePath::new("/target/dest.txt"),
+            mode: None,
+            user: None,
+            group: None,
+        });
+        let trees = params.resources(Path::new("/proj/secrets"));
+        // Walk the first tree's leaves; the leading atom is `Sourced`.
+        let leaf = collect_first_leaf(&trees[0]).expect("at least one leaf");
+        match leaf {
+            Resource::File(FileResource::Sourced { is_secret, .. }) => {
+                assert!(*is_secret, "source under secrets_dir should mark is_secret");
+            }
+            other => panic!("expected File::Sourced, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resources_leaves_is_secret_false_when_source_outside_secrets_dir() {
+        let params = ResourceParams::File(FileParams::Sourced {
+            source: FilePath::new("/proj/files/app.conf"),
+            source_span: empty_span(),
+            path: FilePath::new("/target/app.conf"),
+            mode: None,
+            user: None,
+            group: None,
+        });
+        let trees = params.resources(Path::new("/proj/secrets"));
+        let leaf = collect_first_leaf(&trees[0]).expect("at least one leaf");
+        match leaf {
+            Resource::File(FileResource::Sourced { is_secret, .. }) => {
+                assert!(
+                    !is_secret,
+                    "source outside secrets_dir should leave is_secret false"
+                );
+            }
+            other => panic!("expected File::Sourced, got {other:?}"),
+        }
+    }
+
+    fn collect_first_leaf(tree: &CausalityTree<Resource>) -> Option<&Resource> {
+        use lusid_tree::Tree;
+        match tree {
+            Tree::Leaf { node, .. } => Some(node),
+            Tree::Branch { children, .. } => children.iter().find_map(collect_first_leaf),
+        }
+    }
+
+    /// Walk every `Resource` variant and confirm [`Resource::family_name`]
+    /// returns the documented lowercase identifier. The match in
+    /// `family_name` is exhaustive on the enum, so when a new variant is
+    /// added this test forces the author to extend the mapping too.
+    #[test]
+    fn family_name_covers_every_resource_variant() {
+        use crate::resources::{
+            apt::AptResource,
+            apt_repo::AptRepoResource,
+            aur::AurResource,
+            command::{CommandResource, CommandStatus},
+            directory::DirectoryResource,
+            file::FileResource,
+            flatpak::FlatpakResource,
+            flatpak_remote::FlatpakRemoteResource,
+            git::GitResource,
+            group::GroupResource,
+            pacman::PacmanResource,
+            podman::PodmanResource,
+            systemd::SystemdResource,
+            user::UserResource,
+        };
+
+        let cases: Vec<(Resource, &'static str)> = vec![
+            (
+                Resource::Apt(AptResource {
+                    package: "nginx".into(),
+                }),
+                "apt",
+            ),
+            (
+                Resource::AptRepo(AptRepoResource {
+                    name: "nginx".into(),
+                    sources_path: FilePath::new("/etc/apt/sources.list.d/nginx.list"),
+                    sources_content: "deb https://example".into(),
+                    key_url: "https://example/key.gpg".into(),
+                    key_path: FilePath::new("/etc/apt/keyrings/nginx.gpg"),
+                }),
+                "apt_repo",
+            ),
+            (
+                Resource::Aur(AurResource {
+                    package: "yay".into(),
+                }),
+                "aur",
+            ),
+            (
+                Resource::File(FileResource::Linked {
+                    source: FilePath::new("/src"),
+                    path: FilePath::new("/dst"),
+                }),
+                "file",
+            ),
+            (
+                Resource::Directory(DirectoryResource::Present {
+                    path: FilePath::new("/dir"),
+                }),
+                "directory",
+            ),
+            (
+                Resource::Flatpak(FlatpakResource::Absent {
+                    name: "app".into(),
+                    user: false,
+                    delete_data: false,
+                }),
+                "flatpak",
+            ),
+            (
+                Resource::FlatpakRemote(FlatpakRemoteResource::Absent {
+                    name: "flathub".into(),
+                    user: false,
+                }),
+                "flatpak_remote",
+            ),
+            (
+                Resource::Pacman(PacmanResource {
+                    package: "zsh".into(),
+                }),
+                "pacman",
+            ),
+            (
+                Resource::Podman(PodmanResource::Absent { name: "ctr".into() }),
+                "podman",
+            ),
+            (
+                Resource::Command(CommandResource {
+                    status: CommandStatus::Install,
+                    is_installed: None,
+                    install: None,
+                    uninstall: None,
+                }),
+                "command",
+            ),
+            (
+                Resource::Git(GitResource {
+                    repo: "https://example/r.git".into(),
+                    path: FilePath::new("/repo"),
+                    version: None,
+                    update: false,
+                    force: false,
+                }),
+                "git",
+            ),
+            (
+                Resource::Systemd(SystemdResource {
+                    name: "nginx".into(),
+                    enabled: true,
+                    active: true,
+                    user: false,
+                }),
+                "systemd",
+            ),
+            (
+                Resource::User(UserResource::Absent {
+                    name: "alice".into(),
+                    remove_home: false,
+                }),
+                "user",
+            ),
+            (
+                Resource::Group(GroupResource::Absent {
+                    name: "wheel".into(),
+                }),
+                "group",
+            ),
+        ];
+
+        for (resource, expected) in cases {
+            assert_eq!(resource.family_name(), expected, "for {resource:?}");
+        }
     }
 }

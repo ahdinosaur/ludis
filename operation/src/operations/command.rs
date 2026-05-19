@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use lusid_cmd::{Command as RunCommand, CommandError as RunCommandError};
 use lusid_ctx::Context;
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fmt::Display, pin::Pin, str::FromStr};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -11,13 +11,14 @@ use tracing::info;
 
 use crate::OperationType;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CommandExecutor {
     Direct,
     Shell,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CommandOperation {
     pub command: String,
     pub executor: CommandExecutor,
@@ -66,8 +67,6 @@ impl Display for CommandOperation {
         write!(f, "Command({command})")
     }
 }
-
-impl_display_render!(CommandOperation);
 
 #[derive(Error, Debug)]
 pub enum CommandApplyError {

@@ -32,9 +32,9 @@ Operations *cannot* be top-level items in `setup`. Putting one there is a hard e
 
 If you want an idempotent imperative action at the top level - e.g. a shell command that's a no-op once a marker file exists - use `@resource/command` instead.
 
-## Built-in operation types (v1)
+## Built-in operation types
 
-Two operation modules are exposed in v1:
+Two operation modules are currently exposed:
 
 | Type | Purpose |
 | --- | --- |

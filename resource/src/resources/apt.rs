@@ -6,13 +6,13 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::apt::AptOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptParams {
     Package { package: String },
     Packages { packages: Vec<String> },
@@ -48,9 +48,7 @@ impl Display for AptParams {
     }
 }
 
-impl_display_render!(AptParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AptResource {
     pub package: String,
 }
@@ -62,9 +60,7 @@ impl Display for AptResource {
     }
 }
 
-impl_display_render!(AptResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptState {
     NotInstalled,
     Installed,
@@ -79,8 +75,6 @@ impl Display for AptState {
     }
 }
 
-impl_display_render!(AptState);
-
 #[derive(Error, Debug)]
 pub enum AptStateError {
     #[error(transparent)]
@@ -92,7 +86,7 @@ pub enum AptStateError {
 
 // TODO(cc): add an `Uninstall` variant. Today a package can be declared but not
 // retracted - removing it from the plan leaves it installed on the machine.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptChange {
     Install { package: String },
 }
@@ -105,7 +99,13 @@ impl Display for AptChange {
     }
 }
 
-impl_display_render!(AptChange);
+impl ResourceChangeTrait for AptChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            AptChange::Install { .. } => ChangeKind::Added,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Apt;

@@ -9,11 +9,11 @@ use lusid_operation::{
     operations::{file::FilePath, user::UserOperation},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Plan-level parameters for the `@resource/user` resource.
 ///
@@ -22,7 +22,7 @@ use crate::ResourceType;
 // TODO(cc): add password (hashed), lock/unlock (`usermod -L`/`-U`), and account
 // expiry (`chage` / `usermod --expiredate`) support. Salt and Ansible both expose
 // these.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserParams {
     Present {
         name: String,
@@ -87,9 +87,7 @@ impl Display for UserParams {
     }
 }
 
-impl_display_render!(UserParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserResource {
     Present {
         name: String,
@@ -122,9 +120,7 @@ impl Display for UserResource {
     }
 }
 
-impl_display_render!(UserResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserState {
     Absent,
     Present {
@@ -155,8 +151,6 @@ impl Display for UserState {
     }
 }
 
-impl_display_render!(UserState);
-
 #[derive(Error, Debug)]
 pub enum UserStateError {
     #[error(transparent)]
@@ -183,7 +177,7 @@ pub enum UserStateError {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UserChange {
     Create {
         name: String,
@@ -232,7 +226,15 @@ impl Display for UserChange {
     }
 }
 
-impl_display_render!(UserChange);
+impl ResourceChangeTrait for UserChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            UserChange::Create { .. } => ChangeKind::Added,
+            UserChange::Modify { .. } => ChangeKind::Modified,
+            UserChange::Delete { .. } => ChangeKind::Removed,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct User;

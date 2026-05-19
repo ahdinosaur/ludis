@@ -37,7 +37,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::config::{Config, ConfigError, MachineConfig};
 use crate::embedded::EmbeddedError;
-use crate::tui::{TuiError, tui};
+use crate::tui::{TuiError, is_tty_stdout, plain, tui};
 
 /// Parsed CLI. The `lusid-apply` worker is baked into this binary at build
 /// time for each supported target arch (see [`crate::embedded`] /
@@ -64,6 +64,12 @@ pub struct Cli {
     /// `secrets ls`, `secrets check`, and `secrets keygen`.
     #[arg(long = "identity", env = "LUSID_IDENTITY", global = true)]
     pub identity: Option<PathBuf>,
+
+    /// Skip the ratatui TUI even when stdout is a terminal. Emits a line-
+    /// buffered digest to stderr instead. Always implied when stdout is not
+    /// a terminal (CI, pipes, redirects).
+    #[arg(long = "no-tui", env = "LUSID_NO_TUI", global = true)]
+    pub no_tui: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -103,12 +109,31 @@ pub enum MachinesCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum LocalCmd {
-    Apply,
+    Apply {
+        /// Skip the per-epoch confirm prompt; auto-accept every epoch.
+        /// Required in non-TTY environments (CI, pipes, --no-tui) since the
+        /// prompt has nowhere to display.
+        #[arg(long = "yes", short = 'y')]
+        yes: bool,
+    },
+    #[doc = " Parse + validate the plan without probing or mutating state"]
+    Parse,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum RemoteCmd {
     Apply {
+        #[doc = " Machine identifier"]
+        #[arg(long = "machine")]
+        machine_id: String,
+        /// Skip the per-epoch confirm prompt; auto-accept every epoch.
+        /// Required in non-TTY environments (CI, pipes, --no-tui) since the
+        /// prompt has nowhere to display.
+        #[arg(long = "yes", short = 'y')]
+        yes: bool,
+    },
+    #[doc = " Parse + validate the plan on the target without probing or mutating state"]
+    Parse {
         #[doc = " Machine identifier"]
         #[arg(long = "machine")]
         machine_id: String,
@@ -122,6 +147,17 @@ pub enum RemoteCmd {
 #[derive(Subcommand, Debug)]
 pub enum DevCmd {
     Apply {
+        #[doc = " Machine identifier"]
+        #[arg(long = "machine")]
+        machine_id: String,
+        /// Skip the per-epoch confirm prompt; auto-accept every epoch.
+        /// Required in non-TTY environments (CI, pipes, --no-tui) since the
+        /// prompt has nowhere to display.
+        #[arg(long = "yes", short = 'y')]
+        yes: bool,
+    },
+    #[doc = " Parse + validate the plan in the dev VM without probing or mutating state"]
+    Parse {
         #[doc = " Machine identifier"]
         #[arg(long = "machine")]
         machine_id: String,
@@ -208,7 +244,7 @@ pub enum AppError {
 
     #[error(
         "operator SSH private key at {} is passphrase-protected, which is \
-         unsupported in v1; decrypt with `ssh-keygen -p -f <path>` or use an \
+         not supported; decrypt with `ssh-keygen -p -f <path>` or use an \
          unencrypted key",
         path.display()
     )]
@@ -219,6 +255,12 @@ pub enum AppError {
 
     #[error("failed to install lusid-apply on target (sudo -n exit {exit:?}): {stderr}")]
     InstallApplyBinary { exit: Option<u32>, stderr: String },
+
+    #[error(
+        "interactive confirmation requires a TTY; pass --yes / -y to auto-accept \
+         every epoch, or run from a terminal without --no-tui"
+    )]
+    NeedsYesForNonTty,
 }
 
 /// Resolve the config path (CLI flag → `LUSID_CONFIG` env → CWD → `.`) and
@@ -238,22 +280,76 @@ pub async fn get_config(cli: &Cli) -> Result<Config, AppError> {
 pub async fn run(cli: Cli, config: Config) -> Result<(), AppError> {
     let secrets_dir = resolve_secrets_dir(&cli, &config);
     let identity_path = cli.identity.clone();
+    // Pick the renderer once at dispatch time: TUI only when the operator
+    // didn't opt out AND stdout is a real terminal. Both checks live here so
+    // a non-TTY pipe never accidentally writes ratatui escape sequences.
+    let use_tui = !cli.no_tui && is_tty_stdout();
     match cli.command {
         Cmd::Machines { command } => match command {
             MachinesCmd::List => cmd_machines_list(config).await,
         },
         Cmd::Local { command } => match command {
-            LocalCmd::Apply => cmd_local_apply(config, secrets_dir, identity_path).await,
+            LocalCmd::Apply { yes } => {
+                require_yes_when_non_tui(use_tui, yes)?;
+                cmd_local_apply(config, secrets_dir, identity_path, false, use_tui, yes).await
+            }
+            LocalCmd::Parse => {
+                cmd_local_apply(config, secrets_dir, identity_path, true, use_tui, true).await
+            }
         },
         Cmd::Remote { command } => match command {
-            RemoteCmd::Apply { machine_id } => {
-                cmd_remote_apply(config, machine_id, secrets_dir, identity_path).await
+            RemoteCmd::Apply { machine_id, yes } => {
+                require_yes_when_non_tui(use_tui, yes)?;
+                cmd_remote_apply(
+                    config,
+                    machine_id,
+                    secrets_dir,
+                    identity_path,
+                    false,
+                    use_tui,
+                    yes,
+                )
+                .await
+            }
+            RemoteCmd::Parse { machine_id } => {
+                cmd_remote_apply(
+                    config,
+                    machine_id,
+                    secrets_dir,
+                    identity_path,
+                    true,
+                    use_tui,
+                    true,
+                )
+                .await
             }
             RemoteCmd::Ssh { machine_id } => cmd_remote_ssh(config, machine_id).await,
         },
         Cmd::Dev { command } => match command {
-            DevCmd::Apply { machine_id } => {
-                cmd_dev_apply(config, machine_id, secrets_dir, identity_path).await
+            DevCmd::Apply { machine_id, yes } => {
+                require_yes_when_non_tui(use_tui, yes)?;
+                cmd_dev_apply(
+                    config,
+                    machine_id,
+                    secrets_dir,
+                    identity_path,
+                    false,
+                    use_tui,
+                    yes,
+                )
+                .await
+            }
+            DevCmd::Parse { machine_id } => {
+                cmd_dev_apply(
+                    config,
+                    machine_id,
+                    secrets_dir,
+                    identity_path,
+                    true,
+                    use_tui,
+                    true,
+                )
+                .await
             }
             DevCmd::Ssh { machine_id } => cmd_dev_ssh(config, machine_id).await,
         },
@@ -267,6 +363,18 @@ fn resolve_secrets_dir(cli: &Cli, config: &Config) -> PathBuf {
     cli.secrets_dir
         .clone()
         .unwrap_or_else(|| config.root().join("secrets"))
+}
+
+/// Refuse to start an apply that would block on a per-epoch confirm we
+/// cannot display: plain-log mode and CI pipes have no interactive prompt.
+/// The operator must either run in a real terminal or pass `--yes` to
+/// auto-accept. Parse mode never prompts, so it never calls this.
+fn require_yes_when_non_tui(use_tui: bool, yes: bool) -> Result<(), AppError> {
+    if !use_tui && !yes {
+        Err(AppError::NeedsYesForNonTty)
+    } else {
+        Ok(())
+    }
 }
 
 async fn cmd_machines_list(config: Config) -> Result<(), AppError> {
@@ -291,6 +399,9 @@ async fn cmd_local_apply(
     config: Config,
     secrets_dir: PathBuf,
     identity_path: Option<PathBuf>,
+    parse_only: bool,
+    use_tui: bool,
+    yes: bool,
 ) -> Result<(), AppError> {
     let MachineConfig { plan, params, .. } = config.local_machine()?;
 
@@ -307,6 +418,13 @@ async fn cmd_local_apply(
         command.args(["--identity", &identity_path.to_string_lossy()]);
     }
 
+    if parse_only {
+        command.arg("--parse-only");
+    }
+    if yes {
+        command.arg("--yes");
+    }
+
     if let Some(params) = params {
         let params_json = serde_json::to_string(&params)?;
         command.args(["--params", &params_json]);
@@ -318,7 +436,16 @@ async fn cmd_local_apply(
         output.status.await?;
         Ok::<_, CommandError>(())
     });
-    tui(output.stdout, output.stderr, wait).await?;
+    let subcommand = if parse_only {
+        "local parse"
+    } else {
+        "local apply"
+    };
+    if use_tui {
+        tui(subcommand, output.stdin, output.stdout, output.stderr, wait).await?;
+    } else {
+        plain(output.stdin, output.stdout, output.stderr, wait).await?;
+    }
 
     Ok(())
 }
@@ -341,6 +468,9 @@ async fn cmd_remote_apply(
     machine_id: String,
     secrets_dir: PathBuf,
     identity_path: Option<PathBuf>,
+    parse_only: bool,
+    use_tui: bool,
+    yes: bool,
 ) -> Result<(), AppError> {
     let MachineConfig {
         plan,
@@ -481,6 +611,12 @@ async fn cmd_remote_apply(
             shell_words::quote(&guest_secrets_dir),
         ));
     }
+    if parse_only {
+        command.push_str(" --parse-only");
+    }
+    if yes {
+        command.push_str(" --yes");
+    }
     if let Some(params) = params {
         let params_json = serde_json::to_string(&params)?;
         command.push_str(&format!(" --params {}", shell_words::quote(&params_json)));
@@ -489,16 +625,35 @@ async fn cmd_remote_apply(
         command = format!("sudo -n {command}");
     }
 
-    // 7. Stream apply output through the TUI. Mirror cmd_dev_apply's
-    //    pattern: the `async move { handle.channel.wait()... }` future
-    //    field-captures `handle.channel`, leaving `handle.stdout`/
-    //    `handle.stderr` borrowable in the surrounding scope.
+    // 7. Stream apply output through the TUI. The `async move {
+    //    handle.channel.wait()... }` future field-captures
+    //    `handle.channel`, leaving `handle.stdout`/`handle.stderr`
+    //    borrowable in the surrounding scope. `stdin` is grabbed before
+    //    that move so the renderer keeps a writer for confirm acks
+    //    while the wait future owns the channel.
     let mut handle = ssh.command(&command).await?;
+    let stdin = Box::pin(handle.channel.stdin());
     let wait = Box::pin(async move {
         handle.channel.wait().await?;
         Ok::<_, SshError>(())
     });
-    let apply_result = tui(&mut handle.stdout, &mut handle.stderr, wait).await;
+    let subcommand = if parse_only {
+        "remote parse"
+    } else {
+        "remote apply"
+    };
+    let apply_result = if use_tui {
+        tui(
+            subcommand,
+            stdin,
+            &mut handle.stdout,
+            &mut handle.stderr,
+            wait,
+        )
+        .await
+    } else {
+        plain(stdin, &mut handle.stdout, &mut handle.stderr, wait).await
+    };
 
     // 8. Best-effort post-cleanup. Never shadows apply_result.
     if forward_secrets
@@ -784,6 +939,9 @@ async fn cmd_dev_apply(
     machine_id: String,
     secrets_dir: PathBuf,
     identity_path: Option<PathBuf>,
+    parse_only: bool,
+    use_tui: bool,
+    yes: bool,
 ) -> Result<(), AppError> {
     let MachineConfig {
         plan,
@@ -900,6 +1058,12 @@ async fn cmd_dev_apply(
             " --guest-mode --identity {guest_identity_path} --secrets-dir {guest_secrets_dir}"
         ));
     }
+    if parse_only {
+        command.push_str(" --parse-only");
+    }
+    if yes {
+        command.push_str(" --yes");
+    }
     if let Some(params) = params {
         let params_json = serde_json::to_string(&params)?;
         // `shell_words::quote` correctly POSIX-escapes embedded single quotes;
@@ -912,12 +1076,25 @@ async fn cmd_dev_apply(
     }
 
     let mut handle = ssh.command(&command).await?;
+    let stdin = Box::pin(handle.channel.stdin());
     let wait = Box::pin(async move {
         handle.channel.wait().await?;
         Ok::<_, SshError>(())
     });
 
-    tui(&mut handle.stdout, &mut handle.stderr, wait).await?;
+    let subcommand = if parse_only { "dev parse" } else { "dev apply" };
+    if use_tui {
+        tui(
+            subcommand,
+            stdin,
+            &mut handle.stdout,
+            &mut handle.stderr,
+            wait,
+        )
+        .await?;
+    } else {
+        plain(stdin, &mut handle.stdout, &mut handle.stderr, wait).await?;
+    }
 
     if let Err(err) = ssh.disconnect().await {
         tracing::debug!(?err, "ssh disconnect failed");
@@ -1063,5 +1240,21 @@ mod tests {
             expand_tilde(Path::new("~bob/.ssh/k"), Some(home)),
             PathBuf::from("~bob/.ssh/k")
         );
+    }
+
+    #[test]
+    fn require_yes_when_non_tui_only_blocks_the_no_tty_no_yes_case() {
+        // TUI is selected: yes is irrelevant, the prompt has a place to
+        // render.
+        assert!(require_yes_when_non_tui(true, false).is_ok());
+        assert!(require_yes_when_non_tui(true, true).is_ok());
+        // Plain mode + --yes: prompts get auto-acked, no interaction needed.
+        assert!(require_yes_when_non_tui(false, true).is_ok());
+        // Plain mode without --yes is the one case we refuse: there's
+        // nowhere to display the prompt and stdin isn't a user.
+        assert!(matches!(
+            require_yes_when_non_tui(false, false),
+            Err(AppError::NeedsYesForNonTty)
+        ));
     }
 }

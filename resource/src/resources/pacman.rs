@@ -6,13 +6,13 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::pacman::PacmanOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PacmanParams {
     Package { package: String },
     Packages { packages: Vec<String> },
@@ -46,9 +46,7 @@ impl Display for PacmanParams {
     }
 }
 
-impl_display_render!(PacmanParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PacmanResource {
     pub package: String,
 }
@@ -60,9 +58,7 @@ impl Display for PacmanResource {
     }
 }
 
-impl_display_render!(PacmanResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PacmanState {
     NotInstalled,
     Installed,
@@ -77,8 +73,6 @@ impl Display for PacmanState {
     }
 }
 
-impl_display_render!(PacmanState);
-
 #[derive(Error, Debug)]
 pub enum PacmanStateError {
     #[error(transparent)]
@@ -90,7 +84,7 @@ pub enum PacmanStateError {
 
 // TODO(cc): add an `Uninstall` variant - mirror image of the apt resource. A declared
 // package cannot currently be retracted.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PacmanChange {
     Install { package: String },
 }
@@ -103,7 +97,13 @@ impl Display for PacmanChange {
     }
 }
 
-impl_display_render!(PacmanChange);
+impl ResourceChangeTrait for PacmanChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            PacmanChange::Install { .. } => ChangeKind::Added,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Pacman;

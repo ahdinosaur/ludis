@@ -15,7 +15,6 @@ lusid-secrets = { path = "../secrets", version = "0.1" }
 lusid-store = { path = "../store", version = "0.1" }
 lusid-system = { path = "../system", version = "0.1" }
 lusid-tree = { path = "../tree", version = "0.1" }
-lusid-view = { path = "../view", version = "0.1" }
 clap.workspace = true
 futures-util = "0.3.32"
 rimu.workspace = true

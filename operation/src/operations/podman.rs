@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
-use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use std::{fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -16,7 +16,7 @@ use crate::OperationType;
 /// can't disagree - change the key in one place.
 pub const CONFIG_HASH_LABEL: &str = "lusid.config-hash";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanOperation {
     /// Create a container from `image` under `name`. `--pull=missing` is used
     /// so the image is fetched inline when it isn't already present locally -
@@ -59,8 +59,6 @@ impl Display for PodmanOperation {
         }
     }
 }
-
-impl_display_render!(PodmanOperation);
 
 #[derive(Error, Debug)]
 pub enum PodmanApplyError {

@@ -10,11 +10,11 @@ use lusid_operation::{
     operations::{apt_repo::AptRepoOperation, file::FilePath},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 const KEYRINGS_DIR: &str = "/etc/apt/keyrings";
 const SOURCES_LIST_DIR: &str = "/etc/apt/sources.list.d";
@@ -28,7 +28,7 @@ const SOURCES_LIST_DIR: &str = "/etc/apt/sources.list.d";
 // (`^[a-z0-9][a-z0-9._-]*$`). `name` is interpolated into `/etc/apt/keyrings/`
 // and `/etc/apt/sources.list.d/`, so a path-traversing value would let a plan
 // author write outside those directories.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AptRepoParams {
     /// Filesystem-safe stem reused as the basename of the sources file
     /// (`<name>.sources`) and keyring (`<name>.asc`).
@@ -88,9 +88,7 @@ impl Display for AptRepoParams {
     }
 }
 
-impl_display_render!(AptRepoParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AptRepoResource {
     pub name: String,
     pub sources_path: FilePath,
@@ -109,9 +107,7 @@ impl Display for AptRepoResource {
     }
 }
 
-impl_display_render!(AptRepoResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptRepoState {
     Absent,
     Present {
@@ -135,8 +131,6 @@ impl Display for AptRepoState {
     }
 }
 
-impl_display_render!(AptRepoState);
-
 #[derive(Error, Debug)]
 pub enum AptRepoStateError {
     #[error(transparent)]
@@ -145,7 +139,7 @@ pub enum AptRepoStateError {
 
 // TODO(cc): add a `Remove` variant mirroring the note on `AptChange`. Today
 // removing an apt-repo from the plan leaves both files on the target.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptRepoChange {
     Install {
         name: String,
@@ -173,7 +167,13 @@ impl Display for AptRepoChange {
     }
 }
 
-impl_display_render!(AptRepoChange);
+impl ResourceChangeTrait for AptRepoChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            AptRepoChange::Install { .. } => ChangeKind::Added,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AptRepo;

@@ -5,8 +5,8 @@
 //!   references (`requires` / `required_by`).
 
 use lusid_store::StoreItemId;
-use lusid_view::impl_display_render;
 use rimu::SourceId;
+use serde::{Deserialize, Serialize};
 use std::{
     fmt::Display,
     path::{Path, PathBuf},
@@ -15,7 +15,7 @@ use url::Url;
 
 /// Location of a plan source. `PlanId::Git` is declared but not yet wired through the
 /// store (see the `From<PlanId> for StoreItemId` impl below).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum PlanId {
     Path(PathBuf),
     Git(Url, PathBuf),
@@ -92,7 +92,7 @@ impl From<PlanId> for SourceId {
 /// - `SubItem` - an id minted *inside* a resource's expansion (e.g. the `"file"` id used
 ///   by `file` to order mode/user/group atoms). Scoped by a fresh `cuid2` so the
 ///   inner ids can never collide across resources.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum PlanNodeId {
     Plan(PlanId),
     PlanItem { plan_id: PlanId, item_id: String },
@@ -112,5 +112,3 @@ impl Display for PlanNodeId {
         }
     }
 }
-
-impl_display_render!(PlanNodeId);

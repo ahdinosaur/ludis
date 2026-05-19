@@ -10,13 +10,13 @@ use lusid_operation::{
     operations::{file::FilePath, git::GitOperation},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitParams {
     pub repo: String,
     pub path: FilePath,
@@ -54,9 +54,7 @@ impl Display for GitParams {
     }
 }
 
-impl_display_render!(GitParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitResource {
     pub repo: String,
     pub path: FilePath,
@@ -75,9 +73,7 @@ impl Display for GitResource {
     }
 }
 
-impl_display_render!(GitResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GitState {
     Absent,
     Present {
@@ -106,8 +102,6 @@ impl Display for GitState {
     }
 }
 
-impl_display_render!(GitState);
-
 #[derive(Error, Debug)]
 pub enum GitStateError {
     #[error(transparent)]
@@ -132,7 +126,7 @@ pub enum GitStateError {
     Dirty,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GitChange {
     Clone {
         repo: String,
@@ -170,7 +164,14 @@ impl Display for GitChange {
     }
 }
 
-impl_display_render!(GitChange);
+impl ResourceChangeTrait for GitChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            GitChange::Clone { .. } => ChangeKind::Added,
+            GitChange::Checkout { .. } | GitChange::Pull { .. } => ChangeKind::Modified,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Git;

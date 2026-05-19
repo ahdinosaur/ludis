@@ -5,7 +5,7 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
 use lusid_http::HttpError;
-use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
 use tracing::info;
@@ -15,7 +15,7 @@ use crate::operations::file::FilePath;
 
 const STAGE_SUBDIR: &str = "apt-repo";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AptRepoOperation {
     /// Create `/etc/apt/keyrings` (mode 0755) on the target. Idempotent -
     /// `install -d` is a no-op when the directory already exists.
@@ -61,8 +61,6 @@ impl Display for AptRepoOperation {
     }
 }
 
-impl_display_render!(AptRepoOperation);
-
 #[derive(Error, Debug)]
 pub enum AptRepoApplyError {
     #[error(transparent)]
@@ -78,11 +76,11 @@ pub enum AptRepoApplyError {
 #[derive(Debug, Clone)]
 pub struct AptRepo;
 
-// Note(cc): `merge()` is a no-op for v1 - see the parallel comment in
-// `git.rs`. Two apt-repo resources in one epoch will both emit
-// `EnsureKeyringsDir { path: /etc/apt/keyrings }`, but `install -d` is
-// already idempotent so the duplicate is just a wasted sudo round-trip.
-// Worth deduping by path if it ever shows up in profiles.
+// TODO(cc): dedup `EnsureKeyringsDir { path }` ops by path. Two apt-repo
+// resources in one epoch will both emit `EnsureKeyringsDir { path:
+// /etc/apt/keyrings }`; `install -d` is already idempotent so the dup is
+// just a wasted sudo round-trip. Unmotivated until it shows up in
+// profiles.
 #[async_trait]
 impl OperationType for AptRepo {
     type Operation = AptRepoOperation;

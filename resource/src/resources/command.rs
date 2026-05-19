@@ -9,13 +9,13 @@ use lusid_operation::{
     operations::command::{CommandExecutor, CommandOperation},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandParams {
     Install {
         is_installed: Option<String>,
@@ -82,15 +82,13 @@ impl Display for CommandParams {
     }
 }
 
-impl_display_render!(CommandParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandStatus {
     Install,
     Uninstall,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandResource {
     pub status: CommandStatus,
     pub is_installed: Option<String>,
@@ -121,9 +119,7 @@ impl Display for CommandResource {
     }
 }
 
-impl_display_render!(CommandResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandState {
     Installed,
     NotInstalled,
@@ -140,8 +136,6 @@ impl Display for CommandState {
     }
 }
 
-impl_display_render!(CommandState);
-
 #[derive(Error, Debug)]
 pub enum CommandStateError {
     #[error(transparent)]
@@ -151,7 +145,7 @@ pub enum CommandStateError {
     ParseCommand(#[source] <RunCommand as FromStr>::Err),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandChange {
     Install { command: String },
     Uninstall { command: String },
@@ -166,7 +160,14 @@ impl Display for CommandChange {
     }
 }
 
-impl_display_render!(CommandChange);
+impl ResourceChangeTrait for CommandChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            CommandChange::Install { .. } => ChangeKind::Added,
+            CommandChange::Uninstall { .. } => ChangeKind::Removed,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Command;

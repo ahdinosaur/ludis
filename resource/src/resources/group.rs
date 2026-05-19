@@ -6,18 +6,18 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::group::GroupOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Plan-level parameters for the `@resource/group` resource.
 ///
 /// Tagged by `state: "present" | "absent"`. Mirrors the shape used by Salt
 /// (`group.present`) and Ansible (`ansible.builtin.group`), with an additional
 /// `append_users` field to declaratively guarantee supplementary group membership.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupParams {
     Present {
         name: String,
@@ -66,9 +66,7 @@ impl Display for GroupParams {
     }
 }
 
-impl_display_render!(GroupParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupResource {
     Present {
         name: String,
@@ -90,9 +88,7 @@ impl Display for GroupResource {
     }
 }
 
-impl_display_render!(GroupResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupState {
     Absent,
     Present { gid: u32, members: Vec<String> },
@@ -111,8 +107,6 @@ impl Display for GroupState {
     }
 }
 
-impl_display_render!(GroupState);
-
 #[derive(Error, Debug)]
 pub enum GroupStateError {
     #[error(transparent)]
@@ -129,7 +123,7 @@ pub enum GroupStateError {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GroupChange {
     Create {
         name: String,
@@ -161,7 +155,15 @@ impl Display for GroupChange {
     }
 }
 
-impl_display_render!(GroupChange);
+impl ResourceChangeTrait for GroupChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            GroupChange::Create { .. } => ChangeKind::Added,
+            GroupChange::Modify { .. } => ChangeKind::Modified,
+            GroupChange::Delete { .. } => ChangeKind::Removed,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Group;

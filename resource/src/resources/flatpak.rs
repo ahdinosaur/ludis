@@ -6,11 +6,11 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::flatpak::FlatpakOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Default remote name used when a `state: "present"` declaration omits `remote`.
 /// `flathub` is by far the dominant flatpak remote; explicit other remotes
@@ -19,10 +19,13 @@ const DEFAULT_REMOTE: &str = "flathub";
 
 /// Plan-level parameters for the `@core/flatpak` resource.
 ///
-/// Tagged by `state: "present" | "absent"`. Apps only in v1 - `--app` is
-/// passed to flatpak so a runtime ref will surface a clear "no matching app"
-/// error instead of half-succeeding. Adding `kind: "app" | "runtime"` is the
-/// natural extension point.
+/// Tagged by `state: "present" | "absent"`. Apps only - `--app` is passed
+/// to flatpak so a runtime ref will surface a clear "no matching app"
+/// error instead of half-succeeding.
+///
+/// TODO(cc): runtime support. Add `kind: "app" | "runtime"` to both
+/// variants and switch the `--app` / `--runtime` flag on it; the
+/// `flatpak install` / `flatpak uninstall` call shapes stay identical.
 ///
 /// Note(cc): cross-scope dupes. Declaring `org.x` as `--user` when the same
 /// app is already installed `--system` (or vice versa) does NOT trigger a
@@ -39,7 +42,7 @@ const DEFAULT_REMOTE: &str = "flathub";
 /// `org.mozilla.firefox`) confuse `flatpak install` under `-y` (multiple
 /// refs match; flatpak errors). We don't validate the shape - flatpak's
 /// error message is clear enough.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakParams {
     Present {
         name: String,
@@ -96,9 +99,7 @@ impl Display for FlatpakParams {
     }
 }
 
-impl_display_render!(FlatpakParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakResource {
     Present {
         name: String,
@@ -131,9 +132,7 @@ impl Display for FlatpakResource {
     }
 }
 
-impl_display_render!(FlatpakResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakState {
     NotInstalled,
     Installed,
@@ -148,15 +147,13 @@ impl Display for FlatpakState {
     }
 }
 
-impl_display_render!(FlatpakState);
-
 #[derive(Error, Debug)]
 pub enum FlatpakStateError {
     #[error(transparent)]
     Command(#[from] CommandError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakChange {
     Install {
         name: String,
@@ -189,7 +186,14 @@ impl Display for FlatpakChange {
     }
 }
 
-impl_display_render!(FlatpakChange);
+impl ResourceChangeTrait for FlatpakChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            FlatpakChange::Install { .. } => ChangeKind::Added,
+            FlatpakChange::Uninstall { .. } => ChangeKind::Removed,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Flatpak;

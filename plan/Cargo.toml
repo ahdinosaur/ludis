@@ -11,11 +11,11 @@ lusid-resource = { path = "../resource", version = "0.1" }
 lusid-store = { path = "../store", version = "0.1" }
 lusid-system = { path = "../system", version = "0.1" }
 lusid-tree = { path = "../tree", version = "0.1" }
-lusid-view = { path = "../view", version = "0.1" }
 cuid2 = "0.1.6"
 displaydoc.workspace = true
 rimu.workspace = true
 rimu-interop = { path = "../rimu-interop", version = "0.1" }
+serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 url.workspace = true

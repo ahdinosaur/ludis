@@ -2596,12 +2596,16 @@ dependencies = [
  "lusid-cmd",
  "lusid-ctx",
  "lusid-machine",
+ "lusid-operation",
  "lusid-params",
+ "lusid-plan",
+ "lusid-render",
+ "lusid-resource",
  "lusid-secrets",
  "lusid-ssh",
  "lusid-store",
  "lusid-system",
- "lusid-view",
+ "lusid-tree",
  "lusid-vm",
  "ratatui",
  "rimu",
@@ -2633,7 +2637,6 @@ dependencies = [
  "lusid-store",
  "lusid-system",
  "lusid-tree",
- "lusid-view",
  "rimu",
  "rimu-interop",
  "serde",
@@ -2648,8 +2651,12 @@ dependencies = [
 name = "lusid-apply-stdio"
 version = "0.1.0"
 dependencies = [
- "lusid-view",
+ "lusid-operation",
+ "lusid-plan",
+ "lusid-resource",
+ "lusid-tree",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -2725,11 +2732,11 @@ dependencies = [
  "lusid-fs",
  "lusid-http",
  "lusid-params",
- "lusid-view",
  "pin-project",
  "rimu",
  "secrecy",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2762,12 +2769,24 @@ dependencies = [
  "lusid-store",
  "lusid-system",
  "lusid-tree",
- "lusid-view",
  "rimu",
  "rimu-interop",
+ "serde",
  "thiserror 2.0.18",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "lusid-render"
+version = "0.1.0"
+dependencies = [
+ "lusid-operation",
+ "lusid-plan",
+ "lusid-resource",
+ "ratatui",
+ "similar",
+ "termtree",
 ]
 
 [[package]]
@@ -2775,6 +2794,7 @@ name = "lusid-resource"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "futures-util",
  "indexmap",
  "lusid-causality",
@@ -2783,7 +2803,7 @@ dependencies = [
  "lusid-fs",
  "lusid-operation",
  "lusid-params",
- "lusid-view",
+ "lusid-tree",
  "rimu",
  "secrecy",
  "serde",
@@ -2861,15 +2881,8 @@ dependencies = [
 name = "lusid-tree"
 version = "0.1.0"
 dependencies = [
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "lusid-view"
-version = "0.1.0"
-dependencies = [
  "serde",
- "termtree",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4973,6 +4986,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
 name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5729,6 +5748,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

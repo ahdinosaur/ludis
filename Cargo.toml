@@ -13,20 +13,22 @@ members = [
   "operation",
   "params",
   "plan",
-  "rimu-interop",
+  "render",
   "resource",
+  "rimu-interop",
   "secrets",
   "ssh",
   "store",
   "system",
+  "tree",
   "vm",
-  "view", "tree",
 ]
 
 [workspace.dependencies]
 age = "0.11.3"
 age-core = "0.11"
 async-trait = "0.1.89"
+base64 = "0.22"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 displaydoc = "0.2.5"
 indexmap = "2.14.0"
@@ -40,4 +42,4 @@ sha2 = "0.11.0"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["fs", "io-std", "macros", "process", "rt-multi-thread", "signal", "time"] }
 tracing = "0.1.44"
-url = "2.5.8"
+url = { version = "2.5.8", features = ["serde"] }

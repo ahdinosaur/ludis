@@ -184,7 +184,7 @@ Install a Flatpak app.
 | `"present"` | `name` (string, required), `remote` (string, optional, default `"flathub"`), `user` (bool, optional). |
 | `"absent"` | `name` (string, required), `user` (bool, optional), `delete_data` (bool, optional). |
 
-Apps only in v1. Cross-scope dupes (declaring user-scope when system-scope exists, or vice versa) don't trigger a re-install.
+Apps only. Cross-scope dupes (declaring user-scope when system-scope exists, or vice versa) don't trigger a re-install.
 
 ---
 

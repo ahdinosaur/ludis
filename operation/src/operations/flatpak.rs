@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
-use lusid_view::impl_display_render;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, collections::BTreeSet, fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
@@ -26,7 +26,7 @@ use crate::OperationType;
 /// command block rather than error. Within one lusid epoch operations run
 /// serially, so we don't deadlock against ourselves, but apply against a
 /// machine with active flatpak daemons can stall.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakOperation {
     /// Install one or more refs from `remote` into the named scope. Batched at
     /// merge time when multiple `@core/flatpak` resources share the same
@@ -119,8 +119,6 @@ impl Display for FlatpakOperation {
         }
     }
 }
-
-impl_display_render!(FlatpakOperation);
 
 #[derive(Error, Debug)]
 pub enum FlatpakApplyError {

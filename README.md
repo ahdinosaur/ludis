@@ -89,6 +89,18 @@ lusid --config ./lusid.toml remote ssh   --machine my-server   # shell on the ta
 
 > ⓘ Host-key verification is trust-on-first-use against `~/.ssh/known_hosts`: the first connection pins whatever key the server presents (matching OpenSSH's `StrictHostKeyChecking=accept-new`), and subsequent connections refuse mismatches. **The first apply assumes the network path between you and the target is clean** - if there's any doubt (apply across the public internet, captive Wi-Fi, fresh cloud VM), verify the target's `/etc/ssh/ssh_host_ed25519_key.pub` out-of-band and seed `~/.ssh/known_hosts` yourself before the first run.
 
+Each form has a sibling `parse` subcommand that validates the plan and shows the resolved resource tree without probing target state or running any operation:
+
+```sh
+lusid --config ./lusid.toml local parse
+lusid --config ./lusid.toml dev    parse --machine my-server
+lusid --config ./lusid.toml remote parse --machine my-server
+```
+
+**Per-epoch confirm.** Apply pauses between resource epochs and shows a footer prompt summarising what's about to run; press `↵` to apply, `Esc` to abort. Pass `-y` / `--yes` to skip every prompt and run straight through. The confirm prompt is always interactive: lusid refuses to start an apply that would block on a prompt it cannot show, so any non-interactive invocation (CI, pipes, redirects, `--no-tui`) must pass `-y`.
+
+**Plain-log mode.** Pass `--no-tui` to skip the ratatui TUI and emit a line-buffered digest to stderr instead. lusid switches to plain-log automatically whenever stdout is not a terminal. This only affects rendering; the confirm requirement above is independent.
+
 Applying the same plan twice is always safe: lusid reads the current state of every resource and only runs the operations needed to close the gap. A no-op apply after a successful apply prints "no changes" and exits.
 
 ## Concepts

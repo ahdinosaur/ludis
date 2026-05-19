@@ -6,13 +6,13 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::aur::AurOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AurParams {
     Package { package: String },
     Packages { packages: Vec<String> },
@@ -46,9 +46,7 @@ impl Display for AurParams {
     }
 }
 
-impl_display_render!(AurParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AurResource {
     pub package: String,
 }
@@ -60,9 +58,7 @@ impl Display for AurResource {
     }
 }
 
-impl_display_render!(AurResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AurState {
     NotInstalled,
     Installed,
@@ -77,8 +73,6 @@ impl Display for AurState {
     }
 }
 
-impl_display_render!(AurState);
-
 #[derive(Error, Debug)]
 pub enum AurStateError {
     #[error(transparent)]
@@ -90,7 +84,7 @@ pub enum AurStateError {
 
 // TODO(cc): add an `Uninstall` variant - mirror image of the apt resource. A declared
 // package cannot currently be retracted.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AurChange {
     Install { package: String },
 }
@@ -103,7 +97,13 @@ impl Display for AurChange {
     }
 }
 
-impl_display_render!(AurChange);
+impl ResourceChangeTrait for AurChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            AurChange::Install { .. } => ChangeKind::Added,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Aur;

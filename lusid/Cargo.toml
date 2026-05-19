@@ -9,11 +9,13 @@ lusid-cmd = { path = "../cmd", version = "0.1" }
 lusid-ctx = { path = "../ctx", version = "0.1" }
 lusid-machine = { path = "../machine", version = "0.1" }
 lusid-params = { path = "../params", version = "0.1" }
+lusid-plan = { path = "../plan", version = "0.1" }
+lusid-render = { path = "../render", version = "0.1" }
+lusid-tree = { path = "../tree", version = "0.1" }
 lusid-secrets = { path = "../secrets", version = "0.1" }
 lusid-ssh = { path = "../ssh", version = "0.1" }
 lusid-store = { path = "../store", version = "0.1" }
 lusid-system = { path = "../system", version = "0.1" }
-lusid-view = { path = "../view", version = "0.1" }
 lusid-vm = { path = "../vm", version = "0.1" }
 comfy-table = "7.2.2"
 clap.workspace = true
@@ -30,3 +32,7 @@ tokio.workspace = true
 toml = "1.1.2"
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+lusid-operation = { path = "../operation", version = "0.1" }
+lusid-resource = { path = "../resource", version = "0.1" }

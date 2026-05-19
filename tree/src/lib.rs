@@ -2,11 +2,13 @@
 //! See the crate README for invariants and usage.
 
 use std::future::Future;
+
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Recursive nested tree. Either a `Branch` with children or a `Leaf` with a value,
 /// each carrying a `Meta` payload.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Tree<Node, Meta> {
     Branch {
         meta: Meta,
@@ -91,7 +93,7 @@ impl<Node, Meta> Tree<Node, Meta> {
 }
 
 /// A single node in a [`FlatTree`]. Branches store child indices; leaves store values.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatTreeNode<Node, Meta> {
     Branch { meta: Meta, children: Vec<usize> },
     Leaf { meta: Meta, node: Node },
@@ -100,7 +102,7 @@ pub enum FlatTreeNode<Node, Meta> {
 /// Arena-backed flat tree. Nodes are stored in a `Vec<Option<...>>` where indices serve
 /// as node identifiers. `None` slots are tombstones - previously occupied positions that
 /// have been cleared (e.g. after a subtree replacement).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlatTree<Node, Meta> {
     nodes: Vec<Option<FlatTreeNode<Node, Meta>>>,
 }

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use displaydoc::Display as DisplaydocDisplay;
 use lusid_ctx::Context;
 use lusid_fs::{self as fs, FsError};
-use lusid_view::impl_display_render;
 use secrecy::ExposeSecret;
+use serde::{Deserialize, Serialize};
 use std::{
     fmt::{Debug, Display},
     path::Path,
@@ -31,7 +31,7 @@ pub enum FileApplyError {
     MissingSecret { name: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileSource {
     Contents(Vec<u8>),
 
@@ -44,7 +44,8 @@ pub enum FileSource {
     Secret(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct FilePath(String);
 
 impl FilePath {
@@ -63,7 +64,8 @@ impl Display for FilePath {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct FileMode(u32);
 
 impl FileMode {
@@ -82,7 +84,8 @@ impl Display for FileMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct FileUser(String);
 
 impl FileUser {
@@ -101,7 +104,8 @@ impl Display for FileUser {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct FileGroup(String);
 
 impl FileGroup {
@@ -120,7 +124,7 @@ impl Display for FileGroup {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileOperation {
     Write {
         path: FilePath,
@@ -184,8 +188,6 @@ impl Display for FileOperation {
         }
     }
 }
-
-impl_display_render!(FileOperation);
 
 /// Apply-time resolution of a [`FileSource`] for a write:
 ///

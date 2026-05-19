@@ -11,13 +11,12 @@ use lusid_operation::{
     operations::podman::{CONFIG_HASH_LABEL, PodmanOperation},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Plan-level parameters for the `@resource/podman` resource.
 ///
@@ -29,7 +28,7 @@ use crate::ResourceType;
 /// An upstream change to a floating tag (e.g. `nginx:latest` republished)
 /// will not trigger a recreate - pin with `@sha256:...` for digest-level
 /// control.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanParams {
     Present {
         name: String,
@@ -82,9 +81,7 @@ impl Display for PodmanParams {
     }
 }
 
-impl_display_render!(PodmanParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanResource {
     Present {
         name: String,
@@ -118,9 +115,7 @@ impl Display for PodmanResource {
     }
 }
 
-impl_display_render!(PodmanResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanState {
     Absent,
     Present {
@@ -144,8 +139,6 @@ impl Display for PodmanState {
         }
     }
 }
-
-impl_display_render!(PodmanState);
 
 #[derive(Error, Debug)]
 pub enum PodmanStateError {
@@ -193,7 +186,7 @@ struct InspectState {
     running: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PodmanChange {
     /// Container doesn't exist - create and optionally start.
     Create {
@@ -241,7 +234,17 @@ impl Display for PodmanChange {
     }
 }
 
-impl_display_render!(PodmanChange);
+impl ResourceChangeTrait for PodmanChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            PodmanChange::Create { .. } => ChangeKind::Added,
+            PodmanChange::Start { .. }
+            | PodmanChange::Stop { .. }
+            | PodmanChange::Recreate { .. } => ChangeKind::Modified,
+            PodmanChange::Remove { .. } => ChangeKind::Removed,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Podman;

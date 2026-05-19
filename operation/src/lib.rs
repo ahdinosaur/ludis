@@ -5,8 +5,8 @@
 use async_trait::async_trait;
 use core::task;
 use lusid_ctx::Context;
-use lusid_view::Render;
 use pin_project::pin_project;
+use serde::{Deserialize, Serialize};
 use std::{
     fmt::{Debug, Display},
     future::Future,
@@ -39,7 +39,7 @@ use crate::operations::{
 #[async_trait]
 pub trait OperationType {
     /// The concrete operation value (e.g. `AptOperation::Install { packages }`).
-    type Operation: Render;
+    type Operation;
 
     /// Coalesce a batch of same-type operations scheduled in one epoch.
     ///
@@ -70,7 +70,7 @@ pub trait OperationType {
 
 /// Dispatcher over every operation family. Every leaf of the per-epoch causality
 /// tree is an `Operation`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Operation {
     Apt(AptOperation),
     AptRepo(AptRepoOperation),
@@ -472,27 +472,6 @@ impl Display for Operation {
             Systemd(op) => Display::fmt(op, f),
             User(op) => Display::fmt(op, f),
             Group(op) => Display::fmt(op, f),
-        }
-    }
-}
-
-impl Render for Operation {
-    fn render(&self) -> lusid_view::View {
-        use Operation::*;
-        match self {
-            Apt(params) => params.render(),
-            AptRepo(params) => params.render(),
-            Aur(params) => params.render(),
-            File(params) => params.render(),
-            Directory(params) => params.render(),
-            Pacman(params) => params.render(),
-            Podman(params) => params.render(),
-            Flatpak(params) => params.render(),
-            Command(params) => params.render(),
-            Git(params) => params.render(),
-            Systemd(params) => params.render(),
-            User(params) => params.render(),
-            Group(params) => params.render(),
         }
     }
 }

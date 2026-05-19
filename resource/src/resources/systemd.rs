@@ -6,13 +6,13 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::systemd::SystemdOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemdParams {
     pub name: String,
     pub enabled: Option<bool>,
@@ -53,9 +53,7 @@ impl Display for SystemdParams {
     }
 }
 
-impl_display_render!(SystemdParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemdResource {
     pub name: String,
     pub enabled: bool,
@@ -80,9 +78,7 @@ impl Display for SystemdResource {
     }
 }
 
-impl_display_render!(SystemdResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemdState {
     pub enabled: bool,
     pub active: bool,
@@ -94,8 +90,6 @@ impl Display for SystemdState {
         write!(f, "Systemd(enabled = {enabled}, active = {active})")
     }
 }
-
-impl_display_render!(SystemdState);
 
 #[derive(Error, Debug)]
 pub enum SystemdStateError {
@@ -115,7 +109,7 @@ pub enum SystemdStateError {
 /// Desired-state delta for a systemd unit. `enable` / `active` are `Some(desired)` if a
 /// transition is needed on that dimension, `None` if the current state already matches.
 /// At least one field is `Some` - otherwise [`Systemd::change`] returns `None`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemdChange {
     pub name: String,
     pub enable: Option<bool>,
@@ -143,7 +137,15 @@ impl Display for SystemdChange {
     }
 }
 
-impl_display_render!(SystemdChange);
+impl ResourceChangeTrait for SystemdChange {
+    /// A systemd change is always a transition on an existing unit's
+    /// enable/active dimension. There is no add/remove of the unit itself
+    /// at this layer (units are created/removed by separate file resources),
+    /// so every variant lands in [`ChangeKind::Modified`].
+    fn kind(&self) -> ChangeKind {
+        ChangeKind::Modified
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Systemd;

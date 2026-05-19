@@ -29,8 +29,8 @@ use lusid_operation::{
     operations::file::{FileGroup, FileMode, FilePath, FileUser},
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 
 use crate::ResourceType;
 use crate::resources::file::{File, FileChange, FileResource, FileState, FileStateError};
@@ -40,7 +40,7 @@ use crate::resources::file::{File, FileChange, FileResource, FileState, FileStat
 /// deliberately group-readable for a multi-user service).
 pub const DEFAULT_MODE: u32 = 0o600;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecretParams {
     pub name: String,
     pub path: FilePath,
@@ -73,8 +73,6 @@ impl Display for SecretParams {
         write!(f, "Secret(name={}, path={})", self.name, self.path)
     }
 }
-
-impl_display_render!(SecretParams);
 
 #[derive(Debug, Clone)]
 pub struct Secret;

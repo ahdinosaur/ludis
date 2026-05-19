@@ -6,16 +6,22 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{Operation, operations::flatpak::FlatpakOperation};
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Plan-level parameters for the `@core/flatpak-remote` resource.
 ///
-/// Tagged by `state: "present" | "absent"`. URL is the only mutable field in
-/// v1: titles, gpg keys, and collection-ids are not surfaced.
+/// Tagged by `state: "present" | "absent"`. URL is the only mutable field
+/// today: titles, gpg keys, and collection-ids are not surfaced.
+///
+/// TODO(cc): surface title / gpg-key / collection-id. Title and gpg-key
+/// are straight additions (extend the Present variant + diff/apply); the
+/// `collection-id` interaction noted below in the `.flatpakrepo` Note is
+/// the hard part - any drift detection has to either resolve the
+/// `.flatpakrepo` and compare, or document that `Modify` won't catch it.
 ///
 /// Note(cc): `flatpak remote-modify --url` refuses when the new repo's
 /// `collection-id` differs from the configured one; the stderr will surface
@@ -29,7 +35,7 @@ use crate::ResourceType;
 /// remote is `Add`-only: once added, we never re-emit `Modify`. Operators
 /// who want URL-level drift detection should declare the canonical repo URL
 /// directly.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakRemoteParams {
     Present {
         name: String,
@@ -77,9 +83,7 @@ impl Display for FlatpakRemoteParams {
     }
 }
 
-impl_display_render!(FlatpakRemoteParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakRemoteResource {
     Present {
         name: String,
@@ -106,9 +110,7 @@ impl Display for FlatpakRemoteResource {
     }
 }
 
-impl_display_render!(FlatpakRemoteResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakRemoteState {
     Absent,
     Present { url: String },
@@ -125,15 +127,13 @@ impl Display for FlatpakRemoteState {
     }
 }
 
-impl_display_render!(FlatpakRemoteState);
-
 #[derive(Error, Debug)]
 pub enum FlatpakRemoteStateError {
     #[error(transparent)]
     Command(#[from] CommandError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FlatpakRemoteChange {
     Add {
         name: String,
@@ -169,7 +169,15 @@ impl Display for FlatpakRemoteChange {
     }
 }
 
-impl_display_render!(FlatpakRemoteChange);
+impl ResourceChangeTrait for FlatpakRemoteChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            FlatpakRemoteChange::Add { .. } => ChangeKind::Added,
+            FlatpakRemoteChange::Modify { .. } => ChangeKind::Modified,
+            FlatpakRemoteChange::Remove { .. } => ChangeKind::Removed,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct FlatpakRemote;

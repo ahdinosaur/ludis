@@ -12,13 +12,13 @@ use lusid_operation::{
     },
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use lusid_view::impl_display_render;
 use rimu::{Span, Spanned, Value};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::ResourceType;
+use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryParams {
     /// Recursive copy of the directory tree at `source` into `path`. Edits
     /// to `source` only propagate on the next apply. The state probe is
@@ -31,6 +31,9 @@ pub enum DirectoryParams {
         source: FilePath,
         /// Span of the `source` value in the plan source. Carried so
         /// host-path validation errors can point at the offending line.
+        /// Skipped on the wire: validation runs pre-emit, so the span
+        /// is unused downstream.
+        #[serde(skip, default)]
         source_span: Span,
         path: FilePath,
         mode: Option<FileMode>,
@@ -49,6 +52,7 @@ pub enum DirectoryParams {
         source: FilePath,
         /// Span of the `source` value in the plan source. See
         /// [`DirectoryParams::Sourced::source_span`] for rationale.
+        #[serde(skip, default)]
         source_span: Span,
         path: FilePath,
     },
@@ -122,9 +126,7 @@ impl Display for DirectoryParams {
     }
 }
 
-impl_display_render!(DirectoryParams);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryResource {
     Sourced { source: FilePath, path: FilePath },
     Linked { source: FilePath, path: FilePath },
@@ -159,9 +161,7 @@ impl Display for DirectoryResource {
     }
 }
 
-impl_display_render!(DirectoryResource);
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryState {
     Sourced,
     NotSourced,
@@ -198,15 +198,13 @@ impl Display for DirectoryState {
     }
 }
 
-impl_display_render!(DirectoryState);
-
 #[derive(Error, Debug)]
 pub enum DirectoryStateError {
     #[error(transparent)]
     Fs(#[from] FsError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryChange {
     Create {
         path: FilePath,
@@ -267,7 +265,19 @@ impl Display for DirectoryChange {
     }
 }
 
-impl_display_render!(DirectoryChange);
+impl ResourceChangeTrait for DirectoryChange {
+    fn kind(&self) -> ChangeKind {
+        match self {
+            DirectoryChange::Create { .. }
+            | DirectoryChange::CreateSymlink { .. }
+            | DirectoryChange::CopyTree { .. } => ChangeKind::Added,
+            DirectoryChange::Remove { .. } => ChangeKind::Removed,
+            DirectoryChange::ChangeMode { .. } | DirectoryChange::ChangeOwner { .. } => {
+                ChangeKind::Modified
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Directory;
