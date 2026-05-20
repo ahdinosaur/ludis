@@ -9,8 +9,6 @@
 //!   state.json              - serialized `Vm` (see `super::Vm`)
 //!   overlay.qcow2           - writeable overlay, backed by the cached image
 //!   OVMF_VARS.4m.fd.qcow2   - per-VM UEFI NVRAM (qcow2 for snapshotability)
-//!   vmlinuz                 - kernel extracted from the image
-//!   initrd.img              - initrd (optional; not every image ships one)
 //!   cloud-init-{meta,user}-data, cloud-init.iso - seed ISO for first boot
 //!   id_ed25519[.pub]        - SSH keypair (written by lusid_ssh::SshKeypair)
 //!   qemu.pid                - pid of the daemonized qemu process
@@ -34,10 +32,6 @@ impl<'a> VmPaths<'a> {
         Self { instance_dir }
     }
 
-    pub fn instance_dir(&self) -> &'a Path {
-        self.instance_dir
-    }
-
     pub fn state(&self) -> PathBuf {
         self.instance_dir.join("state.json")
     }
@@ -46,6 +40,8 @@ impl<'a> VmPaths<'a> {
         self.instance_dir.join("overlay.qcow2")
     }
 
+    // TODO(cc): x86-64-only. aarch64 wants `AAVMF_{CODE,VARS}_4M.fd` (Debian
+    // `qemu-efi-aarch64` package). Pick by `Vm::arch` instead of hardcoding.
     pub fn ovmf_vars_system_path(&self) -> &Path {
         static OVMF_VARS_SYSTEM_FILE: LazyLock<PathBuf> =
             LazyLock::new(|| PathBuf::from("/usr/share/OVMF/OVMF_VARS_4M.fd"));
@@ -62,14 +58,6 @@ impl<'a> VmPaths<'a> {
             LazyLock::new(|| PathBuf::from("/usr/share/OVMF/OVMF_CODE_4M.fd"));
 
         OVMF_CODE_SYSTEM_FILE.as_path()
-    }
-
-    pub fn kernel_path(&self) -> PathBuf {
-        self.instance_dir.join("vmlinuz")
-    }
-
-    pub fn initrd_path(&self) -> PathBuf {
-        self.instance_dir.join("initrd.img")
     }
 
     pub fn cloud_init_meta_data_path(&self) -> PathBuf {

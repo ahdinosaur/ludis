@@ -82,13 +82,13 @@ If you want to apply plans inside a local VM, install QEMU and the image-buildin
 - **Debian**
 
   ```sh
-  sudo apt install qemu-system-x86 qemu-utils libguestfs-tools genisoimage
+  sudo apt install qemu-system-x86 qemu-utils genisoimage
   ```
 
 - **Arch**
 
   ```sh
-  sudo pacman -S qemu-full libguestfs cdrtools
+  sudo pacman -S qemu-full cdrtools
   ```
 
 You don't need these for `lusid local apply` on a real machine you already own.

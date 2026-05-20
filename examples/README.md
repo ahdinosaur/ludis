@@ -8,9 +8,9 @@ Each example is a self-contained directory with its own `lusid.toml`, one or mor
 
 - **Rust toolchain** (stable) to build lusid.
 - **[just](https://github.com/casey/just)** to run the top-level `justfile` recipes. Recipes wrap `cargo run`; you can run those commands directly if you prefer.
-- **QEMU + libguestfs + mkisofs** for the `dev apply` / `dev ssh` flow (local VMs):
-  - Debian: `sudo apt install qemu-system-x86 qemu-utils libguestfs-tools genisoimage`
-  - Arch: `sudo pacman -S qemu-full libguestfs cdrtools`
+- **QEMU + mkisofs** for the `dev apply` / `dev ssh` flow (local VMs):
+  - Debian: `sudo apt install qemu-system-x86 qemu-utils genisoimage`
+  - Arch: `sudo pacman -S qemu-full cdrtools`
 
 Only Rust is required for `lusid local apply` on a real machine.
 

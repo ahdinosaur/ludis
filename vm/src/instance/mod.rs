@@ -83,11 +83,8 @@ pub struct Vm {
     pub dir: PathBuf,
     pub arch: Arch,
     pub linux: Linux,
-    /// Kernel `root=` cmdline arg (e.g. `/dev/vda3`); image-dependent.
-    pub kernel_root: String,
     /// Default SSH login user (e.g. `debian`); image-dependent.
     pub user: String,
-    pub has_initrd: bool,
     /// Host-side TCP port forwarded to the guest's port 22. Chosen once at
     /// setup time via [`get_free_tcp_port`](crate::utils::get_free_tcp_port)
     /// and persisted so reruns stay reachable at the same address.
@@ -186,9 +183,9 @@ impl Vm {
         Ok(())
     }
 
-    /// Delete the instance directory (overlay, OVMF vars, kernel, cloud-init,
-    /// keypair, state). The caller is responsible for [`stop`](Self::stop)ping
-    /// qemu first; removing a running instance's dir is undefined behaviour.
+    /// Delete the instance directory (overlay, OVMF vars, cloud-init, keypair,
+    /// state). The caller is responsible for [`stop`](Self::stop)ping qemu
+    /// first; removing a running instance's dir is undefined behaviour.
     pub async fn remove(self) -> Result<(), VmError> {
         fs::remove_dir(self.dir).await.map_err(VmError::RemoveDir)?;
         Ok(())

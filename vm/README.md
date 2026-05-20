@@ -10,7 +10,6 @@ reachable over SSH at `127.0.0.1:<ssh_port>`. Behind that single call:
    qcow2 and sums file into `cache_dir/vm/images/`.
 2. **Setup** ([`instance/setup/`](src/instance/setup)) - create `overlay.qcow2`
    backed by the cached image, copy OVMF UEFI vars into a per-VM qcow2,
-   extract `vmlinuz` (and `initrd.img` if present) with `virt-get-kernel`,
    mint an ed25519 SSH keypair, and produce a cloud-init seed ISO that
    injects the hostname, the public key, and `openssh` at first boot.
 3. **Save** - serialize [`Vm`] to `<instance_dir>/state.json` so future calls
@@ -19,7 +18,10 @@ reachable over SSH at `127.0.0.1:<ssh_port>`. Behind that single call:
    daemonize `qemu-system-<arch>` via [`qemu/mod.rs`](src/qemu/mod.rs):
    UEFI pflash, overlay + cloud-init virtio drives, QMP socket, KVM +
    `-cpu host`, user-mode NIC with hostfwd for `ssh_port → 22` plus any
-   caller-supplied [`VmPort`]s.
+   caller-supplied [`VmPort`]s. OVMF boots the overlay's ESP via the UEFI
+   removable-media fallback (`\EFI\BOOT\BOOTX64.EFI`), so the guest's own
+   bootloader picks up its kernel and initramfs - in-guest kernel upgrades
+   "just work" on the next boot.
 5. **Wait** - poll `127.0.0.1:<ssh_port>` until SSH accepts TCP.
 
 [`Vm::stop`] kills qemu via `SIGKILL` on the pid in `qemu.pid`; [`Vm::remove`]
@@ -37,7 +39,6 @@ External binaries looked up on `PATH` at context init (missing any fails
 fast with a clear error - see [`ExecutablePaths`](src/paths.rs)):
 
 - `qemu-system-x86_64`, `qemu-system-aarch64`, `qemu-img` (qemu)
-- `virt-get-kernel` (libguestfs)
 - `mkisofs` (genisoimage)
 
 OVMF firmware is read from `/usr/share/OVMF/OVMF_{CODE,VARS}_4M.fd`.
@@ -45,11 +46,11 @@ OVMF firmware is read from `/usr/share/OVMF/OVMF_{CODE,VARS}_4M.fd`.
 ### Debian
 
 ```shell
-sudo apt install qemu-system ovmf libguestfs-tools genisoimage
+sudo apt install qemu-system ovmf genisoimage
 sudo usermod -aG kvm $USER
 ```
 
 ## References
 
 - [`cubic-vm/cubic`](https://github.com/cubic-vm/cubic), MIT / Apache-2.0, Copyright (c) 2025 Roger Knecht
-- [`archlinux/vmexec`](https://gitlab.archlinux.org/archlinux/vmexec), MIT, Copyright (c) 2025 Sven-Hendrik Haase - source of the `virt-get-kernel` and OVMF-vars-to-qcow2 recipes (cited inline in the setup modules).
+- [`archlinux/vmexec`](https://gitlab.archlinux.org/archlinux/vmexec), MIT, Copyright (c) 2025 Sven-Hendrik Haase - source of the OVMF-vars-to-qcow2 recipe (cited inline in the setup module).

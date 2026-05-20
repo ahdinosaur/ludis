@@ -73,24 +73,6 @@ impl Qemu {
         self
     }
 
-    /// Kernel, append, and optional initrd.
-    pub fn kernel(&mut self, kernel_path: &Path, kernel_args: Option<&str>) -> &mut Self {
-        self.command
-            .args(["-kernel", &kernel_path.to_string_lossy()]);
-        if let Some(kernel_args) = kernel_args {
-            self.command.args(["-append", kernel_args]);
-        }
-
-        self
-    }
-
-    pub fn initrd(&mut self, initrd_path: &Path) -> &mut Self {
-        self.command
-            .args(["-initrd", &initrd_path.to_string_lossy()]);
-
-        self
-    }
-
     /// Add a virtio drive with explicit node name, format and file path.
     pub fn virtio_drive(&mut self, node_name: &str, format: &str, file: &Path) -> &mut Self {
         let file = file.display();

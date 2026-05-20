@@ -2,6 +2,11 @@
 //! launches it daemonized; the pid ends up in `<instance_dir>/qemu.pid` where
 //! [`Vm::stop`](super::Vm::stop) can find it later.
 //!
+//! OVMF firmware boots the overlay's ESP via the UEFI removable-media fallback
+//! path (`\EFI\BOOT\BOOTX64.EFI`), so the guest's own bootloader picks up the
+//! kernel and initramfs from its `/boot`. This survives in-guest kernel
+//! upgrades, which is the whole point of doing it this way.
+//!
 //! Defaults when the [`Vm`]'s optional fields are `None`: 8 GiB memory, 2
 //! CPUs, graphics on, KVM on. The SSH forward is always prepended to the
 //! caller-supplied `ports` so it survives any reordering.
@@ -31,9 +36,7 @@ pub(super) async fn instance_start(
         dir: _instance_dir,
         arch,
         linux: _,
-        kernel_root,
         user: _,
-        has_initrd,
         ssh_port,
         memory_size,
         cpu_count,
@@ -70,21 +73,18 @@ pub(super) async fn instance_start(
         .memory(memory_size_in_gb)
         .plash_drives(paths.ovmf_code_system_path(), &paths.ovmf_vars_path());
 
-    qemu.kernel(
-        &paths.kernel_path(),
-        Some(&format!("rw root={}", kernel_root)),
-    );
-    if *has_initrd {
-        qemu.initrd(&paths.initrd_path());
-    }
-
     qemu.qmp_socket(&paths.qemu_qmp_socket_path())
         .kvm(kvm)
         .pid_file(paths.qemu_pid_path())
         .graphics(graphics)
         .ports(&ports);
 
-    // Overlay and cloud-init drives
+    // Note(cc): the overlay must come before the cloud-init ISO. OVMF picks
+    // a boot device by scanning attached drives in PCI bus order; we want it
+    // to find the overlay's ESP first. cloud-init.iso has no EFI bootloader
+    // (it's a plain Rock Ridge / Joliet ISO from `mkisofs -RJ`), so OVMF
+    // would skip it regardless - but the order is still load-bearing if the
+    // ISO ever grows an El-Torito EFI entry.
     qemu.virtio_drive("overlay-disk", "qcow2", &paths.overlay_image_path())
         .virtio_drive("cloud-init", "raw", &paths.cloud_init_image_path());
 

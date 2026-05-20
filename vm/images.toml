@@ -3,7 +3,6 @@ arch = "x86-64"
 os = { type = "linux", linux = "debian", debian = 13 }
 image = { type = "qcow2", url = "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-generic-amd64.qcow2" }
 hash = { type = "sha512sums", url = "https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS" }
-kernel_root = "/dev/vda1"
 user = "debian"
 # Drain cloud-init's first-boot modules (the `packages:` injection from our
 # seed ISO uses apt, which holds /var/lib/dpkg/lock) before the caller drives
@@ -15,7 +14,6 @@ arch = "x86-64"
 os = { type = "linux", linux = "arch" }
 image = { type = "qcow2", url = "https://fastly.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2" }
 hash = { type = "sha256sums", url = "https://fastly.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2.SHA256" }
-kernel_root = "/dev/vda3"
 user = "arch"
 # `cloud-init status --wait` drains cloud-init's package install (`openssh`
 # from our seed ISO via pacman). `reflector.service` runs in parallel from
