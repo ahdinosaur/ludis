@@ -88,15 +88,24 @@ pub struct MachineConfig {
 
 impl Config {
     pub async fn load(path: &Path, cli: &Cli) -> Result<Self, ConfigError> {
-        let config = Self::load_config(path).await?;
+        // Normalize once: callers may pass either the directory containing
+        // `lusid.toml` (e.g. CWD default) or the file itself. Storing the
+        // file path keeps `root()` and `resolve_plan_path` honest.
+        let path = if path.is_dir() {
+            path.join("lusid.toml")
+        } else {
+            path.to_owned()
+        };
+
+        let config = Self::load_config(&path).await?;
         let ConfigToml { machines, log } = config;
 
-        let machines = Self::resolve_machines(machines, path)?;
+        let machines = Self::resolve_machines(machines, &path)?;
 
         let log = cli.log.clone().or(log).unwrap_or("error".into());
 
         Ok(Config {
-            path: path.to_owned(),
+            path,
             machines,
             log,
         })
@@ -166,12 +175,7 @@ impl Config {
     }
 
     async fn load_config(path: &Path) -> Result<ConfigToml, ConfigError> {
-        let path = if path.is_dir() {
-            path.join("lusid.toml")
-        } else {
-            path.to_owned()
-        };
-        let string = read_to_string(&path)
+        let string = read_to_string(path)
             .await
             .map_err(|source| ConfigError::Read {
                 path: path.to_owned(),
