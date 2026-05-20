@@ -423,10 +423,12 @@ fn mark_file_secret_source(resource: Resource, secrets_dir: &Path) -> Resource {
             source,
             path,
             is_secret: _,
+            sudo,
         }) => Resource::File(file::FileResource::Sourced {
             is_secret: file::is_secret_source(&source, secrets_dir),
             source,
             path,
+            sudo,
         }),
         other => other,
     }
@@ -822,6 +824,7 @@ mod tests {
             mode: None,
             user: None,
             group: None,
+            sudo: false,
         })
     }
 
@@ -833,6 +836,7 @@ mod tests {
             mode: None,
             user: None,
             group: None,
+            sudo: false,
         })
     }
 
@@ -841,6 +845,7 @@ mod tests {
             source,
             source_span: empty_span(),
             path: FilePath::new("/tmp/lusid-validate-test-target"),
+            sudo: false,
         })
     }
 
@@ -849,6 +854,7 @@ mod tests {
             source,
             source_span: empty_span(),
             path: FilePath::new("/tmp/lusid-validate-test-target"),
+            sudo: false,
         })
     }
 
@@ -1034,6 +1040,7 @@ mod tests {
         // Non-sourced resources don't reach the filesystem at all.
         let absent = ResourceParams::File(FileParams::Absent {
             path: FilePath::new("/tmp/never-touched"),
+            sudo: false,
         });
         absent.validate_host_paths().await.expect("no-op");
     }
@@ -1115,6 +1122,7 @@ mod dispatch_tests {
             mode: None,
             user: None,
             group: None,
+            sudo: false,
         });
         let trees = params.resources(Path::new("/proj/secrets"));
         // Walk the first tree's leaves; the leading atom is `Sourced`.
@@ -1136,6 +1144,7 @@ mod dispatch_tests {
             mode: None,
             user: None,
             group: None,
+            sudo: false,
         });
         let trees = params.resources(Path::new("/proj/secrets"));
         let leaf = collect_first_leaf(&trees[0]).expect("at least one leaf");
@@ -1208,12 +1217,14 @@ mod dispatch_tests {
                 Resource::File(FileResource::Linked {
                     source: FilePath::new("/src"),
                     path: FilePath::new("/dst"),
+                    sudo: false,
                 }),
                 "file",
             ),
             (
                 Resource::Directory(DirectoryResource::Present {
                     path: FilePath::new("/dir"),
+                    sudo: false,
                 }),
                 "directory",
             ),

@@ -39,6 +39,10 @@ pub enum DirectoryParams {
         mode: Option<FileMode>,
         user: Option<FileUser>,
         group: Option<FileGroup>,
+        /// See [`super::file::FileParams::Sourced::sudo`]. Wraps the
+        /// recursive copy in `sudo -n` (and the follow-up chmod/chown).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
 
     /// Materialise `path` as a symlink to the directory at `source` (a
@@ -55,6 +59,8 @@ pub enum DirectoryParams {
         #[serde(skip, default)]
         source_span: Span,
         path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
 
     Present {
@@ -62,9 +68,13 @@ pub enum DirectoryParams {
         mode: Option<FileMode>,
         user: Option<FileUser>,
         group: Option<FileGroup>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Absent {
         path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
 }
 
@@ -84,6 +94,7 @@ impl ParseParams for DirectoryParams {
                     mode: fields.optional_u32("mode")?.map(FileMode::new),
                     user: fields.optional_string("user")?.map(FileUser::new),
                     group: fields.optional_string("group")?.map(FileGroup::new),
+                    sudo: fields.optional_bool("sudo")?.unwrap_or(false),
                 }
             }
             "linked" => {
@@ -93,6 +104,7 @@ impl ParseParams for DirectoryParams {
                     source: FilePath::new(source_path.to_string_lossy().into_owned()),
                     source_span,
                     path: FilePath::new(fields.required_target_path("path")?),
+                    sudo: fields.optional_bool("sudo")?.unwrap_or(false),
                 }
             }
             "present" => DirectoryParams::Present {
@@ -100,9 +112,11 @@ impl ParseParams for DirectoryParams {
                 mode: fields.optional_u32("mode")?.map(FileMode::new),
                 user: fields.optional_string("user")?.map(FileUser::new),
                 group: fields.optional_string("group")?.map(FileGroup::new),
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
             },
             "absent" => DirectoryParams::Absent {
                 path: FilePath::new(fields.required_target_path("path")?),
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
             },
             _ => unreachable!(),
         };
@@ -121,40 +135,73 @@ impl Display for DirectoryParams {
                 write!(f, "Directory::Linked(source = {source}, path = {path})")
             }
             DirectoryParams::Present { path, .. } => write!(f, "Directory::Present(path = {path})"),
-            DirectoryParams::Absent { path } => write!(f, "Directory::Absent(path = {path})"),
+            DirectoryParams::Absent { path, .. } => write!(f, "Directory::Absent(path = {path})"),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DirectoryResource {
-    Sourced { source: FilePath, path: FilePath },
-    Linked { source: FilePath, path: FilePath },
-    Present { path: FilePath },
-    Absent { path: FilePath },
-    Mode { path: FilePath, mode: FileMode },
-    User { path: FilePath, user: FileUser },
-    Group { path: FilePath, group: FileGroup },
+    Sourced {
+        source: FilePath,
+        path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
+    Linked {
+        source: FilePath,
+        path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
+    Present {
+        path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
+    Absent {
+        path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
+    Mode {
+        path: FilePath,
+        mode: FileMode,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
+    User {
+        path: FilePath,
+        user: FileUser,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
+    Group {
+        path: FilePath,
+        group: FileGroup,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
 }
 
 impl Display for DirectoryResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DirectoryResource::Sourced { source, path } => {
+            DirectoryResource::Sourced { source, path, .. } => {
                 write!(f, "DirectorySourced({source} -> {path})")
             }
-            DirectoryResource::Linked { source, path } => {
+            DirectoryResource::Linked { source, path, .. } => {
                 write!(f, "DirectoryLinked({source} -> {path})")
             }
-            DirectoryResource::Present { path } => write!(f, "DirectoryPresent({path})"),
-            DirectoryResource::Absent { path } => write!(f, "DirectoryAbsent({path})"),
-            DirectoryResource::Mode { path, mode } => {
+            DirectoryResource::Present { path, .. } => write!(f, "DirectoryPresent({path})"),
+            DirectoryResource::Absent { path, .. } => write!(f, "DirectoryAbsent({path})"),
+            DirectoryResource::Mode { path, mode, .. } => {
                 write!(f, "DirectoryMode({path}, mode = {mode})")
             }
-            DirectoryResource::User { path, user } => {
+            DirectoryResource::User { path, user, .. } => {
                 write!(f, "DirectoryUser({path}, user = {user})")
             }
-            DirectoryResource::Group { path, group } => {
+            DirectoryResource::Group { path, group, .. } => {
                 write!(f, "DirectoryGroup({path}, group = {group})")
             }
         }
@@ -208,54 +255,68 @@ pub enum DirectoryStateError {
 pub enum DirectoryChange {
     Create {
         path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     /// Materialise `path` as a symlink to `source` - emitted for
     /// `state: "linked"`.
     CreateSymlink {
         source: FilePath,
         path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     /// Recursively copy `source` to `path` - emitted for `state: "sourced"`.
     CopyTree {
         source: FilePath,
         path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Remove {
         path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     ChangeMode {
         path: FilePath,
         mode: FileMode,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     ChangeOwner {
         path: FilePath,
         user: Option<FileUser>,
         group: Option<FileGroup>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
 }
 
 impl Display for DirectoryChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DirectoryChange::Create { path } => {
+            DirectoryChange::Create { path, .. } => {
                 write!(f, "Directory::Create(path = {path})")
             }
-            DirectoryChange::CreateSymlink { source, path } => {
+            DirectoryChange::CreateSymlink { source, path, .. } => {
                 write!(
                     f,
                     "Directory::CreateSymlink(source = {source}, path = {path})"
                 )
             }
-            DirectoryChange::CopyTree { source, path } => {
+            DirectoryChange::CopyTree { source, path, .. } => {
                 write!(f, "Directory::CopyTree(source = {source}, path = {path})")
             }
-            DirectoryChange::Remove { path } => {
+            DirectoryChange::Remove { path, .. } => {
                 write!(f, "Directory::Remove(path = {path})")
             }
-            DirectoryChange::ChangeMode { path, mode } => {
+            DirectoryChange::ChangeMode { path, mode, .. } => {
                 write!(f, "Directory::ChangeMode(path = {path}, mode = {mode})")
             }
-            DirectoryChange::ChangeOwner { path, user, group } => {
+            DirectoryChange::ChangeOwner {
+                path, user, group, ..
+            } => {
                 write!(
                     f,
                     "Directory::ChangeOwner(path = {path}, user = {user:?}, group = {group:?})"
@@ -292,11 +353,15 @@ impl ResourceType for Directory {
     fn resources(params: Self::Params) -> Vec<CausalityTree<Self::Resource>> {
         // Mode/User/Group sub-atoms are common to `Sourced` and `Present`
         // (Linked rejects them at parse time, so it never reaches here).
+        // `sudo` propagates into every sub-atom so chmod/chown on a
+        // root-owned path doesn't EACCES after the parent's successful
+        // sudo'd write.
         fn permission_atoms(
             path: &FilePath,
             mode: Option<FileMode>,
             user: Option<FileUser>,
             group: Option<FileGroup>,
+            sudo: bool,
         ) -> Vec<CausalityTree<DirectoryResource>> {
             let mut nodes = Vec::new();
             if let Some(mode) = mode {
@@ -305,6 +370,7 @@ impl ResourceType for Directory {
                     DirectoryResource::Mode {
                         path: path.clone(),
                         mode,
+                        sudo,
                     },
                 ));
             }
@@ -314,6 +380,7 @@ impl ResourceType for Directory {
                     DirectoryResource::User {
                         path: path.clone(),
                         user,
+                        sudo,
                     },
                 ));
             }
@@ -323,6 +390,7 @@ impl ResourceType for Directory {
                     DirectoryResource::Group {
                         path: path.clone(),
                         group,
+                        sudo,
                     },
                 ));
             }
@@ -337,15 +405,17 @@ impl ResourceType for Directory {
                 mode,
                 user,
                 group,
+                sudo,
             } => {
                 let mut nodes = vec![CausalityTree::leaf(
                     CausalityMeta::id("directory".into()),
                     DirectoryResource::Sourced {
                         source,
                         path: path.clone(),
+                        sudo,
                     },
                 )];
-                nodes.extend(permission_atoms(&path, mode, user, group));
+                nodes.extend(permission_atoms(&path, mode, user, group, sudo));
                 nodes
             }
 
@@ -353,9 +423,10 @@ impl ResourceType for Directory {
                 source,
                 source_span: _,
                 path,
+                sudo,
             } => vec![CausalityTree::leaf(
                 CausalityMeta::default(),
-                DirectoryResource::Linked { source, path },
+                DirectoryResource::Linked { source, path, sudo },
             )],
 
             DirectoryParams::Present {
@@ -363,18 +434,22 @@ impl ResourceType for Directory {
                 mode,
                 user,
                 group,
+                sudo,
             } => {
                 let mut nodes = vec![CausalityTree::leaf(
                     CausalityMeta::id("directory".into()),
-                    DirectoryResource::Present { path: path.clone() },
+                    DirectoryResource::Present {
+                        path: path.clone(),
+                        sudo,
+                    },
                 )];
-                nodes.extend(permission_atoms(&path, mode, user, group));
+                nodes.extend(permission_atoms(&path, mode, user, group, sudo));
                 nodes
             }
 
-            DirectoryParams::Absent { path } => vec![CausalityTree::leaf(
+            DirectoryParams::Absent { path, sudo } => vec![CausalityTree::leaf(
                 CausalityMeta::default(),
-                DirectoryResource::Absent { path },
+                DirectoryResource::Absent { path, sudo },
             )],
         }
     }
@@ -386,6 +461,10 @@ impl ResourceType for Directory {
         _ctx: &mut Context,
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
+        // `sudo` is ignored by every probe in v1 - probes run as the calling
+        // user. The common case (root-owned 0755 dirs that the user can stat)
+        // works; restricted parents (e.g. `/root/`) fail with a standard
+        // `FsError`. Sudo-wrapped probes are a follow-up.
         let state = match resource {
             DirectoryResource::Sourced { path, .. } => {
                 // Weak: a directory at `path` is taken to mean Sourced. See
@@ -398,9 +477,11 @@ impl ResourceType for Directory {
                 }
             }
 
-            DirectoryResource::Linked { source, path } => probe_linked_state(source, path).await?,
+            DirectoryResource::Linked { source, path, .. } => {
+                probe_linked_state(source, path).await?
+            }
 
-            DirectoryResource::Present { path } | DirectoryResource::Absent { path } => {
+            DirectoryResource::Present { path, .. } | DirectoryResource::Absent { path, .. } => {
                 if fs::path_exists(path.as_path()).await? {
                     DirectoryState::Present
                 } else {
@@ -408,7 +489,7 @@ impl ResourceType for Directory {
                 }
             }
 
-            DirectoryResource::Mode { path, mode } => {
+            DirectoryResource::Mode { path, mode, .. } => {
                 if !fs::path_exists(path.as_path()).await? {
                     DirectoryState::ModeIncorrect
                 } else {
@@ -422,7 +503,7 @@ impl ResourceType for Directory {
                 }
             }
 
-            DirectoryResource::User { path, user } => {
+            DirectoryResource::User { path, user, .. } => {
                 if !fs::path_exists(path.as_path()).await? {
                     DirectoryState::UserIncorrect
                 } else {
@@ -436,7 +517,7 @@ impl ResourceType for Directory {
                 }
             }
 
-            DirectoryResource::Group { path, group } => {
+            DirectoryResource::Group { path, group, .. } => {
                 if !fs::path_exists(path.as_path()).await? {
                     DirectoryState::GroupIncorrect
                 } else {
@@ -458,60 +539,71 @@ impl ResourceType for Directory {
 
     fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change> {
         match (resource, state) {
-            (DirectoryResource::Sourced { source, path }, DirectoryState::NotSourced) => {
+            (DirectoryResource::Sourced { source, path, sudo }, DirectoryState::NotSourced) => {
                 Some(DirectoryChange::CopyTree {
                     source: source.clone(),
                     path: path.clone(),
+                    sudo: *sudo,
                 })
             }
 
             (DirectoryResource::Sourced { .. }, DirectoryState::Sourced) => None,
 
-            (DirectoryResource::Linked { source, path }, DirectoryState::NotLinked) => {
+            (DirectoryResource::Linked { source, path, sudo }, DirectoryState::NotLinked) => {
                 Some(DirectoryChange::CreateSymlink {
                     source: source.clone(),
                     path: path.clone(),
+                    sudo: *sudo,
                 })
             }
 
             (DirectoryResource::Linked { .. }, DirectoryState::Linked) => None,
 
-            (DirectoryResource::Present { path }, DirectoryState::Absent) => {
-                Some(DirectoryChange::Create { path: path.clone() })
+            (DirectoryResource::Present { path, sudo }, DirectoryState::Absent) => {
+                Some(DirectoryChange::Create {
+                    path: path.clone(),
+                    sudo: *sudo,
+                })
             }
 
             (DirectoryResource::Present { .. }, DirectoryState::Present) => None,
 
-            (DirectoryResource::Absent { path }, DirectoryState::Present) => {
-                Some(DirectoryChange::Remove { path: path.clone() })
+            (DirectoryResource::Absent { path, sudo }, DirectoryState::Present) => {
+                Some(DirectoryChange::Remove {
+                    path: path.clone(),
+                    sudo: *sudo,
+                })
             }
 
             (DirectoryResource::Absent { .. }, DirectoryState::Absent) => None,
 
-            (DirectoryResource::Mode { path, mode }, DirectoryState::ModeIncorrect) => {
+            (DirectoryResource::Mode { path, mode, sudo }, DirectoryState::ModeIncorrect) => {
                 Some(DirectoryChange::ChangeMode {
                     path: path.clone(),
                     mode: *mode,
+                    sudo: *sudo,
                 })
             }
 
             (DirectoryResource::Mode { .. }, DirectoryState::ModeCorrect) => None,
 
-            (DirectoryResource::User { path, user }, DirectoryState::UserIncorrect) => {
+            (DirectoryResource::User { path, user, sudo }, DirectoryState::UserIncorrect) => {
                 Some(DirectoryChange::ChangeOwner {
                     path: path.clone(),
                     user: Some(user.clone()),
                     group: None,
+                    sudo: *sudo,
                 })
             }
 
             (DirectoryResource::User { .. }, DirectoryState::UserCorrect) => None,
 
-            (DirectoryResource::Group { path, group }, DirectoryState::GroupIncorrect) => {
+            (DirectoryResource::Group { path, group, sudo }, DirectoryState::GroupIncorrect) => {
                 Some(DirectoryChange::ChangeOwner {
                     path: path.clone(),
                     user: None,
                     group: Some(group.clone()),
+                    sudo: *sudo,
                 })
             }
 
@@ -528,24 +620,32 @@ impl ResourceType for Directory {
 
     fn operations(change: Self::Change) -> Vec<CausalityTree<Operation>> {
         let op = match change {
-            DirectoryChange::Create { path } => {
-                Operation::Directory(DirectoryOperation::Create { path })
+            DirectoryChange::Create { path, sudo } => {
+                Operation::Directory(DirectoryOperation::Create { path, sudo })
             }
-            DirectoryChange::CreateSymlink { source, path } => {
-                Operation::Directory(DirectoryOperation::CreateSymlink { source, path })
+            DirectoryChange::CreateSymlink { source, path, sudo } => {
+                Operation::Directory(DirectoryOperation::CreateSymlink { source, path, sudo })
             }
-            DirectoryChange::CopyTree { source, path } => {
-                Operation::Directory(DirectoryOperation::CopyTree { source, path })
+            DirectoryChange::CopyTree { source, path, sudo } => {
+                Operation::Directory(DirectoryOperation::CopyTree { source, path, sudo })
             }
-            DirectoryChange::Remove { path } => {
-                Operation::Directory(DirectoryOperation::Remove { path })
+            DirectoryChange::Remove { path, sudo } => {
+                Operation::Directory(DirectoryOperation::Remove { path, sudo })
             }
-            DirectoryChange::ChangeMode { path, mode } => {
-                Operation::Directory(DirectoryOperation::ChangeMode { path, mode })
+            DirectoryChange::ChangeMode { path, mode, sudo } => {
+                Operation::Directory(DirectoryOperation::ChangeMode { path, mode, sudo })
             }
-            DirectoryChange::ChangeOwner { path, user, group } => {
-                Operation::Directory(DirectoryOperation::ChangeOwner { path, user, group })
-            }
+            DirectoryChange::ChangeOwner {
+                path,
+                user,
+                group,
+                sudo,
+            } => Operation::Directory(DirectoryOperation::ChangeOwner {
+                path,
+                user,
+                group,
+                sudo,
+            }),
         };
 
         vec![CausalityTree::leaf(CausalityMeta::default(), op)]
@@ -594,6 +694,7 @@ mod tests {
         let resource = DirectoryResource::Sourced {
             source: file_path(&source),
             path: file_path(&target),
+            sudo: false,
         };
         let mut ctx = lusid_ctx::Context::create(dir.path()).unwrap();
         let state = Directory::state(&mut ctx, &resource).await.unwrap();
@@ -610,6 +711,7 @@ mod tests {
         let resource = DirectoryResource::Sourced {
             source: file_path(&source),
             path: file_path(&target),
+            sudo: false,
         };
         let mut ctx = lusid_ctx::Context::create(dir.path()).unwrap();
         let state = Directory::state(&mut ctx, &resource).await.unwrap();
@@ -682,11 +784,16 @@ mod tests {
         let resource = DirectoryResource::Sourced {
             source: FilePath::new("/host/src"),
             path: FilePath::new("/target/dest"),
+            sudo: false,
         };
         let change =
             Directory::change(&resource, &DirectoryState::NotSourced).expect("some change");
         match change {
-            DirectoryChange::CopyTree { source, path } => {
+            DirectoryChange::CopyTree {
+                source,
+                path,
+                sudo: _,
+            } => {
                 assert_eq!(source.as_path(), std::path::Path::new("/host/src"));
                 assert_eq!(path.as_path(), std::path::Path::new("/target/dest"));
             }
@@ -699,14 +806,83 @@ mod tests {
         let resource = DirectoryResource::Linked {
             source: FilePath::new("/host/src"),
             path: FilePath::new("/target/dest"),
+            sudo: false,
         };
         let change = Directory::change(&resource, &DirectoryState::NotLinked).expect("some change");
         match change {
-            DirectoryChange::CreateSymlink { source, path } => {
+            DirectoryChange::CreateSymlink {
+                source,
+                path,
+                sudo: _,
+            } => {
                 assert_eq!(source.as_path(), std::path::Path::new("/host/src"));
                 assert_eq!(path.as_path(), std::path::Path::new("/target/dest"));
             }
             other => panic!("expected CreateSymlink, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod sudo_tests {
+    use super::*;
+    use rimu::SourceId;
+
+    fn host_path(s: &str) -> FilePath {
+        FilePath::new(s.to_string())
+    }
+
+    /// Mirror of the file-side test: `sudo` propagates from `DirectoryParams`
+    /// into every emitted atom, including the permission sub-atoms. Same
+    /// rationale - chmod/chown on a root-owned dir must also be sudo'd.
+    #[test]
+    fn sourced_with_sudo_propagates_to_all_sub_atoms() {
+        let params = DirectoryParams::Sourced {
+            source: host_path("/host/src"),
+            source_span: Span::new(SourceId::empty(), 0, 0),
+            path: host_path("/etc/myapp"),
+            mode: Some(FileMode::new(0o755)),
+            user: Some(FileUser::new("root")),
+            group: Some(FileGroup::new("root")),
+            sudo: true,
+        };
+        let trees = Directory::resources(params);
+        // Sourced + Mode + User + Group = 4 atoms.
+        assert_eq!(trees.len(), 4);
+        for tree in &trees {
+            let resource = match tree {
+                CausalityTree::Leaf { node, .. } => node,
+                _ => panic!("expected leaf"),
+            };
+            let sudo = match resource {
+                DirectoryResource::Sourced { sudo, .. } => *sudo,
+                DirectoryResource::Mode { sudo, .. } => *sudo,
+                DirectoryResource::User { sudo, .. } => *sudo,
+                DirectoryResource::Group { sudo, .. } => *sudo,
+                other => panic!("unexpected variant: {other:?}"),
+            };
+            assert!(sudo, "every atom under sudo:true should carry sudo:true");
+        }
+    }
+
+    #[test]
+    fn change_propagates_sudo_into_directory_operation() {
+        let change = DirectoryChange::CopyTree {
+            source: host_path("/host/src"),
+            path: host_path("/etc/myapp"),
+            sudo: true,
+        };
+        let ops = Directory::operations(change);
+        assert_eq!(ops.len(), 1);
+        let op = match &ops[0] {
+            CausalityTree::Leaf { node, .. } => node,
+            _ => panic!("expected leaf"),
+        };
+        match op {
+            Operation::Directory(DirectoryOperation::CopyTree { sudo, .. }) => {
+                assert!(*sudo)
+            }
+            other => panic!("expected Directory(CopyTree), got {other:?}"),
         }
     }
 }

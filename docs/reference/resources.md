@@ -133,10 +133,17 @@ Create / source / link / remove a directory.
 
 | State | Extra fields |
 | --- | --- |
-| `"present"` | `path` (target-path, required), `mode`/`user`/`group` (optional). |
-| `"sourced"` | `source` (host-path, required), `path` (target-path, required), `mode`/`user`/`group` (optional). |
-| `"linked"` | `source` (host-path, required), `path` (target-path, required). No `mode`/`user`/`group`. |
-| `"absent"` | `path` (target-path, required). |
+| `"present"` | `path` (target-path, required), `mode`/`user`/`group` (optional), `sudo` (optional bool, default `false`). |
+| `"sourced"` | `source` (host-path, required), `path` (target-path, required), `mode`/`user`/`group` (optional), `sudo` (optional bool, default `false`). |
+| `"linked"` | `source` (host-path, required), `path` (target-path, required), `sudo` (optional bool, default `false`). No `mode`/`user`/`group`. |
+| `"absent"` | `path` (target-path, required), `sudo` (optional bool, default `false`). |
+
+`sudo: true` runs the create/copy/symlink/remove and any follow-up chmod/chown
+under `sudo -n` so a `local apply` (which runs as the calling user) can land
+target paths under `/etc/`, `/var/`, etc. Requires passwordless sudo. The state
+probe stays as the calling user, so the parent directory must still be
+readable to you - this works for the common case (root-owned `0755` parents)
+and not for restricted ones (e.g. `/root/`).
 
 See the [files-and-directories guide](../guides/files-and-directories.md) for `sourced` vs `linked`.
 
@@ -155,14 +162,21 @@ Create / source / link / remove a file. Same state vocabulary as `@resource/dire
     mode: 0o644
     user: "root"
     group: "root"
+    sudo: true
 ```
 
 | State | Extra fields |
 | --- | --- |
-| `"present"` | `path` (target-path, required), `mode`/`user`/`group` (optional). |
-| `"sourced"` | `source` (host-path, required, must be a regular file), `path`, `mode`/`user`/`group` (optional). |
-| `"linked"` | `source` (host-path, required, must be a regular file), `path`. No `mode`/`user`/`group`. |
-| `"absent"` | `path` (target-path, required). |
+| `"present"` | `path` (target-path, required), `mode`/`user`/`group` (optional), `sudo` (optional bool, default `false`). |
+| `"sourced"` | `source` (host-path, required, must be a regular file), `path`, `mode`/`user`/`group` (optional), `sudo` (optional bool, default `false`). |
+| `"linked"` | `source` (host-path, required, must be a regular file), `path`, `sudo` (optional bool, default `false`). No `mode`/`user`/`group`. |
+| `"absent"` | `path` (target-path, required), `sudo` (optional bool, default `false`). |
+
+`sudo: true` semantics match `@resource/directory`: writes via stage-and-`sudo
+install` (mode pinned to `0644` by the install; any explicit `mode:` then
+applies through a follow-up `chmod`), symlinks via stage-temp-then-atomic-`mv`,
+removes via `sudo rm -f`. Probes stay user-mode; `path` must still be readable
+to you.
 
 ---
 

@@ -115,6 +115,7 @@ mod tests {
     fn file_resource(path: &str) -> Resource {
         Resource::File(FileResource::Present {
             path: FilePath::new(path),
+            sudo: false,
         })
     }
 
@@ -157,7 +158,7 @@ mod tests {
         let epoch_of = |needle: &str| -> usize {
             for (i, epoch) in epochs.iter().enumerate() {
                 for resource in epoch {
-                    if let Resource::File(FileResource::Present { path }) = resource
+                    if let Resource::File(FileResource::Present { path, sudo: _ }) = resource
                         && path.as_path() == std::path::Path::new(needle)
                     {
                         return i;

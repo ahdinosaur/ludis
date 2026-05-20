@@ -141,6 +141,14 @@ pub enum FileParams {
         mode: Option<FileMode>,
         user: Option<FileUser>,
         group: Option<FileGroup>,
+        /// When set, the write and any follow-up `chmod`/`chown` run via
+        /// `sudo -n`. Lets a `local apply` (which runs as the calling user)
+        /// land target paths under `/etc/`, `/var/`, etc. without an
+        /// external stage-and-install workaround. State probe stays as the
+        /// calling user, so `path` must still be readable to them (the
+        /// common case: world-readable root-owned 0644 configs).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
 
     /// Materialise `path` as a symlink to `source` (a host-path on the
@@ -165,6 +173,11 @@ pub enum FileParams {
         #[serde(skip, default)]
         source_span: Span,
         path: FilePath,
+        /// See [`FileParams::Sourced::sudo`]. For symlinks the only effect
+        /// is the `ln`/`mv` shell-out runs as root, so a root-owned parent
+        /// directory accepts the new link.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
 
     Present {
@@ -172,9 +185,16 @@ pub enum FileParams {
         mode: Option<FileMode>,
         user: Option<FileUser>,
         group: Option<FileGroup>,
+        /// See [`FileParams::Sourced::sudo`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Absent {
         path: FilePath,
+        /// See [`FileParams::Sourced::sudo`]. For `absent` the only effect
+        /// is the `rm` runs as root.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
 }
 
@@ -199,6 +219,7 @@ impl ParseParams for FileParams {
                     mode: fields.optional_u32("mode")?.map(FileMode::new),
                     user: fields.optional_string("user")?.map(FileUser::new),
                     group: fields.optional_string("group")?.map(FileGroup::new),
+                    sudo: fields.optional_bool("sudo")?.unwrap_or(false),
                 }
             }
             "linked" => {
@@ -211,6 +232,7 @@ impl ParseParams for FileParams {
                     source: FilePath::new(source_path.to_string_lossy().into_owned()),
                     source_span,
                     path: FilePath::new(fields.required_target_path("path")?),
+                    sudo: fields.optional_bool("sudo")?.unwrap_or(false),
                 }
             }
             "present" => FileParams::Present {
@@ -218,9 +240,11 @@ impl ParseParams for FileParams {
                 mode: fields.optional_u32("mode")?.map(FileMode::new),
                 user: fields.optional_string("user")?.map(FileUser::new),
                 group: fields.optional_string("group")?.map(FileGroup::new),
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
             },
             "absent" => FileParams::Absent {
                 path: FilePath::new(fields.required_target_path("path")?),
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
             },
             _ => unreachable!(),
         };
@@ -239,7 +263,7 @@ impl Display for FileParams {
                 write!(f, "File::Linked(source = {source}, path = {path})")
             }
             FileParams::Present { path, .. } => write!(f, "File::Present(path = {path})"),
-            FileParams::Absent { path } => write!(f, "File::Absent(path = {path})"),
+            FileParams::Absent { path, .. } => write!(f, "File::Absent(path = {path})"),
         }
     }
 }
@@ -255,10 +279,17 @@ pub enum FileResource {
         /// use it to decide whether file content is shipped verbatim or as
         /// [`Content::Redacted`].
         is_secret: bool,
+        /// See [`FileParams::Sourced::sudo`]. Propagated into the emitted
+        /// `FileChange`/`FileOperation` so the write happens under
+        /// `sudo -n`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Linked {
         source: FilePath,
         path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     /// Contents sourced from a decrypted secret by name; resolved against
     /// [`Context::secrets`] at state/apply time so plaintext never travels
@@ -266,24 +297,40 @@ pub enum FileResource {
     Secret {
         name: String,
         path: FilePath,
+        /// `@resource/secret` doesn't expose `sudo:` today; this is always
+        /// `false`. Carried on the variant for shape-parity with other
+        /// `FileResource` arms - cheap insurance against a future
+        /// `@resource/secret` that wants to write to `/etc/`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Present {
         path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Absent {
         path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Mode {
         path: FilePath,
         mode: FileMode,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     User {
         path: FilePath,
         user: FileUser,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Group {
         path: FilePath,
         group: FileGroup,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
 }
 
@@ -293,17 +340,19 @@ impl Display for FileResource {
             FileResource::Sourced { source, path, .. } => {
                 write!(f, "FileSourced({source} -> {path})")
             }
-            FileResource::Linked { source, path } => {
+            FileResource::Linked { source, path, .. } => {
                 write!(f, "FileLinked({source} -> {path})")
             }
-            FileResource::Secret { name, path } => {
+            FileResource::Secret { name, path, .. } => {
                 write!(f, "FileSecret(secret = {name} -> {path})")
             }
-            FileResource::Present { path } => write!(f, "FilePresent({path})"),
-            FileResource::Absent { path } => write!(f, "FileAbsent({path})"),
-            FileResource::Mode { path, mode } => write!(f, "FileMode({path}, mode = {mode})"),
-            FileResource::User { path, user } => write!(f, "FileUser({path}, user = {user})"),
-            FileResource::Group { path, group } => write!(f, "FileGroup({path}, group = {group})"),
+            FileResource::Present { path, .. } => write!(f, "FilePresent({path})"),
+            FileResource::Absent { path, .. } => write!(f, "FileAbsent({path})"),
+            FileResource::Mode { path, mode, .. } => write!(f, "FileMode({path}, mode = {mode})"),
+            FileResource::User { path, user, .. } => write!(f, "FileUser({path}, user = {user})"),
+            FileResource::Group { path, group, .. } => {
+                write!(f, "FileGroup({path}, group = {group})")
+            }
         }
     }
 }
@@ -384,22 +433,34 @@ pub enum FileChange {
         source: FileSource,
         before: Option<Content>,
         after: Content,
+        /// Propagates the resource atom's `sudo:` flag to the emitted
+        /// `FileOperation::Write`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     CreateSymlink {
         source: FilePath,
         path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Remove {
         path: FilePath,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     ChangeMode {
         path: FilePath,
         mode: FileMode,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     ChangeOwner {
         path: FilePath,
         user: Option<FileUser>,
         group: Option<FileGroup>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
 }
 
@@ -422,14 +483,16 @@ impl Display for FileChange {
                     write!(f, "File::Write(path = {}, source = Secret({}))", path, name)
                 }
             },
-            FileChange::CreateSymlink { source, path } => {
+            FileChange::CreateSymlink { source, path, .. } => {
                 write!(f, "File::CreateSymlink(source = {source}, path = {path})")
             }
-            FileChange::Remove { path } => write!(f, "File::Remove(path = {path})"),
-            FileChange::ChangeMode { path, mode } => {
+            FileChange::Remove { path, .. } => write!(f, "File::Remove(path = {path})"),
+            FileChange::ChangeMode { path, mode, .. } => {
                 write!(f, "File::ChangeMode(path = {path}, mode = {mode})")
             }
-            FileChange::ChangeOwner { path, user, group } => write!(
+            FileChange::ChangeOwner {
+                path, user, group, ..
+            } => write!(
                 f,
                 "File::ChangeOwner(path = {path}, user = {user:?}, group = {group:?})"
             ),
@@ -467,11 +530,15 @@ impl ResourceType for File {
     fn resources(params: Self::Params) -> Vec<CausalityTree<Self::Resource>> {
         // Mode/User/Group sub-atoms are common to `Sourced` and `Present`
         // (Linked rejects them at parse time, so it never reaches here).
+        // `sudo` is propagated into every sub-atom: chmod/chown on a
+        // root-owned path also need sudo, otherwise the follow-up atoms
+        // would EACCES after a successful sudo'd write.
         fn permission_atoms(
             path: &FilePath,
             mode: Option<FileMode>,
             user: Option<FileUser>,
             group: Option<FileGroup>,
+            sudo: bool,
         ) -> Vec<CausalityTree<FileResource>> {
             let mut nodes = Vec::new();
             if let Some(mode) = mode {
@@ -480,6 +547,7 @@ impl ResourceType for File {
                     FileResource::Mode {
                         path: path.clone(),
                         mode,
+                        sudo,
                     },
                 ));
             }
@@ -489,6 +557,7 @@ impl ResourceType for File {
                     FileResource::User {
                         path: path.clone(),
                         user,
+                        sudo,
                     },
                 ));
             }
@@ -498,6 +567,7 @@ impl ResourceType for File {
                     FileResource::Group {
                         path: path.clone(),
                         group,
+                        sudo,
                     },
                 ));
             }
@@ -512,6 +582,7 @@ impl ResourceType for File {
                 mode,
                 user,
                 group,
+                sudo,
             } => {
                 let mut nodes = vec![CausalityTree::leaf(
                     CausalityMeta::id("file".into()),
@@ -522,9 +593,10 @@ impl ResourceType for File {
                         // which knows the secrets dir; leaving false here
                         // keeps `File` itself secrets-agnostic.
                         is_secret: false,
+                        sudo,
                     },
                 )];
-                nodes.extend(permission_atoms(&path, mode, user, group));
+                nodes.extend(permission_atoms(&path, mode, user, group, sudo));
                 nodes
             }
 
@@ -532,9 +604,10 @@ impl ResourceType for File {
                 source,
                 source_span: _,
                 path,
+                sudo,
             } => vec![CausalityTree::leaf(
                 CausalityMeta::default(),
-                FileResource::Linked { source, path },
+                FileResource::Linked { source, path, sudo },
             )],
 
             FileParams::Present {
@@ -542,18 +615,22 @@ impl ResourceType for File {
                 mode,
                 user,
                 group,
+                sudo,
             } => {
                 let mut nodes = vec![CausalityTree::leaf(
                     CausalityMeta::id("file".into()),
-                    FileResource::Present { path: path.clone() },
+                    FileResource::Present {
+                        path: path.clone(),
+                        sudo,
+                    },
                 )];
-                nodes.extend(permission_atoms(&path, mode, user, group));
+                nodes.extend(permission_atoms(&path, mode, user, group, sudo));
                 nodes
             }
 
-            FileParams::Absent { path } => vec![CausalityTree::leaf(
+            FileParams::Absent { path, sudo } => vec![CausalityTree::leaf(
                 CausalityMeta::default(),
-                FileResource::Absent { path },
+                FileResource::Absent { path, sudo },
             )],
         }
     }
@@ -565,11 +642,16 @@ impl ResourceType for File {
         ctx: &mut Context,
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
+        // `sudo` is ignored by every probe in v1 - probes run as the calling
+        // user. The common case (root-owned 0644 files in 0755 parents)
+        // works; restricted paths (mode 0600, parents 0700) fail with a
+        // standard `FsError`. Sudo-wrapped probes are a follow-up.
         let state = match resource {
             FileResource::Sourced {
                 source,
                 path,
                 is_secret,
+                sudo: _,
             } => {
                 let source_bytes = fs::read_file_to_bytes(source.as_path()).await?;
                 if !fs::path_exists(path.as_path()).await? {
@@ -592,9 +674,9 @@ impl ResourceType for File {
                 }
             }
 
-            FileResource::Linked { source, path } => probe_linked_state(source, path).await?,
+            FileResource::Linked { source, path, .. } => probe_linked_state(source, path).await?,
 
-            FileResource::Secret { name, path } => {
+            FileResource::Secret { name, path, .. } => {
                 // Compare the file's current contents against the
                 // decrypted secret plaintext. A missing secret here
                 // (e.g. typo in the plan's `name` field) surfaces as
@@ -625,7 +707,7 @@ impl ResourceType for File {
                 }
             }
 
-            FileResource::Present { path } | FileResource::Absent { path } => {
+            FileResource::Present { path, .. } | FileResource::Absent { path, .. } => {
                 if fs::path_exists(path.as_path()).await? {
                     FileState::Present
                 } else {
@@ -633,7 +715,7 @@ impl ResourceType for File {
                 }
             }
 
-            FileResource::Mode { path, mode } => {
+            FileResource::Mode { path, mode, .. } => {
                 if !fs::path_exists(path.as_path()).await? {
                     FileState::ModeIncorrect
                 } else {
@@ -647,7 +729,7 @@ impl ResourceType for File {
                 }
             }
 
-            FileResource::User { path, user } => {
+            FileResource::User { path, user, .. } => {
                 if !fs::path_exists(path.as_path()).await? {
                     FileState::UserIncorrect
                 } else {
@@ -661,7 +743,7 @@ impl ResourceType for File {
                 }
             }
 
-            FileResource::Group { path, group } => {
+            FileResource::Group { path, group, .. } => {
                 if !fs::path_exists(path.as_path()).await? {
                     FileState::GroupIncorrect
                 } else {
@@ -684,76 +766,87 @@ impl ResourceType for File {
     fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change> {
         match (resource, state) {
             (
-                FileResource::Sourced { source, path, .. },
+                FileResource::Sourced {
+                    source, path, sudo, ..
+                },
                 FileState::NotSourced { current, desired },
             ) => Some(FileChange::Write {
                 path: path.clone(),
                 source: FileSource::Path(source.clone()),
                 before: current.clone(),
                 after: desired.clone(),
+                sudo: *sudo,
             }),
 
             (FileResource::Sourced { .. }, FileState::Sourced { .. }) => None,
 
-            (FileResource::Linked { source, path }, FileState::NotLinked) => {
+            (FileResource::Linked { source, path, sudo }, FileState::NotLinked) => {
                 Some(FileChange::CreateSymlink {
                     source: source.clone(),
                     path: path.clone(),
+                    sudo: *sudo,
                 })
             }
 
             (FileResource::Linked { .. }, FileState::Linked) => None,
 
-            (FileResource::Secret { name, path }, FileState::NotSourced { current, desired }) => {
-                Some(FileChange::Write {
-                    path: path.clone(),
-                    source: FileSource::Secret(name.clone()),
-                    before: current.clone(),
-                    after: desired.clone(),
-                })
-            }
+            (
+                FileResource::Secret { name, path, sudo },
+                FileState::NotSourced { current, desired },
+            ) => Some(FileChange::Write {
+                path: path.clone(),
+                source: FileSource::Secret(name.clone()),
+                before: current.clone(),
+                after: desired.clone(),
+                sudo: *sudo,
+            }),
 
             (FileResource::Secret { .. }, FileState::Sourced { .. }) => None,
 
-            (FileResource::Present { path }, FileState::Absent) => Some(FileChange::Write {
+            (FileResource::Present { path, sudo }, FileState::Absent) => Some(FileChange::Write {
                 path: path.clone(),
                 source: FileSource::Contents(Vec::new()),
                 before: None,
                 after: Content::Bytes(Vec::new()),
+                sudo: *sudo,
             }),
 
             (FileResource::Present { .. }, FileState::Present) => None,
 
-            (FileResource::Absent { path }, FileState::Present) => {
-                Some(FileChange::Remove { path: path.clone() })
-            }
+            (FileResource::Absent { path, sudo }, FileState::Present) => Some(FileChange::Remove {
+                path: path.clone(),
+                sudo: *sudo,
+            }),
 
             (FileResource::Absent { .. }, FileState::Absent) => None,
 
-            (FileResource::Mode { path, mode }, FileState::ModeIncorrect) => {
+            (FileResource::Mode { path, mode, sudo }, FileState::ModeIncorrect) => {
                 Some(FileChange::ChangeMode {
                     path: path.clone(),
                     mode: *mode,
+                    sudo: *sudo,
                 })
             }
 
             (FileResource::Mode { .. }, FileState::ModeCorrect) => None,
 
-            (FileResource::User { path, user }, FileState::UserIncorrect) => {
+            (FileResource::User { path, user, sudo }, FileState::UserIncorrect) => {
                 Some(FileChange::ChangeOwner {
                     path: path.clone(),
                     user: Some(user.clone()),
                     group: None,
+                    sudo: *sudo,
                 })
             }
 
             (FileResource::User { .. }, FileState::UserCorrect) => None,
 
-            (FileResource::Group { path, group }, FileState::GroupIncorrect) => {
+            (FileResource::Group { path, group, sudo }, FileState::GroupIncorrect) => {
                 Some(FileChange::ChangeOwner {
                     path: path.clone(),
                     user: None,
                     group: Some(group.clone()),
+                    sudo: *sudo,
                 })
             }
 
@@ -775,17 +868,28 @@ impl ResourceType for File {
                 source,
                 before: _,
                 after: _,
-            } => Operation::File(FileOperation::Write { path, source }),
-            FileChange::CreateSymlink { source, path } => {
-                Operation::File(FileOperation::CreateSymlink { source, path })
+                sudo,
+            } => Operation::File(FileOperation::Write { path, source, sudo }),
+            FileChange::CreateSymlink { source, path, sudo } => {
+                Operation::File(FileOperation::CreateSymlink { source, path, sudo })
             }
-            FileChange::Remove { path } => Operation::File(FileOperation::Remove { path }),
-            FileChange::ChangeMode { path, mode } => {
-                Operation::File(FileOperation::ChangeMode { path, mode })
+            FileChange::Remove { path, sudo } => {
+                Operation::File(FileOperation::Remove { path, sudo })
             }
-            FileChange::ChangeOwner { path, user, group } => {
-                Operation::File(FileOperation::ChangeOwner { path, user, group })
+            FileChange::ChangeMode { path, mode, sudo } => {
+                Operation::File(FileOperation::ChangeMode { path, mode, sudo })
             }
+            FileChange::ChangeOwner {
+                path,
+                user,
+                group,
+                sudo,
+            } => Operation::File(FileOperation::ChangeOwner {
+                path,
+                user,
+                group,
+                sudo,
+            }),
         };
 
         vec![CausalityTree::leaf(CausalityMeta::default(), op)]
@@ -837,6 +941,7 @@ mod tests {
             source: file_path(&source),
             path: file_path(&target),
             is_secret: false,
+            sudo: false,
         };
         let mut ctx = lusid_ctx::Context::create(dir.path()).unwrap();
         let state = File::state(&mut ctx, &resource).await.unwrap();
@@ -860,6 +965,7 @@ mod tests {
             source: file_path(&source),
             path: file_path(&target),
             is_secret: false,
+            sudo: false,
         };
         let mut ctx = lusid_ctx::Context::create(dir.path()).unwrap();
         let state = File::state(&mut ctx, &resource).await.unwrap();
@@ -886,6 +992,7 @@ mod tests {
             source: file_path(&source),
             path: file_path(&target),
             is_secret: false,
+            sudo: false,
         };
         let mut ctx = lusid_ctx::Context::create(dir.path()).unwrap();
         let state = File::state(&mut ctx, &resource).await.unwrap();
@@ -909,6 +1016,7 @@ mod tests {
             source: file_path(&source),
             path: file_path(&target),
             is_secret: true,
+            sudo: false,
         };
         let mut ctx = lusid_ctx::Context::create(dir.path()).unwrap();
         let state = File::state(&mut ctx, &resource).await.unwrap();
@@ -991,6 +1099,7 @@ mod tests {
             source: FilePath::new("/host/src.txt"),
             path: FilePath::new("/target/dest.txt"),
             is_secret: false,
+            sudo: false,
         };
         let change = File::change(
             &resource,
@@ -1006,6 +1115,7 @@ mod tests {
                 source: FileSource::Path(s),
                 before,
                 after,
+                sudo: _,
             } => {
                 assert_eq!(path.as_path(), std::path::Path::new("/target/dest.txt"));
                 assert_eq!(s.as_path(), std::path::Path::new("/host/src.txt"));
@@ -1021,10 +1131,15 @@ mod tests {
         let resource = FileResource::Linked {
             source: FilePath::new("/host/src.txt"),
             path: FilePath::new("/target/dest.txt"),
+            sudo: false,
         };
         let change = File::change(&resource, &FileState::NotLinked).expect("some change");
         match change {
-            FileChange::CreateSymlink { source, path } => {
+            FileChange::CreateSymlink {
+                source,
+                path,
+                sudo: _,
+            } => {
                 assert_eq!(source.as_path(), std::path::Path::new("/host/src.txt"));
                 assert_eq!(path.as_path(), std::path::Path::new("/target/dest.txt"));
             }
@@ -1100,6 +1215,7 @@ mod serde_tests {
             source: FileSource::Secret("api-key".into()),
             before: Some(Content::redacted(plaintext.as_bytes())),
             after: Content::redacted(plaintext.as_bytes()),
+            sudo: false,
         };
         let json = serde_json::to_string(&change).unwrap();
         assert!(
@@ -1128,5 +1244,144 @@ mod serde_tests {
             &FilePath::new("/proj/secrets/api.txt"),
             Path::new("relative/secrets"),
         ));
+    }
+}
+
+#[cfg(test)]
+mod sudo_tests {
+    use super::*;
+
+    fn host_path(s: &str) -> FilePath {
+        FilePath::new(s.to_string())
+    }
+
+    /// `sudo: true` on a `Sourced` resource propagates into every emitted
+    /// atom - including the Mode/User/Group sub-atoms. This is load-bearing:
+    /// if the parent write runs as root but the follow-up chmod/chown run
+    /// as the calling user, those would EACCES against the now-root-owned
+    /// path. The invariant is "all-sudo or no-sudo within one resource".
+    #[test]
+    fn sourced_with_sudo_propagates_to_all_sub_atoms() {
+        let params = FileParams::Sourced {
+            source: host_path("/host/src"),
+            source_span: Span::new(rimu::SourceId::empty(), 0, 0),
+            path: host_path("/etc/foo"),
+            mode: Some(FileMode::new(0o644)),
+            user: Some(FileUser::new("root")),
+            group: Some(FileGroup::new("root")),
+            sudo: true,
+        };
+        let trees = File::resources(params);
+        // Sourced + Mode + User + Group = 4 atoms.
+        assert_eq!(trees.len(), 4);
+        for tree in &trees {
+            let resource = match tree {
+                CausalityTree::Leaf { node, .. } => node,
+                _ => panic!("expected leaf"),
+            };
+            let sudo = match resource {
+                FileResource::Sourced { sudo, .. } => *sudo,
+                FileResource::Mode { sudo, .. } => *sudo,
+                FileResource::User { sudo, .. } => *sudo,
+                FileResource::Group { sudo, .. } => *sudo,
+                other => panic!("unexpected variant: {other:?}"),
+            };
+            assert!(sudo, "every atom under sudo:true should carry sudo:true");
+        }
+    }
+
+    /// Mirror of the above: no-sudo stays no-sudo. Pins the default-false
+    /// path so a serde misconfiguration that flipped the default would be
+    /// caught.
+    #[test]
+    fn sourced_without_sudo_leaves_every_sub_atom_at_false() {
+        let params = FileParams::Sourced {
+            source: host_path("/host/src"),
+            source_span: Span::new(rimu::SourceId::empty(), 0, 0),
+            path: host_path("/home/me/foo"),
+            mode: Some(FileMode::new(0o644)),
+            user: None,
+            group: None,
+            sudo: false,
+        };
+        let trees = File::resources(params);
+        for tree in &trees {
+            let resource = match tree {
+                CausalityTree::Leaf { node, .. } => node,
+                _ => panic!("expected leaf"),
+            };
+            let sudo = match resource {
+                FileResource::Sourced { sudo, .. } => *sudo,
+                FileResource::Mode { sudo, .. } => *sudo,
+                other => panic!("unexpected variant: {other:?}"),
+            };
+            assert!(!sudo);
+        }
+    }
+
+    #[test]
+    fn change_propagates_sudo_from_sourced_resource() {
+        let resource = FileResource::Sourced {
+            source: host_path("/host/src"),
+            path: host_path("/etc/foo"),
+            is_secret: false,
+            sudo: true,
+        };
+        let state = FileState::NotSourced {
+            current: None,
+            desired: Content::Bytes(b"hi".to_vec()),
+        };
+        let change = File::change(&resource, &state).expect("Some change");
+        match change {
+            FileChange::Write { sudo, .. } => assert!(sudo, "Write should carry sudo:true"),
+            other => panic!("expected Write, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn operations_propagates_sudo_into_file_operation() {
+        let change = FileChange::Write {
+            path: host_path("/etc/foo"),
+            source: FileSource::Contents(b"hi".to_vec()),
+            before: None,
+            after: Content::Bytes(b"hi".to_vec()),
+            sudo: true,
+        };
+        let ops = File::operations(change);
+        assert_eq!(ops.len(), 1);
+        let op = match &ops[0] {
+            CausalityTree::Leaf { node, .. } => node,
+            _ => panic!("expected leaf"),
+        };
+        match op {
+            Operation::File(FileOperation::Write { sudo, .. }) => {
+                assert!(*sudo, "FileOperation::Write should carry sudo:true")
+            }
+            other => panic!("expected File(Write), got {other:?}"),
+        }
+    }
+
+    /// `serde(default)` on `sudo` lets older payloads (pre-sudo wire) round-
+    /// trip through the new types as `sudo: false`. Pins the back-compat
+    /// contract for at least one variant of `FileResource` and `FileChange`;
+    /// the contract is the same on every other variant by construction.
+    #[test]
+    fn file_resource_back_compat_deserializes_missing_sudo_to_false() {
+        let json = r#"{"Sourced":{"source":"/h","path":"/t","is_secret":false}}"#;
+        let resource: FileResource = serde_json::from_str(json).expect("parse old payload");
+        match resource {
+            FileResource::Sourced { sudo, .. } => assert!(!sudo),
+            other => panic!("expected Sourced, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_change_back_compat_deserializes_missing_sudo_to_false() {
+        let json = r#"{"CreateSymlink":{"source":"/h","path":"/t"}}"#;
+        let change: FileChange = serde_json::from_str(json).expect("parse old payload");
+        match change {
+            FileChange::CreateSymlink { sudo, .. } => assert!(!sudo),
+            other => panic!("expected CreateSymlink, got {other:?}"),
+        }
     }
 }
