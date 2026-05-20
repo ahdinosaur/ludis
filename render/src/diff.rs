@@ -49,17 +49,28 @@ pub fn render_change(change: &ResourceChange, opts: DiffOptions) -> RenderedNode
 }
 
 fn render_file_change(change: &FileChange, opts: DiffOptions) -> RenderedNode {
+    // `sudo` is a privilege indicator on the operation, not a content diff;
+    // ignore it here. The TUI surfaces the `[sudo]` prefix via the
+    // operation's `Display` impl in a separate pane.
     match change {
         FileChange::Write {
             path,
             source,
             before,
             after,
+            sudo: _,
         } => render_write(path, source, before.as_ref(), after, opts),
-        FileChange::ChangeMode { path, mode } => render_mode_change(path, *mode),
-        FileChange::ChangeOwner { path, user, group } => {
-            render_owner_change(path, user.as_ref(), group.as_ref())
-        }
+        FileChange::ChangeMode {
+            path,
+            mode,
+            sudo: _,
+        } => render_mode_change(path, *mode),
+        FileChange::ChangeOwner {
+            path,
+            user,
+            group,
+            sudo: _,
+        } => render_owner_change(path, user.as_ref(), group.as_ref()),
         // CreateSymlink / Remove have no meaningful before/after; the
         // one-line Display summary already says everything.
         other => other.render(),
@@ -480,6 +491,7 @@ mod tests {
             source: FileSource::Path(FilePath::new("/host/nginx.conf")),
             before: Some(Content::Bytes(before.as_bytes().to_vec())),
             after: Content::Bytes(after.as_bytes().to_vec()),
+            sudo: false,
         };
         render_file_change(&change, DiffOptions::default()).to_plain_string()
     }
@@ -498,6 +510,7 @@ mod tests {
             source: FileSource::Path(FilePath::new("/host/new.conf")),
             before: None,
             after: Content::Bytes(b"alpha\nbeta\n".to_vec()),
+            sudo: false,
         };
         let s = render_file_change(&change, DiffOptions::default()).to_plain_string();
         assert!(s.contains("(no file)"));
@@ -513,6 +526,7 @@ mod tests {
             source: FileSource::Secret("api-key".into()),
             before: Some(Content::redacted(plaintext.as_bytes())),
             after: Content::redacted(plaintext.as_bytes()),
+            sudo: false,
         };
         let s = render_file_change(&change, DiffOptions::default()).to_plain_string();
         assert!(!s.contains(plaintext), "plaintext leaked: {s}");
@@ -528,6 +542,7 @@ mod tests {
             source: FileSource::Path(FilePath::new("/host/app")),
             before: Some(Content::Bytes(before)),
             after: Content::Bytes(after),
+            sudo: false,
         };
         let s = render_file_change(&change, DiffOptions::default()).to_plain_string();
         assert!(s.contains("<binary content"), "expected placeholder: {s}");
@@ -538,6 +553,7 @@ mod tests {
         let change = FileChange::ChangeMode {
             path: FilePath::new("/etc/nginx.conf"),
             mode: FileMode::new(0o600),
+            sudo: false,
         };
         let s = render_file_change(&change, DiffOptions::default()).to_plain_string();
         assert!(s.contains("mode"));
@@ -551,6 +567,7 @@ mod tests {
             source: FileSource::Path(FilePath::new("/host/nginx.conf")),
             before: Some(Content::Bytes(b"a\nb\nc\n".to_vec())),
             after: Content::Bytes(b"a\nbb\nc\n".to_vec()),
+            sudo: false,
         };
         let s = render_file_change(
             &change,
@@ -585,6 +602,7 @@ mod tests {
             source: FileSource::Path(FilePath::new("/host/nginx.conf")),
             before: Some(Content::Bytes(b"a\nb\n".to_vec())),
             after: Content::Bytes(b"x\ny\nz\n".to_vec()),
+            sudo: false,
         };
         let s = render_file_change(
             &change,
@@ -615,6 +633,7 @@ mod tests {
             source: FileSource::Path(FilePath::new("/host/nginx.conf")),
             before: Some(Content::Bytes(b"a\nb\nc\nd\n".to_vec())),
             after: Content::Bytes(b"a\nc\nd\n".to_vec()),
+            sudo: false,
         };
         let s = render_file_change(
             &change,
@@ -645,6 +664,7 @@ mod tests {
             path: FilePath::new("/etc/nginx.conf"),
             user: Some(FileUser::new("root")),
             group: Some(FileGroup::new("wheel")),
+            sudo: false,
         };
         let s = render_file_change(&change, DiffOptions::default()).to_plain_string();
         assert!(s.contains("user"), "missing user row: {s}");
@@ -658,6 +678,7 @@ mod tests {
         let change = FileChange::CreateSymlink {
             source: FilePath::new("/host/src"),
             path: FilePath::new("/target/link"),
+            sudo: false,
         };
         let s = render_file_change(&change, DiffOptions::default()).to_plain_string();
         assert_eq!(s, change.to_string());
@@ -673,6 +694,7 @@ mod tests {
             source: FileSource::Path(FilePath::new("/host/nginx.conf")),
             before: Some(Content::Bytes(b"unchanged\n".to_vec())),
             after: Content::Bytes(b"unchanged\n".to_vec()),
+            sudo: false,
         };
         let s = render_file_change(&change, DiffOptions::default()).to_plain_string();
         assert!(s.contains("(no textual change)"), "missing marker: {s}");
@@ -688,6 +710,7 @@ mod tests {
             source: FileSource::Path(FilePath::new("/host/nginx.conf")),
             before: Some(Content::Bytes(b"a\n".to_vec())),
             after: Content::Bytes(b"b\n".to_vec()),
+            sudo: false,
         };
         let s = render_file_change(
             &change,
@@ -712,6 +735,7 @@ mod tests {
             source: FileSource::Path(FilePath::new("/host/x")),
             before: Some(Content::Bytes(before)),
             after: Content::Bytes(after),
+            sudo: false,
         };
         let s = render_file_change(&change, DiffOptions::default()).to_plain_string();
         assert!(s.contains("<binary content"), "expected placeholder: {s}");
@@ -727,6 +751,7 @@ mod tests {
             source: FileSource::Secret("api-key".into()),
             before: Some(Content::Bytes(b"plain-before".to_vec())),
             after: Content::redacted(b"secret-after"),
+            sudo: false,
         };
         let s = render_file_change(&change, DiffOptions::default()).to_plain_string();
         assert!(!s.contains("plain-before"), "before plaintext leaked: {s}");

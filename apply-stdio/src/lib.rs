@@ -1164,6 +1164,7 @@ mod tests {
             meta: PlanMeta::default(),
             node: Resource::File(FileResource::Present {
                 path: FilePath::new(path),
+                sudo: false,
             }),
         }
     }

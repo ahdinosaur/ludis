@@ -100,6 +100,11 @@ impl ResourceType for Secret {
                 FileResource::Secret {
                     name,
                     path: path.clone(),
+                    // `@resource/secret` doesn't expose `sudo:` today.
+                    // Plaintext secrets are expected to land in
+                    // user-writable paths (e.g. `/run/<user>/...`); a
+                    // future `/etc/secrets/...` use-case can wire this up.
+                    sudo: false,
                 },
             ),
             // Always emit a Mode atom: the default mode is a guarantee of this
@@ -110,6 +115,7 @@ impl ResourceType for Secret {
                 FileResource::Mode {
                     path: path.clone(),
                     mode,
+                    sudo: false,
                 },
             ),
         ];
@@ -120,6 +126,7 @@ impl ResourceType for Secret {
                 FileResource::User {
                     path: path.clone(),
                     user,
+                    sudo: false,
                 },
             ));
         }
@@ -127,7 +134,11 @@ impl ResourceType for Secret {
         if let Some(group) = group {
             nodes.push(CausalityTree::leaf(
                 CausalityMeta::requires(vec!["file".into()]),
-                FileResource::Group { path, group },
+                FileResource::Group {
+                    path,
+                    group,
+                    sudo: false,
+                },
             ));
         }
 

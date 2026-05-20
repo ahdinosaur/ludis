@@ -930,6 +930,7 @@ mod tests {
             meta: PlanMeta::default(),
             node: Resource::File(FileResource::Present {
                 path: FilePath::new(path),
+                sudo: false,
             }),
         }
     }
@@ -1044,6 +1045,7 @@ mod tests {
                 2,
                 Resource::File(FileResource::Present {
                     path: FilePath::new("/a"),
+                    sudo: false,
                 }),
             )],
             vec![],
@@ -1051,6 +1053,7 @@ mod tests {
                 3,
                 Resource::File(FileResource::Present {
                     path: FilePath::new("/b"),
+                    sudo: false,
                 }),
             )],
         ];
@@ -1074,6 +1077,7 @@ mod tests {
             1,
             Resource::File(FileResource::Present {
                 path: FilePath::new("/a"),
+                sudo: false,
             }),
         )]];
         let latest = build_latest_epoch_by_branch(&epochs, &parent_of, &flat);
@@ -1083,6 +1087,7 @@ mod tests {
     fn file_resource(path: &str) -> Resource {
         Resource::File(FileResource::Present {
             path: FilePath::new(path),
+            sudo: false,
         })
     }
 
