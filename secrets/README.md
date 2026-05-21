@@ -1,6 +1,6 @@
 # lusid-secrets
 
-Age-encrypted project secrets, agenix-style: ciphertext lives in-repo, the operator's identity decrypts at apply time, and `@resource/secret` is the only path to plaintext on the target.
+Age-encrypted project secrets, agenix-style: ciphertext lives in-repo, the operator's SSH key decrypts at apply time, and `@resource/secret` is the only path to plaintext on the target.
 
 ## Flow
 
@@ -9,9 +9,9 @@ Age-encrypted project secrets, agenix-style: ciphertext lives in-repo, the opera
                               [operators] [machines] [groups] [files]
                                      |
                                      v
- host identity  -->  Secrets::load(secrets_dir, identity_path, guest_mode)
- (x25519 / ssh)                     |
-                                    v
+ operator SSH key  -->  Secrets::load(secrets_dir, identity_path, guest_mode)
+ (~/.ssh/id_ed25519)               |
+                                   v
                     Secrets { HashMap<String, SecretBox<String>> }
                                     |
                                     v
@@ -43,7 +43,7 @@ What `@resource/secret` defends against - and what it doesn't.
 
 **Operator-side risks:**
 
-- The operator's identity (`~/.config/lusid/identity`) is the trust root; losing it = full plaintext access to every project secret. Treat it like an SSH private key.
+- The operator's SSH private key (`~/.ssh/id_ed25519` by default) is the trust root; losing it = full plaintext access to every project secret *and* SSH access to every machine the key is authorised on. Standard SSH-key hygiene applies.
 - `lusid secrets cat` writes plaintext to stdout. Terminal scrollback, `script(1)`, and shell history capture it. Avoid in shared sessions.
 - `--params` JSON ends up in `/proc/<pid>/cmdline` of `lusid-apply`. **Don't put secret values in `lusid.toml`'s `params`** - they leak via `ps` to any UID on the host.
 
@@ -71,13 +71,13 @@ Project layout:
 
 ```toml
 [operators]
-mikey = "age1..."                     # x25519 public key
+mikey = "ssh-ed25519 AAAA... mikey@laptop"     # contents of ~/.ssh/id_ed25519.pub
 
 [machines]
-rpi4b-1 = "ssh-ed25519 AAAA..."       # SSH host key
+rpi4b-1 = "ssh-ed25519 AAAA..."                # /etc/ssh/ssh_host_ed25519_key.pub
 
 [groups]
-prod = ["rpi4b-1"]                    # machine groups only
+prod = ["rpi4b-1"]                             # machine groups only
 
 [files]
 "api_token"   = { recipients = ["@prod"] }     # effective: mikey, rpi4b-1
@@ -96,8 +96,9 @@ prod = ["rpi4b-1"]                    # machine groups only
 
 ### Identities
 
-- `AGE-SECRET-KEY-1...` - age x25519.
-- `-----BEGIN OPENSSH PRIVATE KEY-----` - OpenSSH ed25519 or RSA. Passphrase-protected keys are rejected up-front (prompting at apply time is out of scope).
+OpenSSH private keys only - `-----BEGIN OPENSSH PRIVATE KEY-----`, ed25519 or RSA. The operator's existing SSH key (default `~/.ssh/id_ed25519`) is reused; there is no separate lusid-managed key. Passphrase-protected keys are rejected up-front (prompting at apply time is out of scope).
+
+x25519 age keys (`AGE-SECRET-KEY-...`) are no longer supported. If you have legacy `*.age` files encrypted to an `age1...` recipient, see [Migration from x25519](#migration-from-x25519).
 
 ### Drift behaviour
 
@@ -105,6 +106,19 @@ prod = ["rpi4b-1"]                    # machine groups only
 - Removing an operator does **not** revoke their access to existing ciphertexts - their key material is still in each header. Run `rekey` to re-encrypt without them.
 - Adding/removing/swapping a machine in `[machines]` is symmetric: drift on every file the machine is a recipient of, until `rekey`.
 - Moving an alias between `[operators]` and `[machines]` triggers drift on every file the alias was on. Rekey resolves.
+
+### Migration from x25519
+
+Earlier versions of `lusid-secrets` supported x25519 age identities (`AGE-SECRET-KEY-...` private keys, `age1...` public keys). That path has been removed; the operator's existing SSH key is now the only decryption identity.
+
+The current `lusid` binary cannot read an x25519 identity at all - it rejects `AGE-SECRET-KEY-...` files up-front. Migration therefore needs the *previous* version of `lusid` (still able to decrypt with the old identity) and the *new* version (writing SSH-only headers). The order matters:
+
+1. Stay on the previous `lusid` for now.
+2. Edit `lusid-secrets.toml` and replace your `[operators]` entry's `age1...` value with your SSH public key (the contents of `~/.ssh/id_ed25519.pub`).
+3. Still on the previous binary, run `lusid secrets rekey` with `LUSID_IDENTITY=~/.config/lusid/identity` pointing at the old x25519 key. Every file is decrypted with the old identity and re-encrypted to the SSH recipient set. The resulting `*.age` files no longer carry x25519 stanzas.
+4. Upgrade to the new `lusid`. Delete `~/.config/lusid/identity`. From here on every operation uses `~/.ssh/id_ed25519`.
+
+If you've already upgraded and tried to decrypt with only your SSH key, you'll see `no matching key for <path>; this ciphertext may pre-date the x25519 → SSH migration`. Re-run the migration from a workstation that still has both the previous binary and the old `~/.config/lusid/identity` available.
 
 ## Plan integration
 
@@ -169,7 +183,8 @@ Limitations:
 | `cat <name>`   | yes            | Decrypt to stdout.                                                          |
 | `edit <name>`  | yes            | Decrypt into a mode-0600 tmpfile in `$XDG_RUNTIME_DIR`, `$EDITOR`, re-encrypt on save. Tmpfile is scrubbed even on editor failure. |
 | `rekey [name]` | yes            | Re-encrypt to the current recipient list. No-op when the header already matches. Without `<name>`, rekeys every `[files]` entry. |
-| `keygen [-o]`  | no             | Generate an x25519 identity at `$XDG_CONFIG_HOME/lusid/identity` (or `$HOME/.config/lusid/identity`). Refuses to overwrite. |
 | `check`        | no             | Audit `secrets/` against `lusid-secrets.toml`: orphan ciphertexts, missing ciphertexts, recipient drift. Non-zero exit on any finding; suits CI. |
+
+The identity defaults to `~/.ssh/id_ed25519` when `--identity` / `LUSID_IDENTITY` is unset. If you don't have an SSH key yet: `ssh-keygen -t ed25519`.
 
 `ls` orders recipients as: operators first, then machines in first-mention order through the file's recipients list, with `@group` refs expanded.

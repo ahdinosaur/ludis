@@ -4,19 +4,17 @@ use std::path::Path;
 
 use crate::crypto::{decrypt_bytes, encrypt_bytes};
 use crate::identity::Identity;
-use crate::key::Key;
 use crate::recipients::Recipients;
 
 /// Find the alias in `[operators]` or `[machines]` whose key matches
 /// `identity`. Implemented as an encrypt-then-decrypt round-trip so it works
-/// uniformly across x25519 and SSH without leaking the identity's public
-/// material out of the `age` crate.
+/// uniformly without leaking the identity's public material out of the `age`
+/// crate.
 ///
 /// Cost is `O(N)` encryptions plus one decryption per table entry until a
-/// match is found - `age::Identity` doesn't expose a public-key accessor
-/// that's uniform across x25519 and SSH, so the probe is the pragmatic
-/// option. Fine for typical team / fleet sizes; worth revisiting if
-/// `lusid-secrets.toml` ever grows to hundreds of entries.
+/// match is found - `age::Identity` doesn't expose a public-key accessor, so
+/// the probe is the pragmatic option. Fine for typical team / fleet sizes;
+/// worth revisiting if `lusid-secrets.toml` ever grows to hundreds of entries.
 ///
 /// Returns `None` when no alias matches; callers should treat this as a hard
 /// configuration error (the supplied identity isn't declared anywhere).
@@ -27,10 +25,7 @@ pub fn alias_for_identity<'a>(identity: &Identity, recipients: &'a Recipients) -
         .iter()
         .chain(recipients.machines.iter())
     {
-        let boxed: Vec<Box<dyn age::Recipient + Send>> = match key {
-            Key::X25519(k) => vec![Box::new(k.clone())],
-            Key::Ssh(k) => vec![Box::new(k.clone())],
-        };
+        let boxed: Vec<Box<dyn age::Recipient + Send>> = vec![Box::new(key.recipient().clone())];
         let Ok(ct) = encrypt_bytes(&boxed, probe_path, b"") else {
             continue;
         };
@@ -44,9 +39,12 @@ pub fn alias_for_identity<'a>(identity: &Identity, recipients: &'a Recipients) -
 #[cfg(test)]
 mod tests {
     use indexmap::IndexMap;
-    use secrecy::ExposeSecret;
 
     use super::*;
+    use crate::key::Key;
+    use crate::test_fixtures::{
+        TEST_SSH_ED25519_A_PRIV, TEST_SSH_ED25519_A_PUB, TEST_SSH_ED25519_B_PUB,
+    };
 
     fn empty_recipients() -> Recipients {
         Recipients {
@@ -58,23 +56,21 @@ mod tests {
     }
 
     #[test]
-    fn x25519() {
-        let id = age::x25519::Identity::generate();
-        let identity: Identity = id.to_string().expose_secret().parse().unwrap();
+    fn matches_ssh_operator() {
+        let identity: Identity = TEST_SSH_ED25519_A_PRIV.parse().unwrap();
+        let pubkey: Key = TEST_SSH_ED25519_A_PUB.parse().unwrap();
         let mut r = empty_recipients();
-        r.operators
-            .insert("me".to_owned(), Key::X25519(id.to_public()));
+        r.operators.insert("me".to_owned(), pubkey);
         assert_eq!(alias_for_identity(&identity, &r), Some("me"));
     }
 
     #[test]
     fn no_match() {
-        let id_a = age::x25519::Identity::generate();
-        let id_b = age::x25519::Identity::generate();
-        let identity: Identity = id_b.to_string().expose_secret().parse().unwrap();
+        // identity is A, the only listed key is B.
+        let identity: Identity = TEST_SSH_ED25519_A_PRIV.parse().unwrap();
+        let other_pub: Key = TEST_SSH_ED25519_B_PUB.parse().unwrap();
         let mut r = empty_recipients();
-        r.operators
-            .insert("a".to_owned(), Key::X25519(id_a.to_public()));
+        r.operators.insert("a".to_owned(), other_pub);
         assert!(alias_for_identity(&identity, &r).is_none());
     }
 }

@@ -62,9 +62,8 @@ pub enum ReencryptForTargetError {
 /// Scope by `[files]` for `machine_id`, decrypt each with the operator
 /// identity, re-encrypt to `target_pubkey` alone.
 ///
-/// `target_pubkey` is an `age1...` x25519 recipient or an
-/// `ssh-ed25519 ...` / `ssh-rsa ...` SSH public key; trailing SSH
-/// comments are tolerated.
+/// `target_pubkey` is an `ssh-ed25519 ...` or `ssh-rsa ...` SSH public key;
+/// trailing SSH comments are tolerated.
 ///
 /// Returns `Ok(vec![])` when `machine_id` is in `[machines]` but listed
 /// on no file (warn-logged - "this target gets no project secrets").
@@ -163,10 +162,8 @@ async fn reencrypt_with_recipients(
     }
 
     let target_key: Key = target_pubkey.parse()?;
-    let target_recipients: Vec<Box<dyn age::Recipient + Send>> = match target_key {
-        Key::X25519(k) => vec![Box::new(k)],
-        Key::Ssh(k) => vec![Box::new(k)],
-    };
+    let target_recipients: Vec<Box<dyn age::Recipient + Send>> =
+        vec![Box::new(target_key.recipient().clone())];
 
     let host_identity = Identity::from_file(host_identity_path).await?;
 
@@ -205,84 +202,89 @@ async fn reencrypt_with_recipients(
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+    use std::str::FromStr;
 
     use secrecy::ExposeSecret;
     use tempfile::TempDir;
 
     use super::*;
     use crate::crypto::{decrypt_bytes, encrypt_bytes};
+    use crate::test_fixtures::{
+        TEST_SSH_ED25519_A_PRIV, TEST_SSH_ED25519_A_PUB, TEST_SSH_ED25519_B_PRIV,
+        TEST_SSH_ED25519_B_PUB, TEST_SSH_ED25519_C_PUB,
+    };
 
-    /// Set up a temp dir with: an operator x25519 identity file at
+    fn ssh_recipient(pubkey: &str) -> Box<dyn age::Recipient + Send> {
+        let mut parts = pubkey.split_whitespace();
+        let kind = parts.next().unwrap();
+        let body = parts.next().unwrap();
+        Box::new(age::ssh::Recipient::from_str(&format!("{kind} {body}")).unwrap())
+    }
+
+    /// Set up a temp dir with: an operator SSH identity file (keypair A) at
     /// `host_identity`, a `secrets/` subdir, and `*.age` ciphertexts for
     /// each `(stem, plaintext)` encrypted to the operator's pubkey.
-    fn write_host_and_secrets(
-        files: &[(&str, &[u8])],
-    ) -> (TempDir, PathBuf, PathBuf, age::x25519::Identity) {
+    fn write_host_and_secrets(files: &[(&str, &[u8])]) -> (TempDir, PathBuf, PathBuf) {
         let dir = TempDir::new().unwrap();
-        let host_age = age::x25519::Identity::generate();
         let host_identity_path = dir.path().join("host_identity");
-        std::fs::write(&host_identity_path, host_age.to_string().expose_secret()).unwrap();
+        std::fs::write(&host_identity_path, TEST_SSH_ED25519_A_PRIV).unwrap();
 
         let secrets_dir = dir.path().join("secrets");
         std::fs::create_dir(&secrets_dir).unwrap();
         for (stem, value) in files {
-            let ct =
-                encrypt_bytes(&[Box::new(host_age.to_public())], Path::new(stem), value).unwrap();
+            let ct = encrypt_bytes(
+                &[ssh_recipient(TEST_SSH_ED25519_A_PUB)],
+                Path::new(stem),
+                value,
+            )
+            .unwrap();
             std::fs::write(secrets_dir.join(format!("{stem}.age")), &ct).unwrap();
         }
 
-        (dir, host_identity_path, secrets_dir, host_age)
+        (dir, host_identity_path, secrets_dir)
     }
 
-    /// Common fixture: two machines (rpi, web1), two files (one per
-    /// machine), one operator identity.
-    fn two_machine_fixture() -> (
-        TempDir,
-        PathBuf,
-        PathBuf,
-        age::x25519::Identity, // rpi target identity
-    ) {
-        let target_rpi = age::x25519::Identity::generate();
-        let target_web = age::x25519::Identity::generate();
-        let (dir, host_identity_path, secrets_dir, _) =
+    /// Common fixture: two machines (rpi → keypair B, web1 → keypair C),
+    /// two files (one per machine), operator is keypair A.
+    fn two_machine_fixture() -> (TempDir, PathBuf, PathBuf) {
+        let (dir, host_identity_path, secrets_dir) =
             write_host_and_secrets(&[("rpi_only", b"rpipayload"), ("web_only", b"webpayload")]);
         std::fs::write(
             secrets_dir.join("lusid-secrets.toml"),
             format!(
                 r#"
 [machines]
-rpi  = "{rpi_pub}"
-web1 = "{web_pub}"
+rpi  = "{TEST_SSH_ED25519_B_PUB}"
+web1 = "{TEST_SSH_ED25519_C_PUB}"
 
 [files]
 "rpi_only" = {{ recipients = ["rpi"] }}
 "web_only" = {{ recipients = ["web1"] }}
 "#,
-                rpi_pub = target_rpi.to_public(),
-                web_pub = target_web.to_public(),
             ),
         )
         .unwrap();
-        (dir, host_identity_path, secrets_dir, target_rpi)
+        (dir, host_identity_path, secrets_dir)
     }
 
     /// `[files]` scope picks rpi_only (not web_only); ciphertext
     /// decrypts under the target key.
     #[tokio::test]
     async fn filters_by_files_and_uses_target_key() {
-        let target = age::x25519::Identity::generate();
-        let target_pub = target.to_public().to_string();
+        let (_dir, host_identity_path, secrets_dir) = two_machine_fixture();
 
-        let (_dir, host_identity_path, secrets_dir, _) = two_machine_fixture();
-
-        let reencrypted =
-            reencrypt_for_target(&host_identity_path, &secrets_dir, "rpi", &target_pub)
-                .await
-                .unwrap();
+        let reencrypted = reencrypt_for_target(
+            &host_identity_path,
+            &secrets_dir,
+            "rpi",
+            TEST_SSH_ED25519_B_PUB,
+        )
+        .await
+        .unwrap();
         assert_eq!(reencrypted.len(), 1);
         assert_eq!(reencrypted[0].stem, "rpi_only");
 
-        let target_id: Identity = target.to_string().expose_secret().parse().unwrap();
+        let target_id: Identity = TEST_SSH_ED25519_B_PRIV.parse().unwrap();
         let pt = decrypt_bytes(
             &target_id,
             Path::new("rpi_only"),
@@ -292,46 +294,50 @@ web1 = "{web_pub}"
         assert_eq!(pt.expose_secret().as_str(), "rpipayload");
     }
 
-    /// `target_pubkey` is independent of `[machines]`: a dev VM key
-    /// that isn't in `[machines]` is a valid recipient, and rpi's
-    /// own production key MUST NOT decrypt the result.
+    /// `target_pubkey` is independent of `[machines]`: an ephemeral dev VM
+    /// key (here, keypair C used as if it were a fresh VM) is a valid
+    /// recipient, and rpi's own declared key (keypair B) MUST NOT decrypt
+    /// the result.
     #[tokio::test]
     async fn target_pubkey_independent_of_machines_table() {
-        let vm = age::x25519::Identity::generate();
-        let vm_pub = vm.to_public().to_string();
+        let (_dir, host_identity_path, secrets_dir) = two_machine_fixture();
 
-        let (_dir, host_identity_path, secrets_dir, target_rpi) = two_machine_fixture();
-
-        let reencrypted = reencrypt_for_target(&host_identity_path, &secrets_dir, "rpi", &vm_pub)
-            .await
-            .unwrap();
+        let reencrypted = reencrypt_for_target(
+            &host_identity_path,
+            &secrets_dir,
+            "rpi",
+            TEST_SSH_ED25519_C_PUB,
+        )
+        .await
+        .unwrap();
         assert_eq!(reencrypted.len(), 1);
 
-        let rpi_id: Identity = target_rpi.to_string().expose_secret().parse().unwrap();
+        let rpi_id: Identity = TEST_SSH_ED25519_B_PRIV.parse().unwrap();
         assert!(decrypt_bytes(&rpi_id, Path::new("rpi_only"), &reencrypted[0].ciphertext).is_err());
     }
 
     #[tokio::test]
     async fn unknown_machine_errors() {
-        let target = age::x25519::Identity::generate();
-        let target_pub = target.to_public().to_string();
-
-        let (_dir, host_identity_path, secrets_dir, _) = write_host_and_secrets(&[]);
+        let (_dir, host_identity_path, secrets_dir) = write_host_and_secrets(&[]);
         std::fs::write(
             secrets_dir.join("lusid-secrets.toml"),
             format!(
                 r#"
 [machines]
-known = "{}"
+known = "{TEST_SSH_ED25519_B_PUB}"
 "#,
-                target.to_public(),
             ),
         )
         .unwrap();
 
-        let err = reencrypt_for_target(&host_identity_path, &secrets_dir, "missing", &target_pub)
-            .await
-            .unwrap_err();
+        let err = reencrypt_for_target(
+            &host_identity_path,
+            &secrets_dir,
+            "missing",
+            TEST_SSH_ED25519_B_PUB,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(
             err,
             ReencryptForTargetError::UnknownMachine { machine_id } if machine_id == "missing"
@@ -342,39 +348,37 @@ known = "{}"
     /// Ok(empty), not an error - and skips the operator identity load.
     #[tokio::test]
     async fn machine_with_no_files_returns_empty() {
-        let target = age::x25519::Identity::generate();
-        let other = age::x25519::Identity::generate();
-        let target_pub = target.to_public().to_string();
-
-        let (_dir, host_identity_path, secrets_dir, _) =
+        let (_dir, host_identity_path, secrets_dir) =
             write_host_and_secrets(&[("only_other", b"someplain")]);
         std::fs::write(
             secrets_dir.join("lusid-secrets.toml"),
             format!(
                 r#"
 [machines]
-target = "{}"
-other  = "{}"
+target = "{TEST_SSH_ED25519_B_PUB}"
+other  = "{TEST_SSH_ED25519_C_PUB}"
 
 [files]
 "only_other" = {{ recipients = ["other"] }}
 "#,
-                target.to_public(),
-                other.to_public(),
             ),
         )
         .unwrap();
 
-        let reencrypted =
-            reencrypt_for_target(&host_identity_path, &secrets_dir, "target", &target_pub)
-                .await
-                .unwrap();
+        let reencrypted = reencrypt_for_target(
+            &host_identity_path,
+            &secrets_dir,
+            "target",
+            TEST_SSH_ED25519_B_PUB,
+        )
+        .await
+        .unwrap();
         assert!(reencrypted.is_empty());
     }
 
     #[tokio::test]
     async fn rejects_malformed_target_pubkey() {
-        let (_dir, host_identity_path, secrets_dir, _) = two_machine_fixture();
+        let (_dir, host_identity_path, secrets_dir) = two_machine_fixture();
         let err = reencrypt_for_target(&host_identity_path, &secrets_dir, "rpi", "not-a-key")
             .await
             .unwrap_err();
@@ -386,7 +390,7 @@ other  = "{}"
     /// declared key without the caller having to pass it in.
     #[tokio::test]
     async fn declared_machine_uses_machines_table_pubkey() {
-        let (_dir, host_identity_path, secrets_dir, target_rpi) = two_machine_fixture();
+        let (_dir, host_identity_path, secrets_dir) = two_machine_fixture();
 
         let reencrypted = reencrypt_for_declared_machine(&host_identity_path, &secrets_dir, "rpi")
             .await
@@ -394,14 +398,14 @@ other  = "{}"
         assert_eq!(reencrypted.len(), 1);
         assert_eq!(reencrypted[0].stem, "rpi_only");
 
-        let rpi_id: Identity = target_rpi.to_string().expose_secret().parse().unwrap();
+        let rpi_id: Identity = TEST_SSH_ED25519_B_PRIV.parse().unwrap();
         let pt = decrypt_bytes(&rpi_id, Path::new("rpi_only"), &reencrypted[0].ciphertext).unwrap();
         assert_eq!(pt.expose_secret().as_str(), "rpipayload");
     }
 
     #[tokio::test]
     async fn declared_machine_unknown_errors() {
-        let (_dir, host_identity_path, secrets_dir, _) = two_machine_fixture();
+        let (_dir, host_identity_path, secrets_dir) = two_machine_fixture();
         let err = reencrypt_for_declared_machine(&host_identity_path, &secrets_dir, "missing")
             .await
             .unwrap_err();
@@ -415,13 +419,7 @@ other  = "{}"
     async fn declared_machine_missing_toml_errors() {
         let dir = TempDir::new().unwrap();
         let host_identity_path = dir.path().join("host_identity");
-        std::fs::write(
-            &host_identity_path,
-            age::x25519::Identity::generate()
-                .to_string()
-                .expose_secret(),
-        )
-        .unwrap();
+        std::fs::write(&host_identity_path, TEST_SSH_ED25519_A_PRIV).unwrap();
         let secrets_dir = dir.path().join("secrets");
         std::fs::create_dir(&secrets_dir).unwrap();
 

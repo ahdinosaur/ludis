@@ -64,19 +64,31 @@ pub enum DecryptDirError {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::str::FromStr;
 
     use secrecy::ExposeSecret;
     use tempfile::TempDir;
 
     use super::*;
     use crate::crypto::encrypt_bytes;
+    use crate::test_fixtures::{TEST_SSH_ED25519_A_PRIV, TEST_SSH_ED25519_A_PUB};
+
+    fn ssh_recipient(pubkey: &str) -> Box<dyn age::Recipient + Send> {
+        let mut parts = pubkey.split_whitespace();
+        let kind = parts.next().unwrap();
+        let body = parts.next().unwrap();
+        Box::new(age::ssh::Recipient::from_str(&format!("{kind} {body}")).unwrap())
+    }
 
     #[tokio::test]
     async fn round_trips() {
-        let id = age::x25519::Identity::generate();
-        let identity: Identity = id.to_string().expose_secret().parse().unwrap();
-        let recipient: Box<dyn age::Recipient + Send> = Box::new(id.to_public());
-        let ct = encrypt_bytes(&[recipient], Path::new("hello"), b"world").unwrap();
+        let identity: Identity = TEST_SSH_ED25519_A_PRIV.parse().unwrap();
+        let ct = encrypt_bytes(
+            &[ssh_recipient(TEST_SSH_ED25519_A_PUB)],
+            Path::new("hello"),
+            b"world",
+        )
+        .unwrap();
 
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("hello.age"), &ct).unwrap();
@@ -93,8 +105,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_stems_returns_empty() {
-        let id = age::x25519::Identity::generate();
-        let identity: Identity = id.to_string().expose_secret().parse().unwrap();
+        let identity: Identity = TEST_SSH_ED25519_A_PRIV.parse().unwrap();
         let secrets = decrypt_dir(&identity, Path::new("/nonexistent"), &[])
             .await
             .unwrap();
@@ -103,8 +114,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_file_errors() {
-        let id = age::x25519::Identity::generate();
-        let identity: Identity = id.to_string().expose_secret().parse().unwrap();
+        let identity: Identity = TEST_SSH_ED25519_A_PRIV.parse().unwrap();
         let dir = TempDir::new().unwrap();
         let err = decrypt_dir(&identity, dir.path(), &["absent"])
             .await
