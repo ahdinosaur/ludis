@@ -88,7 +88,7 @@ pub async fn plan(
     system: &System,
 ) -> Result<PlanTree<ResourceParams>, PlanError> {
     tracing::debug!("Plan {plan_id:?} with params {params_value:?}");
-    let children = plan_recursive(plan_id, params_value, ctx, store, system).await?;
+    let children = plan_recursive(plan_id, &[], params_value, ctx, store, system).await?;
     let tree = PlanTree::Branch {
         children,
         meta: PlanMeta::default(),
@@ -97,8 +97,14 @@ pub async fn plan(
     Ok(tree)
 }
 
+/// Recurse into a plan, producing its item subtrees. `scope_path` accumulates
+/// the chain of outer invocation ids when descending into nested plan
+/// invocations - empty at the top-level call, one element deeper per nesting.
+/// Items inside this plan inherit `scope_path` for their PlanNodeId so two
+/// invocations of the same subplan don't collide on their inner item ids.
 async fn plan_recursive(
     plan_id: PlanId,
+    scope_path: &[String],
     params_value: Option<Spanned<Value>>,
     ctx: &ParamsContext,
     store: &mut Store,
@@ -134,7 +140,7 @@ async fn plan_recursive(
     let mut resources = Vec::with_capacity(plan_items.len());
     for plan_item in plan_items {
         let node = Box::pin(plan_item_to_resource(
-            plan_item, &plan_id, ctx, store, system,
+            plan_item, &plan_id, scope_path, ctx, store, system,
         ))
         .await?;
         resources.push(node);
@@ -177,9 +183,17 @@ pub enum PlanItemToResourceError {
 /// Lower a single `PlanItem` to a subtree. Resource modules produce a leaf with
 /// [`ResourceParams`]; every other module name is treated as a path relative to the
 /// parent plan and recursed into as a branch.
+///
+/// `scope_path` is the chain of outer invocation ids of the current plan
+/// (empty at the top level). It's used to scope this item's PlanNodeId so
+/// items inside two invocations of the same subplan don't collide. When
+/// this item is itself a nested-plan invocation, its outer id (or a
+/// cuid2-minted fallback when no id is declared) is appended before
+/// recursing so the inner items pick up the deeper scope.
 async fn plan_item_to_resource(
     plan_item: Spanned<crate::model::PlanItem>,
     current_plan_id: &PlanId,
+    scope_path: &[String],
     ctx: &ParamsContext,
     store: &mut Store,
     system: &System,
@@ -213,14 +227,17 @@ async fn plan_item_to_resource(
         parse_on_change(on_change)?
     };
 
-    let id = item_id.map(|id| PlanNodeId::PlanItem {
+    let item_id_str = item_id.map(|id| id.into_inner());
+    let id = item_id_str.clone().map(|item_id| PlanNodeId::PlanItem {
+        scope_path: scope_path.to_vec(),
         plan_id: current_plan_id.clone(),
-        item_id: id.into_inner(),
+        item_id,
     });
     let requires = requires
         .into_iter()
         .map(|v| v.into_inner())
         .map(|item_id| PlanNodeId::PlanItem {
+            scope_path: scope_path.to_vec(),
             plan_id: current_plan_id.clone(),
             item_id,
         })
@@ -229,6 +246,7 @@ async fn plan_item_to_resource(
         .into_iter()
         .map(|v| v.into_inner())
         .map(|item_id| PlanNodeId::PlanItem {
+            scope_path: scope_path.to_vec(),
             plan_id: current_plan_id.clone(),
             item_id,
         })
@@ -248,7 +266,16 @@ async fn plan_item_to_resource(
     } else {
         let path = PathBuf::from(module.inner());
         let plan_id = current_plan_id.join(path);
-        let children = plan_recursive(plan_id, params_value, ctx, store, system)
+        // Descending into a nested invocation: extend the scope chain so the
+        // subplan's items get a unique scope. Prefer the user-declared `id`
+        // for readability; mint a cuid2 only when no id is declared (which
+        // also implies the invocation can't be referenced by `requires:` -
+        // anonymous invocations are leaves of the dependency graph).
+        let mut child_scope = scope_path.to_vec();
+        child_scope.push(
+            item_id_str.unwrap_or_else(cuid2::create_id),
+        );
+        let children = plan_recursive(plan_id, &child_scope, params_value, ctx, store, system)
             .await
             .map_err(Box::new)?;
         Ok(PlanTree::Branch {
