@@ -219,6 +219,22 @@ impl ResourceType for FlatpakRemote {
     ///
     /// We deliberately do not call `flatpak remote-info`: that contacts the
     /// remote over the network, which is slow and irrelevant to local state.
+    ///
+    /// Fresh-install corner case: `flatpak remotes` opens the OSTree repo
+    /// backing this scope (`/var/lib/flatpak/repo` for `--system`,
+    /// `$XDG_DATA_HOME/flatpak/repo` for `--user`). On a clean machine the
+    /// repo isn't created until the first write (e.g. `remote-add`), and
+    /// the probe exits non-zero. We detect that specific stderr and report
+    /// Absent; other non-zero exits surface as probe failures. We do not
+    /// fall back to "any non-zero exit = Absent" (cf. `podman.rs`) because
+    /// flatpak's other failure modes - GPG trust problems, bad scope flags,
+    /// broken sudo - carry information operators need.
+    ///
+    /// Note(cc): an alternative signal would be `tokio::fs::metadata` on
+    /// the repo path. That's a more durable check than libostree's error
+    /// wording, but requires resolving the user installation root
+    /// (`XDG_DATA_HOME` ?? `$HOME/.local/share`) ourselves. Worth a switch
+    /// if libostree ever rephrases the open-repo error.
     async fn state(
         _ctx: &mut Context,
         resource: &Self::Resource,
@@ -228,13 +244,24 @@ impl ResourceType for FlatpakRemote {
             | FlatpakRemoteResource::Absent { name, user } => (name, *user),
         };
 
-        let stdout = Command::new("flatpak")
-            .arg(if user { "--user" } else { "--system" })
+        let mut cmd = Command::new("flatpak");
+        cmd.arg(if user { "--user" } else { "--system" })
             .arg("remotes")
-            .arg("--columns=name,url")
-            .run()
-            .await?;
-        let stdout = String::from_utf8_lossy(&stdout);
+            .arg("--columns=name,url");
+        let outcome = cmd.outcome().await?;
+
+        if !outcome.status.success() {
+            let stderr = String::from_utf8_lossy(&outcome.stderr);
+            if is_uninitialized_install_error(&stderr) {
+                return Ok(FlatpakRemoteState::Absent);
+            }
+            return Err(FlatpakRemoteStateError::Command(CommandError::Failure {
+                command: cmd.to_string(),
+                stderr: stderr.into_owned(),
+            }));
+        }
+
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
 
         // Defensive parsing: skip blank lines and lines without a tab. The
         // current `flatpak remotes --columns=name,url` invocation in pipe
@@ -329,6 +356,25 @@ fn declared_url_is_flatpakrepo(url: &str) -> bool {
     let url = url.split_once('#').map_or(url, |(p, _)| p);
     let url = url.split_once('?').map_or(url, |(p, _)| p);
     url.to_ascii_lowercase().ends_with(".flatpakrepo")
+}
+
+/// Whether a `flatpak remotes` stderr indicates that the OSTree repo backing
+/// this scope hasn't been initialised yet. flatpak surfaces this from
+/// libostree as `error: While opening repository <repo>: opening repo:
+/// opendir(<repo>): No such file or directory`. The `opening repo: opendir(`
+/// substring is distinctive to libostree's open-repo failure path
+/// (`ostree_repo_open` -> `glnx_throw_errno_prefix`); libc's ENOENT string
+/// is the second half. Both pieces are required so an unrelated ENOENT
+/// mentioning the word "opendir" elsewhere in flatpak output cannot be
+/// misread as a fresh-install signal.
+///
+/// Note(cc): pathological stderr containing two unrelated errors - one with
+/// `opening repo: opendir(` and another with `No such file or directory` -
+/// would yield a false positive. The two pieces only co-occur in
+/// libostree's open-repo path in practice, but a strict regex would tighten
+/// the contract if this ever fires.
+fn is_uninitialized_install_error(stderr: &str) -> bool {
+    stderr.contains("opening repo: opendir(") && stderr.contains("No such file or directory")
 }
 
 #[cfg(test)]
@@ -456,5 +502,31 @@ mod tests {
     #[test]
     fn parse_remotes_line_rejects_no_tab() {
         assert!(parse_remotes_line("flathub").is_none());
+    }
+
+    #[test]
+    fn uninitialized_system_install_error_recognised() {
+        let stderr = "error: While opening repository /var/lib/flatpak/repo: opening repo: opendir(/var/lib/flatpak/repo): No such file or directory\n";
+        assert!(is_uninitialized_install_error(stderr));
+    }
+
+    #[test]
+    fn uninitialized_user_install_error_recognised() {
+        let stderr = "error: While opening repository /home/alice/.local/share/flatpak/repo: opening repo: opendir(/home/alice/.local/share/flatpak/repo): No such file or directory\n";
+        assert!(is_uninitialized_install_error(stderr));
+    }
+
+    #[test]
+    fn unrelated_error_not_treated_as_uninitialized() {
+        assert!(!is_uninitialized_install_error(
+            "error: GPG signatures found, but none are in trusted keyring\n"
+        ));
+        assert!(!is_uninitialized_install_error(""));
+        // ENOENT mentioned outside the libostree open-repo path does not
+        // count - both halves of the pair must be present.
+        assert!(!is_uninitialized_install_error(
+            "error: No such file or directory\n"
+        ));
+        assert!(!is_uninitialized_install_error("opening repo: opendir(\n"));
     }
 }
