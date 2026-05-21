@@ -134,6 +134,11 @@ pub trait ResourceType {
 /// produces are ordinary `Resource::File` atoms. The provenance ("this
 /// file was written for a @resource/secret plan item") is preserved only at
 /// this `ResourceParams` layer.
+///
+/// Note(cc): if you add a new variant whose params carry an *operator-side*
+/// host-path source (a file or directory the operator must ship to the
+/// target), extend `lusid::upload_set::collect_host_paths` so the source
+/// lands in the upload manifest. Today only `File`/`Directory` qualify.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ResourceParams {
     Apt(AptParams),

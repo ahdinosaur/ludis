@@ -30,9 +30,15 @@ pub trait SubStore {
 }
 
 /// Multiplexed store: dispatches a [`StoreItemId`] to the right backend.
+///
+/// `reads` records every successful read so callers can answer "which plan
+/// sources did this planning pass touch" without re-instrumenting the planner.
+/// Intended for single-threaded discovery passes; cloning a `Store` produces an
+/// independent tracker that won't see reads done through the original.
 #[derive(Debug, Clone)]
 pub struct Store {
     local_file_store: LocalFileStore,
+    reads: Vec<StoreItemId>,
 }
 
 /// Tagged identifier for a store item - picks which backend handles the read.
@@ -51,17 +57,24 @@ impl Store {
     pub fn new(cache_dir: &Path) -> Self {
         Self {
             local_file_store: LocalFileStore::new(cache_dir.join("files")),
+            reads: Vec::new(),
         }
     }
 
     pub async fn read(&mut self, id: &StoreItemId) -> Result<Vec<u8>, StoreError> {
-        match id {
+        let bytes = match id {
             StoreItemId::LocalFile(id) => self
                 .local_file_store
                 .read(id)
                 .await
-                .map_err(StoreError::from),
-        }
+                .map_err(StoreError::from)?,
+        };
+        self.reads.push(id.clone());
+        Ok(bytes)
+    }
+
+    pub fn reads(&self) -> &[StoreItemId] {
+        &self.reads
     }
 }
 

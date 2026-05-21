@@ -21,6 +21,15 @@ pub struct Machine {
     pub os: Os,
     pub vm: Option<MachineVmOptions>,
     pub remote: Option<Remote>,
+    /// Overrides for the synthetic `lusid_system::User` used when the operator
+    /// plans for this target offline (remote/dev apply file discovery). Fields
+    /// default to Debian/Arch user-private-group conventions: `name` from the
+    /// connection user, `home = /home/<name>` (`/root` for root), and
+    /// `primary_group = name`. Set explicit values when the target deviates -
+    /// e.g. shared `users` group on legacy distros, or a non-standard home
+    /// directory.
+    #[serde(default)]
+    pub user: Option<MachineUser>,
 }
 
 /// VM-specific knobs when `Machine::vm` is `Some`. All fields are optional so
@@ -68,6 +77,17 @@ pub struct Remote {
     /// to `~/.ssh/id_ed25519`. Deliberately distinct from the `--identity`
     /// (age) flag elsewhere - these are unrelated identities.
     pub ssh_key: Option<PathBuf>,
+}
+
+/// Optional overrides for the synthetic [`lusid_system::User`] produced when
+/// the operator plans for a target offline. Unset fields fall through to
+/// convention-based defaults (see [`Machine::user`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineUser {
+    pub name: Option<String>,
+    pub home: Option<PathBuf>,
+    pub primary_group: Option<String>,
 }
 
 impl Remote {
@@ -156,5 +176,36 @@ os = { type = "linux", linux = "debian", debian = 13 }
         )
         .unwrap();
         assert!(m.remote.is_none());
+    }
+
+    #[test]
+    fn machine_user_override_round_trips() {
+        let m: Machine = toml::from_str(
+            r#"
+hostname = "web-a"
+arch = "x86-64"
+os = { type = "linux", linux = "debian", debian = 13 }
+user = { primary_group = "wheel", home = "/srv/mikey" }
+"#,
+        )
+        .unwrap();
+        let user = m.user.expect("user field deserialized");
+        assert_eq!(user.name, None);
+        assert_eq!(user.home, Some(PathBuf::from("/srv/mikey")));
+        assert_eq!(user.primary_group, Some("wheel".into()));
+    }
+
+    #[test]
+    fn machine_user_rejects_unknown_field() {
+        let err = toml::from_str::<Machine>(
+            r#"
+hostname = "web-a"
+arch = "x86-64"
+os = { type = "linux", linux = "debian", debian = 13 }
+user = { naem = "mikey" }
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
     }
 }
