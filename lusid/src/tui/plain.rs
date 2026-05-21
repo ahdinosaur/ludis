@@ -162,11 +162,14 @@ pub(crate) fn digest(update: &AppUpdate, app: &AppView) -> Option<String> {
         AppUpdate::OperationApplyStdout {
             index: (e, o),
             stdout,
-        } => Some(format!("[op {e}.{o}] {stdout}")),
+        } => Some(format!("[op {e}.{o}] {}", String::from_utf8_lossy(stdout),)),
         AppUpdate::OperationApplyStderr {
             index: (e, o),
             stderr,
-        } => Some(format!("[op {e}.{o} err] {stderr}")),
+        } => Some(format!(
+            "[op {e}.{o} err] {}",
+            String::from_utf8_lossy(stderr),
+        )),
         AppUpdate::OperationApplyComplete {
             index: (e, o),
             error,

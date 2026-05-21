@@ -565,17 +565,19 @@ async fn apply_op_phase(
                 Ok::<(), ApplyError>(())
             };
 
-            let stdout_task = stream_operation_lines(
-                stdout,
-                redactor.clone(),
-                move |data| AppUpdate::OperationApplyStdout { index, stdout: data },
-            );
+            let stdout_task = stream_operation_lines(stdout, redactor.clone(), move |data| {
+                AppUpdate::OperationApplyStdout {
+                    index,
+                    stdout: data,
+                }
+            });
 
-            let stderr_task = stream_operation_lines(
-                stderr,
-                redactor.clone(),
-                move |data| AppUpdate::OperationApplyStderr { index, stderr: data },
-            );
+            let stderr_task = stream_operation_lines(stderr, redactor.clone(), move |data| {
+                AppUpdate::OperationApplyStderr {
+                    index,
+                    stderr: data,
+                }
+            });
 
             if let Err(error) = tokio::try_join!(output_task, stdout_task, stderr_task) {
                 let error_message = error.to_string();

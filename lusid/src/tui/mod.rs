@@ -396,7 +396,6 @@ enum EpochsCursor {
 /// per-page UI state. The header strip's `subcommand` label is the only
 /// thing the operator passes from the CLI; everything else is derived from
 /// the wire.
-#[derive(Debug, Clone)]
 struct TuiApp {
     app_view: AppView,
     subcommand: String,
@@ -442,6 +441,17 @@ struct TuiApp {
     /// Probing transition; never re-arms after the operator turns it off.
     /// Any navigation key disables it so the operator stays in control.
     follow: bool,
+
+    /// One terminal emulator per operation, keyed on (epoch_index, op_index).
+    /// Both stdout and stderr feed into the same parser so writes interleave
+    /// in wire-arrival order (close to true write order). Created lazily on
+    /// the first output event; not serialised on the wire because
+    /// `vt100::Parser` is neither `Clone` nor `Serialize`.
+    ///
+    /// Scrollback caps at 200 rows per op (around 600 KiB cell storage); a
+    /// long-running apply with hundreds of noisy ops trades fidelity at the
+    /// top of the transcript for bounded memory.
+    op_terminals: HashMap<(usize, usize), vt100::Parser>,
 }
 
 impl TuiApp {
@@ -463,10 +473,31 @@ impl TuiApp {
             pending_ack: None,
             show_help: false,
             follow: false,
+            op_terminals: HashMap::new(),
         }
     }
 
     fn apply_update(&mut self, update: AppUpdate) -> Result<(), TuiError> {
+        // Mirror the wire fold into the per-op terminal map before handing
+        // the update over to AppView. The terminal map lives on the TUI
+        // (not on AppView) because `vt100::Parser` is neither Clone nor
+        // Serialize; this is the seam where we keep them in sync.
+        match &update {
+            AppUpdate::OperationApplyStart { index } => {
+                // Defensive only - the producer never re-emits Start for the
+                // same (e, o) today, but if a retry path ever lands we want
+                // the next attempt to render on a blank screen.
+                self.op_terminals.remove(index);
+            }
+            AppUpdate::OperationApplyStdout { index, stdout } => {
+                self.feed_op_terminal(*index, stdout);
+            }
+            AppUpdate::OperationApplyStderr { index, stderr } => {
+                self.feed_op_terminal(*index, stderr);
+            }
+            _ => {}
+        }
+
         // Detect the one-shot transition from disarmed to armed inside the
         // wire update. The arm fires at most once per apply (the first
         // Probing transition); subsequent re-arms would flap follow back on
@@ -478,6 +509,26 @@ impl TuiApp {
             self.follow = true;
         }
         Ok(())
+    }
+
+    /// Append one delimited line's bytes (plus the `\r\n` the producer
+    /// stripped before sending) into the per-op terminal emulator. Creates
+    /// the parser on first call.
+    ///
+    /// `\r\n` rather than `\n` because operation pipes aren't backed by a
+    /// PTY, so programs emit bare `\n` without the kernel's tty-layer
+    /// translation. Feeding bare `\n` to vt100 yields the LF-without-CR
+    /// staircase effect; `\r\n` gives the expected behaviour.
+    fn feed_op_terminal(&mut self, index: (usize, usize), line: &[u8]) {
+        let parser = self.op_terminals.entry(index).or_insert_with(|| {
+            vt100::Parser::new(
+                OP_TERM_INITIAL_ROWS,
+                OP_TERM_INITIAL_COLS,
+                OP_TERM_SCROLLBACK,
+            )
+        });
+        parser.process(line);
+        parser.process(b"\r\n");
     }
 
     fn handle_event(&mut self, event: Event) -> Result<bool, TuiError> {
@@ -1456,6 +1507,15 @@ struct TreeRow {
 /// `lusid_apply_stdio::ResourcesNode`).
 const ROOT_ARENA_INDEX: usize = 0;
 
+/// Initial terminal-emulator dimensions for a freshly-created op pane. Both
+/// dimensions are resized to fit the actual pane on the first frame; these
+/// only matter for bytes that arrive before the first render.
+const OP_TERM_INITIAL_ROWS: u16 = 24;
+const OP_TERM_INITIAL_COLS: u16 = 100;
+/// Scrollback rows retained beyond the visible window. ~200 lines is enough
+/// for the tail of a chatty apt-get without unbounded memory growth.
+const OP_TERM_SCROLLBACK: usize = 200;
+
 fn build_visible_rows(view: &AppView, state: &TreePageState) -> Vec<TreeRow> {
     let mut out = Vec::new();
     let Some(resources) = view.resources.as_ref() else {
@@ -2279,6 +2339,34 @@ fn draw_epochs_detail(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) 
     let render_palette = RenderPalette::default();
     app.last_detail_width = area.width;
     let diff_opts = diff_opts_for_pane(area.width, app.side_by_side);
+
+    let title = if app.epochs.detail_focus == DetailFocus::Detail {
+        "detail (focused)"
+    } else {
+        "detail"
+    };
+
+    // When the cursor sits on an Op for which we have a live terminal,
+    // split the detail pane: top = the structured operation summary, bottom
+    // = a `tui-term` `PseudoTerminal` driven by the per-op `vt100::Parser`.
+    // Otherwise fall back to the legacy single-Paragraph layout.
+    if let Some(EpochsCursor::Op {
+        epoch_index,
+        op_index,
+    }) = app.epochs.selected
+        && app.op_terminals.contains_key(&(epoch_index, op_index))
+    {
+        draw_epochs_detail_with_terminal(
+            frame,
+            area,
+            app,
+            title,
+            (epoch_index, op_index),
+            &render_palette,
+        );
+        return;
+    }
+
     let text = match app.epochs.selected {
         Some(cursor) => detail_for_epochs_cursor(&app.app_view, cursor, &render_palette, diff_opts),
         None => Text::from("(no selection)"),
@@ -2287,16 +2375,55 @@ fn draw_epochs_detail(frame: &mut ratatui::Frame, area: Rect, app: &mut TuiApp) 
     app.epochs.detail_scroll =
         resolve_detail_scroll(&text, area, app.follow, app.epochs.detail_scroll);
 
-    let title = if app.epochs.detail_focus == DetailFocus::Detail {
-        "detail (focused)"
-    } else {
-        "detail"
-    };
     let widget = Paragraph::new(text)
         .block(Block::default().borders(Borders::ALL).title(title))
         .wrap(Wrap { trim: false })
         .scroll((app.epochs.detail_scroll, 0));
     frame.render_widget(widget, area);
+}
+
+/// Split the detail pane vertically for a selected op: structured summary on
+/// top, `PseudoTerminal` for live stdout/stderr on the bottom. The summary
+/// height adapts to its line count up to a soft cap, so short summaries don't
+/// crowd out the terminal pane.
+fn draw_epochs_detail_with_terminal(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    app: &mut TuiApp,
+    title: &str,
+    index: (usize, usize),
+    palette: &RenderPalette,
+) {
+    let summary = detail_for_op(&app.app_view, index.0, index.1, palette);
+    // 2 lines per border + content. Cap at half the area to keep the terminal
+    // pane large enough to be useful even on tall outputs.
+    let summary_lines = summary.lines.len() as u16;
+    let max_summary = (area.height / 2).max(3);
+    let summary_height = (summary_lines + 2).min(max_summary).max(3);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(summary_height), Constraint::Min(3)].as_ref())
+        .split(area);
+
+    let summary_widget = Paragraph::new(summary)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(summary_widget, layout[0]);
+
+    let term_area = layout[1];
+    let parser = app
+        .op_terminals
+        .get_mut(&index)
+        .expect("caller verified the parser exists");
+    let inner_rows = term_area.height.saturating_sub(2);
+    let inner_cols = term_area.width.saturating_sub(2);
+    if inner_rows > 0 && inner_cols > 0 {
+        parser.screen_mut().set_size(inner_rows, inner_cols);
+    }
+    let block = Block::default().borders(Borders::ALL).title("output");
+    let term_widget = tui_term::widget::PseudoTerminal::new(parser.screen()).block(block);
+    frame.render_widget(term_widget, term_area);
 }
 
 fn detail_for_epochs_cursor(
@@ -2470,23 +2597,10 @@ fn detail_for_op(
             Style::default().fg(Color::Red),
         )));
     }
-    if !op.stdout.is_empty() {
-        lines.push(blank_line());
-        lines.push(section_header("stdout"));
-        for line in op.stdout.lines() {
-            lines.push(Line::from(Span::raw(line.to_string())));
-        }
-    }
-    if !op.stderr.is_empty() {
-        lines.push(blank_line());
-        lines.push(section_header("stderr"));
-        for line in op.stderr.lines() {
-            lines.push(Line::from(Span::styled(
-                line.to_string(),
-                Style::default().fg(Color::Red),
-            )));
-        }
-    }
+
+    // stdout / stderr are rendered separately as a terminal-emulator pane
+    // in `draw_epochs_detail`; keeping a duplicate text dump here would
+    // double the output and lose ANSI formatting.
 
     Text::from(lines)
 }
@@ -4418,38 +4532,51 @@ mod tests {
         );
     }
 
-    /// Follow-mode on the Epochs page pins the detail pane to the bottom of
-    /// the running op's stdout so the latest line stays visible. The previous
-    /// implementation pushed `detail_scroll` to `u16::MAX`, which the
-    /// `Paragraph` widget interprets as "skip every line" - the pane went
-    /// blank. The fix clamps to actual content height.
+    /// Follow-mode on the Epochs page lands selection on the running op, and
+    /// the `PseudoTerminal` in the bottom half of the detail pane always
+    /// shows the latest screenful of output (vt100 scrolls to the bottom on
+    /// every byte fed in). 40 lines into a few-row terminal means the early
+    /// lines have scrolled off but the most recent one must still be on
+    /// screen.
+    ///
+    /// The first draw is what sizes the parser to fit the pane; in real use,
+    /// frames are interleaved with bytes so this happens implicitly. In the
+    /// test we draw once after `OperationApplyStart` so the parser is the
+    /// right shape before lines arrive, then feed and draw a second time.
     #[test]
     fn follow_pins_op_detail_to_latest_stdout_line() {
-        let mut stdout = String::new();
-        for i in 0..40 {
-            stdout.push_str(&format!("line {i:03}\n"));
-        }
-        let mut view = epochs_view()
-            .update(AppUpdate::OperationsApplyEpochAdded {
-                epoch_index: 0,
-                resource_epoch: 0,
-                phase: Phase::Change,
-                operations: vec![command_op("noisy")],
-            })
-            .unwrap()
-            .update(AppUpdate::OperationApplyStart { index: (0, 0) })
-            .unwrap();
-        view = view
-            .update(AppUpdate::OperationApplyStdout {
-                index: (0, 0),
-                stdout,
-            })
-            .unwrap();
         let mut app = TuiApp::new("test".into());
-        app.app_view = view;
+        app.app_view = epochs_view();
         app.follow = true;
+        app.apply_update(AppUpdate::OperationsApplyEpochAdded {
+            epoch_index: 0,
+            resource_epoch: 0,
+            phase: Phase::Change,
+            operations: vec![command_op("noisy")],
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStart { index: (0, 0) })
+            .unwrap();
+        // Seed one byte so the parser exists, then draw to sync its size to
+        // the pane. Subsequent feeds land on a correctly-sized screen and
+        // scroll the top off as expected.
+        app.apply_update(AppUpdate::OperationApplyStdout {
+            index: (0, 0),
+            stdout: b"start".to_vec(),
+        })
+        .unwrap();
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|f| draw_epochs_page(f, f.area(), &mut app))
+            .unwrap();
+        for i in 0..40 {
+            app.apply_update(AppUpdate::OperationApplyStdout {
+                index: (0, 0),
+                stdout: format!("line {i:03}").into_bytes(),
+            })
+            .unwrap();
+        }
         terminal
             .draw(|f| draw_epochs_page(f, f.area(), &mut app))
             .unwrap();
@@ -4460,8 +4587,85 @@ mod tests {
             .join("\n");
         assert!(
             rendered.contains("line 039"),
-            "expected last stdout line in follow-pinned detail pane; got:\n{rendered}",
+            "expected last stdout line in PseudoTerminal pane; got:\n{rendered}",
         );
+    }
+
+    /// Verifies that ANSI colour escapes survive the wire and reach the
+    /// `vt100::Parser` intact. The producer's `read_until(b'\n', ...)`
+    /// preserves escape bytes (which are 7-bit ASCII), and the base64
+    /// adapter is binary-safe; this test exercises both ends.
+    #[test]
+    fn ansi_colour_bytes_reach_the_vt100_screen() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view();
+        app.apply_update(AppUpdate::OperationsApplyEpochAdded {
+            epoch_index: 0,
+            resource_epoch: 0,
+            phase: Phase::Change,
+            operations: vec![command_op("colored")],
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStart { index: (0, 0) })
+            .unwrap();
+        // `\x1b[31m` selects red foreground; `\x1b[0m` resets. The data
+        // lands in the parser exactly as bytes, and the screen's cell at
+        // (0, 0) must report red.
+        app.apply_update(AppUpdate::OperationApplyStdout {
+            index: (0, 0),
+            stdout: b"\x1b[31mhi\x1b[0m".to_vec(),
+        })
+        .unwrap();
+        let parser = app
+            .op_terminals
+            .get(&(0, 0))
+            .expect("parser created on first output");
+        let screen = parser.screen();
+        let cell = screen.cell(0, 0).expect("cell present");
+        assert_eq!(cell.contents(), "h");
+        assert!(
+            matches!(cell.fgcolor(), vt100::Color::Idx(1)),
+            "expected red fg, got {:?}",
+            cell.fgcolor(),
+        );
+    }
+
+    /// Cursor-positioning escapes are interpreted (not just colour). After
+    /// `\x1b[H` (cursor home) the next character must land at (0, 0)
+    /// regardless of what was written before.
+    #[test]
+    fn ansi_cursor_home_repositions_writes() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view();
+        app.apply_update(AppUpdate::OperationsApplyEpochAdded {
+            epoch_index: 0,
+            resource_epoch: 0,
+            phase: Phase::Change,
+            operations: vec![command_op("cursor")],
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStart { index: (0, 0) })
+            .unwrap();
+        // Two lines, then jump home and overwrite. Producer events strip
+        // the trailing `\n`; the TUI re-adds `\r\n` per event.
+        app.apply_update(AppUpdate::OperationApplyStdout {
+            index: (0, 0),
+            stdout: b"hello".to_vec(),
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStdout {
+            index: (0, 0),
+            stdout: b"world".to_vec(),
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStdout {
+            index: (0, 0),
+            stdout: b"\x1b[HX".to_vec(),
+        })
+        .unwrap();
+        let parser = app.op_terminals.get(&(0, 0)).expect("parser exists");
+        let cell = parser.screen().cell(0, 0).expect("cell present");
+        assert_eq!(cell.contents(), "X");
     }
 
     /// Any nav key (j/k/h/l/Space/n/N/PgUp/PgDn/Home/End/g/G/arrow/`/`)
