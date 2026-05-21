@@ -275,18 +275,14 @@ pub struct OperationEpochMeta {
     pub phase: Phase,
 }
 
-/// One operation's live state during the apply phase. `stdout`/`stderr`
-/// accumulate raw bytes as `OperationApplyStdout`/`OperationApplyStderr`
-/// events arrive (one delimited line per event, `\n` re-appended on the
-/// consumer side so a replay reproduces the original stream). The TUI feeds
-/// these bytes into a per-op `vt100::Parser` for terminal-style rendering.
+/// One operation's live state during the apply phase. Stdout/stderr bytes
+/// are not kept here: consumers that want a terminal-style view (the TUI)
+/// stream the wire events directly into a `vt100::Parser`, and the plain
+/// renderer prints each event as it arrives. Accumulating the full byte
+/// transcript here would double-buffer for no current consumer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationView {
     pub label: Operation,
-    #[serde(with = "bytes_base64")]
-    pub stdout: Vec<u8>,
-    #[serde(with = "bytes_base64")]
-    pub stderr: Vec<u8>,
     pub is_complete: bool,
     pub error: Option<String>,
 }
@@ -295,8 +291,6 @@ impl OperationView {
     fn new(label: Operation) -> Self {
         Self {
             label,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
             is_complete: false,
             error: None,
         }
@@ -808,28 +802,26 @@ impl AppView {
 
             OperationApplyStart { index: (e, o) } => {
                 let op = self.op_mut(e, o)?;
-                op.stdout.clear();
-                op.stderr.clear();
                 op.is_complete = false;
                 op.error = None;
                 self.last_activity_op = Some((e, o));
             }
             OperationApplyStdout {
                 index: (e, o),
-                stdout,
+                stdout: _,
             } => {
-                let op = self.op_mut(e, o)?;
-                op.stdout.extend_from_slice(&stdout);
-                op.stdout.push(b'\n');
+                // Bytes are not retained on the view: they flow straight
+                // through to consumers (the TUI's vt100 parser, the plain
+                // renderer's per-event digest). Touch the slot to validate
+                // the (e, o) index and update follow-mode tracking.
+                self.op_mut(e, o)?;
                 self.last_activity_op = Some((e, o));
             }
             OperationApplyStderr {
                 index: (e, o),
-                stderr,
+                stderr: _,
             } => {
-                let op = self.op_mut(e, o)?;
-                op.stderr.extend_from_slice(&stderr);
-                op.stderr.push(b'\n');
+                self.op_mut(e, o)?;
                 self.last_activity_op = Some((e, o));
             }
             OperationApplyComplete {
@@ -2406,11 +2398,11 @@ mod tests {
         }
     }
 
-    /// Folding an `OperationApplyStdout` extends the accumulator and
-    /// re-appends a `\n`, mirroring the prior `String` semantics so a
-    /// replay produces the original delimited line stream.
+    /// Folding `OperationApplyStdout`/`Stderr` validates the slot index and
+    /// updates `last_activity_op`, but does not retain the bytes on the
+    /// view (consumers stream them).
     #[test]
-    fn stdout_event_appends_bytes_plus_newline() {
+    fn stdout_event_validates_slot_and_advances_activity() {
         let v = app_view_with_two_leaves()
             .update(AppUpdate::OperationsApplyEpochAdded {
                 epoch_index: 0,
@@ -2423,14 +2415,15 @@ mod tests {
                 index: (0, 0),
                 stdout: b"hello".to_vec(),
             })
-            .unwrap()
-            .update(AppUpdate::OperationApplyStderr {
-                index: (0, 0),
-                stderr: b"oops".to_vec(),
-            })
             .unwrap();
-        let op = &v.operations_epochs[0][0];
-        assert_eq!(op.stdout, b"hello\n");
-        assert_eq!(op.stderr, b"oops\n");
+        assert_eq!(v.last_activity_op, Some((0, 0)));
+        // An event targeting a slot that doesn't exist is rejected.
+        let err = v
+            .update(AppUpdate::OperationApplyStderr {
+                index: (5, 5),
+                stderr: b"x".to_vec(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, AppViewError::OperationIndexOutOfBounds(5, 5)));
     }
 }

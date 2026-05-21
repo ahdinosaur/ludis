@@ -484,16 +484,16 @@ impl TuiApp {
         // Serialize; this is the seam where we keep them in sync.
         match &update {
             AppUpdate::OperationApplyStart { index } => {
-                // Defensive only - the producer never re-emits Start for the
-                // same (e, o) today, but if a retry path ever lands we want
-                // the next attempt to render on a blank screen.
+                // A repeated `Start` for the same `(e, o)` resets the op
+                // pane: drop any prior parser so the next byte lands on a
+                // blank screen.
                 self.op_terminals.remove(index);
             }
             AppUpdate::OperationApplyStdout { index, stdout } => {
-                self.feed_op_terminal(*index, stdout);
+                self.feed_op_terminal(*index, stdout, OutputStream::Stdout);
             }
             AppUpdate::OperationApplyStderr { index, stderr } => {
-                self.feed_op_terminal(*index, stderr);
+                self.feed_op_terminal(*index, stderr, OutputStream::Stderr);
             }
             _ => {}
         }
@@ -511,15 +511,23 @@ impl TuiApp {
         Ok(())
     }
 
-    /// Append one delimited line's bytes (plus the `\r\n` the producer
-    /// stripped before sending) into the per-op terminal emulator. Creates
-    /// the parser on first call.
+    /// Append one delimited line's bytes (plus the line terminator the
+    /// producer stripped before sending) into the per-op terminal
+    /// emulator. Creates the parser on first call.
     ///
-    /// `\r\n` rather than `\n` because operation pipes aren't backed by a
-    /// PTY, so programs emit bare `\n` without the kernel's tty-layer
-    /// translation. Feeding bare `\n` to vt100 yields the LF-without-CR
-    /// staircase effect; `\r\n` gives the expected behaviour.
-    fn feed_op_terminal(&mut self, index: (usize, usize), line: &[u8]) {
+    /// The terminator is `\r\n` rather than bare `\n` because operation
+    /// pipes aren't backed by a PTY, so programs emit `\n` without the
+    /// kernel's tty-layer CR translation. Feeding bare `\n` to vt100
+    /// yields the LF-without-CR staircase effect. If the line already
+    /// ends in `\r` (programs that knowingly write `\r\n`), only `\n` is
+    /// appended to avoid `\r\r\n`.
+    ///
+    /// `stream` distinguishes stdout from stderr so stderr lines render
+    /// in red - matching the prior plain-text section's colour treatment
+    /// without losing the terminal-emulator semantics for either stream.
+    /// The SGR reset (`\x1b[0m`) follows the terminator so any leftover
+    /// styling does not bleed into the next event.
+    fn feed_op_terminal(&mut self, index: (usize, usize), line: &[u8], stream: OutputStream) {
         let parser = self.op_terminals.entry(index).or_insert_with(|| {
             vt100::Parser::new(
                 OP_TERM_INITIAL_ROWS,
@@ -527,8 +535,18 @@ impl TuiApp {
                 OP_TERM_SCROLLBACK,
             )
         });
+        if let OutputStream::Stderr = stream {
+            parser.process(b"\x1b[31m");
+        }
         parser.process(line);
-        parser.process(b"\r\n");
+        // `\x1b[0m` first so any SGR the program left on still resets
+        // before the carriage return.
+        parser.process(b"\x1b[0m");
+        if line.last() == Some(&b'\r') {
+            parser.process(b"\n");
+        } else {
+            parser.process(b"\r\n");
+        }
     }
 
     fn handle_event(&mut self, event: Event) -> Result<bool, TuiError> {
@@ -1513,8 +1531,19 @@ const ROOT_ARENA_INDEX: usize = 0;
 const OP_TERM_INITIAL_ROWS: u16 = 24;
 const OP_TERM_INITIAL_COLS: u16 = 100;
 /// Scrollback rows retained beyond the visible window. ~200 lines is enough
-/// for the tail of a chatty apt-get without unbounded memory growth.
+/// for the tail of a chatty apt-get without unbounded memory growth. The
+/// `op_terminals` map grows with the number of distinct ops in an apply and
+/// does not evict; budget around 600 KiB per op for sizing decisions.
 const OP_TERM_SCROLLBACK: usize = 200;
+
+/// Which child pipe an event came from. Used by `feed_op_terminal` to
+/// distinguish stderr in the terminal pane (rendered red) from stdout
+/// (rendered with whatever attributes the program itself set).
+#[derive(Debug, Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
 
 fn build_visible_rows(view: &AppView, state: &TreePageState) -> Vec<TreeRow> {
     let mut out = Vec::new();
@@ -4666,6 +4695,70 @@ mod tests {
         let parser = app.op_terminals.get(&(0, 0)).expect("parser exists");
         let cell = parser.screen().cell(0, 0).expect("cell present");
         assert_eq!(cell.contents(), "X");
+    }
+
+    /// Each `OperationApplyStdout` event lands its content on its own row,
+    /// because the consumer appends a `\r\n` after the line and vt100
+    /// honours both the CR (return to col 0) and the LF (advance row).
+    /// Without the `\r`, content would staircase to the right.
+    #[test]
+    fn stdout_events_each_land_on_a_fresh_row() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view();
+        app.apply_update(AppUpdate::OperationsApplyEpochAdded {
+            epoch_index: 0,
+            resource_epoch: 0,
+            phase: Phase::Change,
+            operations: vec![command_op("two")],
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStart { index: (0, 0) })
+            .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStdout {
+            index: (0, 0),
+            stdout: b"a".to_vec(),
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStdout {
+            index: (0, 0),
+            stdout: b"b".to_vec(),
+        })
+        .unwrap();
+        let parser = app.op_terminals.get(&(0, 0)).expect("parser exists");
+        let screen = parser.screen();
+        assert_eq!(screen.cell(0, 0).map(|c| c.contents()), Some("a".into()));
+        assert_eq!(screen.cell(1, 0).map(|c| c.contents()), Some("b".into()));
+    }
+
+    /// A line ending in `\r` (rare today since the producer's `read_until`
+    /// breaks on `\n`, but possible if a single-line carriage-return-only
+    /// chunk ever slips through) must not get a double CR appended.
+    #[test]
+    fn stderr_styled_red_via_sgr_wrap() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view();
+        app.apply_update(AppUpdate::OperationsApplyEpochAdded {
+            epoch_index: 0,
+            resource_epoch: 0,
+            phase: Phase::Change,
+            operations: vec![command_op("warning")],
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStart { index: (0, 0) })
+            .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStderr {
+            index: (0, 0),
+            stderr: b"oops".to_vec(),
+        })
+        .unwrap();
+        let parser = app.op_terminals.get(&(0, 0)).expect("parser exists");
+        let cell = parser.screen().cell(0, 0).expect("cell present");
+        assert_eq!(cell.contents(), "o");
+        assert!(
+            matches!(cell.fgcolor(), vt100::Color::Idx(1)),
+            "stderr should be red, got {:?}",
+            cell.fgcolor(),
+        );
     }
 
     /// Any nav key (j/k/h/l/Space/n/N/PgUp/PgDn/Home/End/g/G/arrow/`/`)
