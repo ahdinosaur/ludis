@@ -4735,8 +4735,8 @@ mod tests {
         .unwrap();
         let parser = app.op_terminals.get(&(0, 0)).expect("parser exists");
         let screen = parser.screen();
-        assert_eq!(screen.cell(0, 0).map(|c| c.contents()), Some("a".into()));
-        assert_eq!(screen.cell(1, 0).map(|c| c.contents()), Some("b".into()));
+        assert_eq!(screen.cell(0, 0).map(|c| c.contents()), Some("a"));
+        assert_eq!(screen.cell(1, 0).map(|c| c.contents()), Some("b"));
     }
 
     /// Bare-`\r` chunks (progress bars: apt, curl, dd, docker pull)
