@@ -4730,9 +4730,9 @@ mod tests {
         assert_eq!(screen.cell(1, 0).map(|c| c.contents()), Some("b".into()));
     }
 
-    /// A line ending in `\r` (rare today since the producer's `read_until`
-    /// breaks on `\n`, but possible if a single-line carriage-return-only
-    /// chunk ever slips through) must not get a double CR appended.
+    /// Stderr events are wrapped in `\x1b[31m`...`\x1b[0m` before reaching the
+    /// shared parser, so stderr characters land on the screen with a red
+    /// foreground while stdout keeps whatever attributes the program set.
     #[test]
     fn stderr_styled_red_via_sgr_wrap() {
         let mut app = TuiApp::new("test".into());
