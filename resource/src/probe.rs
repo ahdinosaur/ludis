@@ -235,12 +235,11 @@ fn parse_symlink_probe(path: &Path, out: &[u8]) -> Result<SymlinkTarget, ProbeEr
             // so the target round-trips byte-equal to what the planner
             // stored.
             let target = strip_trailing_newline(rest);
-            let target_str = std::str::from_utf8(target).map_err(|e| {
-                ProbeError::UnexpectedOutput {
+            let target_str =
+                std::str::from_utf8(target).map_err(|e| ProbeError::UnexpectedOutput {
                     path: path.to_path_buf(),
                     detail: format!("non-utf8 symlink target: {e}"),
-                }
-            })?;
+                })?;
             Ok(SymlinkTarget::Symlink(PathBuf::from(target_str)))
         }
         _ => Err(ProbeError::UnexpectedOutput {
@@ -349,7 +348,7 @@ mod tests {
         // strips it so the recovered target round-trips byte-equal to
         // the path the planner stored.
         let target = parse_symlink_probe(p(), b"L/etc/foo\n").unwrap();
-        assert!(matches!(target, SymlinkTarget::Symlink(t) if t == PathBuf::from("/etc/foo")));
+        assert!(matches!(target, SymlinkTarget::Symlink(t) if t == *"/etc/foo"));
     }
 
     #[test]
@@ -357,7 +356,7 @@ mod tests {
         // Defence in depth: even if a future busybox readlink stops
         // appending the newline, we still hand back the right target.
         let target = parse_symlink_probe(p(), b"L/etc/foo").unwrap();
-        assert!(matches!(target, SymlinkTarget::Symlink(t) if t == PathBuf::from("/etc/foo")));
+        assert!(matches!(target, SymlinkTarget::Symlink(t) if t == *"/etc/foo"));
     }
 
     #[test]
