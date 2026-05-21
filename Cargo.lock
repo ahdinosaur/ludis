@@ -2804,6 +2804,7 @@ dependencies = [
  "lusid-operation",
  "lusid-params",
  "lusid-tree",
+ "nix 0.31.3",
  "rimu",
  "secrecy",
  "serde",
