@@ -1197,6 +1197,7 @@ mod tests {
         PlanTree::Branch {
             meta: PlanMeta {
                 id: Some(PlanNodeId::PlanItem {
+                    scope_path: Vec::new(),
                     plan_id: PlanId::Path(PathBuf::from("test.lusid")),
                     item_id: label.into(),
                 }),
@@ -1726,14 +1727,17 @@ mod tests {
     #[test]
     fn plan_item_meta_round_trips_through_resources_node() {
         let plan_item_id = PlanNodeId::PlanItem {
+            scope_path: Vec::new(),
             plan_id: PlanId::Path(PathBuf::from("test.lusid")),
             item_id: "nginx-config".into(),
         };
         let upstream_id = PlanNodeId::PlanItem {
+            scope_path: Vec::new(),
             plan_id: PlanId::Path(PathBuf::from("test.lusid")),
             item_id: "nginx-install".into(),
         };
         let downstream_id = PlanNodeId::PlanItem {
+            scope_path: Vec::new(),
             plan_id: PlanId::Path(PathBuf::from("test.lusid")),
             item_id: "nginx-reload".into(),
         };

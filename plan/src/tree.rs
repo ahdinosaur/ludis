@@ -121,6 +121,7 @@ mod tests {
 
     fn plan_item_id(item: &str) -> PlanNodeId {
         PlanNodeId::PlanItem {
+            scope_path: Vec::new(),
             plan_id: PlanId::Path(PathBuf::from("test.lusid")),
             item_id: item.to_string(),
         }
