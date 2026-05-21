@@ -665,9 +665,18 @@ async fn cmd_remote_apply(
         let params_json = serde_json::to_string(&params)?;
         command.push_str(&format!(" --params {}", shell_words::quote(&params_json)));
     }
-    if !remote.is_root() {
-        command = format!("sudo -n {command}");
-    }
+    // TODO(cc): we used to wrap a non-root remote in `sudo -n {command}` so the
+    // operator only had to grant one NOPASSWD entry for the apply binary itself,
+    // rather than allowlisting every tool ops shell out to (apt, install, chmod,
+    // useradd, systemctl, ...). The wrap was dropped to match `cmd_dev_apply`:
+    // both now run lusid-apply as the SSH user and let per-op `.sudo()` calls
+    // (see `lusid_cmd::Command::sudo` and `lusid_operation::sudo`) elevate. That
+    // restored parity (e.g. sudo's env_reset no longer strips `XDG_RUNTIME_DIR`
+    // out from under `Paths::create`, and `@operation/aur` which refuses to run
+    // as root works the same on remote and dev) but pushes the sudoers question
+    // back onto every downstream tool. Revisit if the sudoers allowlist becomes
+    // painful in practice; the per-op model assumes the SSH user has a broad
+    // NOPASSWD grant on the target.
 
     // 7. Stream apply output through the TUI. The `async move {
     //    handle.channel.wait()... }` future field-captures
