@@ -1251,7 +1251,10 @@ mod dispatch_tests {
                 "pacman",
             ),
             (
-                Resource::Podman(PodmanResource::Absent { name: "ctr".into() }),
+                Resource::Podman(PodmanResource::Absent {
+                    name: "ctr".into(),
+                    sudo: false,
+                }),
                 "podman",
             ),
             (
