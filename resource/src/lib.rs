@@ -16,6 +16,7 @@ use rimu::Span;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod probe;
 mod resources;
 
 use crate::resources::apt::{Apt, AptChange, AptParams, AptResource, AptState};

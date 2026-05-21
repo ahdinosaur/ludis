@@ -3,7 +3,7 @@ use std::fmt::{self, Display};
 use async_trait::async_trait;
 use lusid_causality::{CausalityMeta, CausalityTree};
 use lusid_ctx::Context;
-use lusid_fs::{self as fs, FsError};
+use lusid_fs::SymlinkTarget;
 use lusid_operation::{
     Operation,
     operations::{
@@ -16,6 +16,7 @@ use rimu::{Span, Spanned, Value};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::probe::{self, ProbeError};
 use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,7 +249,7 @@ impl Display for DirectoryState {
 #[derive(Error, Debug)]
 pub enum DirectoryStateError {
     #[error(transparent)]
-    Fs(#[from] FsError),
+    Probe(#[from] ProbeError),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -461,39 +462,38 @@ impl ResourceType for Directory {
         _ctx: &mut Context,
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
-        // `sudo` is ignored by every probe in v1 - probes run as the calling
-        // user. The common case (root-owned 0755 dirs that the user can stat)
-        // works; restricted parents (e.g. `/root/`) fail with a standard
-        // `FsError`. Sudo-wrapped probes are a follow-up.
+        // `sudo` is propagated into every probe so target paths under
+        // restricted parents (e.g. `/root/`, `/etc/sudoers.d/`) can
+        // still be observed. The directory `Sourced` probe is still
+        // intentionally weak (existence-as-directory ⇒ `Sourced`); see
+        // the variant docstring.
         let state = match resource {
-            DirectoryResource::Sourced { path, .. } => {
-                // Weak: a directory at `path` is taken to mean Sourced. See
-                // the variant docstring in `DirectoryParams::Sourced` for
-                // the content-drift caveat.
-                if fs::path_exists(path.as_path()).await? {
+            DirectoryResource::Sourced { path, sudo, .. } => {
+                if probe::path_exists(path.as_path(), *sudo).await? {
                     DirectoryState::Sourced
                 } else {
                     DirectoryState::NotSourced
                 }
             }
 
-            DirectoryResource::Linked { source, path, .. } => {
-                probe_linked_state(source, path).await?
+            DirectoryResource::Linked { source, path, sudo } => {
+                probe_linked_state(source, path, *sudo).await?
             }
 
-            DirectoryResource::Present { path, .. } | DirectoryResource::Absent { path, .. } => {
-                if fs::path_exists(path.as_path()).await? {
+            DirectoryResource::Present { path, sudo }
+            | DirectoryResource::Absent { path, sudo } => {
+                if probe::path_exists(path.as_path(), *sudo).await? {
                     DirectoryState::Present
                 } else {
                     DirectoryState::Absent
                 }
             }
 
-            DirectoryResource::Mode { path, mode, .. } => {
-                if !fs::path_exists(path.as_path()).await? {
+            DirectoryResource::Mode { path, mode, sudo } => {
+                if !probe::path_exists(path.as_path(), *sudo).await? {
                     DirectoryState::ModeIncorrect
                 } else {
-                    let actual_mode = fs::get_mode(path.as_path()).await?;
+                    let actual_mode = probe::get_mode(path.as_path(), *sudo).await?;
                     let actual_mode = actual_mode & 0o7777;
                     if actual_mode == mode.as_u32() {
                         DirectoryState::ModeCorrect
@@ -503,11 +503,11 @@ impl ResourceType for Directory {
                 }
             }
 
-            DirectoryResource::User { path, user, .. } => {
-                if !fs::path_exists(path.as_path()).await? {
+            DirectoryResource::User { path, user, sudo } => {
+                if !probe::path_exists(path.as_path(), *sudo).await? {
                     DirectoryState::UserIncorrect
                 } else {
-                    let actual_user = fs::get_owner_user(path.as_path()).await?;
+                    let actual_user = probe::get_owner_user(path.as_path(), *sudo).await?;
                     let actual_user = actual_user.map(|u| u.name.to_string());
                     if actual_user.as_deref() == Some(user.as_str()) {
                         DirectoryState::UserCorrect
@@ -517,11 +517,11 @@ impl ResourceType for Directory {
                 }
             }
 
-            DirectoryResource::Group { path, group, .. } => {
-                if !fs::path_exists(path.as_path()).await? {
+            DirectoryResource::Group { path, group, sudo } => {
+                if !probe::path_exists(path.as_path(), *sudo).await? {
                     DirectoryState::GroupIncorrect
                 } else {
-                    let actual_group = fs::get_owner_group(path.as_path()).await?;
+                    let actual_group = probe::get_owner_group(path.as_path(), *sudo).await?;
                     let actual_group = actual_group.map(|g| g.name.to_string());
                     if actual_group.as_deref() == Some(group.as_str()) {
                         DirectoryState::GroupCorrect
@@ -658,11 +658,10 @@ impl ResourceType for Directory {
 async fn probe_linked_state(
     source: &FilePath,
     path: &FilePath,
+    sudo: bool,
 ) -> Result<DirectoryState, DirectoryStateError> {
-    match fs::probe_symlink(path.as_path()).await? {
-        fs::SymlinkTarget::Symlink(target) if target == source.as_path() => {
-            Ok(DirectoryState::Linked)
-        }
+    match probe::probe_symlink(path.as_path(), sudo).await? {
+        SymlinkTarget::Symlink(target) if target == source.as_path() => Ok(DirectoryState::Linked),
         _ => Ok(DirectoryState::NotLinked),
     }
 }
@@ -728,7 +727,7 @@ mod tests {
         let target = dir.path().join("link");
         tokio::fs::symlink(&source, &target).await.unwrap();
 
-        let state = probe_linked_state(&file_path(&source), &file_path(&target))
+        let state = probe_linked_state(&file_path(&source), &file_path(&target), false)
             .await
             .unwrap();
         assert!(matches!(state, DirectoryState::Linked));
@@ -742,7 +741,7 @@ mod tests {
         let target = dir.path().join("dest");
         tokio::fs::create_dir(&target).await.unwrap();
 
-        let state = probe_linked_state(&file_path(&source), &file_path(&target))
+        let state = probe_linked_state(&file_path(&source), &file_path(&target), false)
             .await
             .unwrap();
         assert!(matches!(state, DirectoryState::NotLinked));
@@ -758,7 +757,7 @@ mod tests {
         let target = dir.path().join("link");
         tokio::fs::symlink(&other, &target).await.unwrap();
 
-        let state = probe_linked_state(&file_path(&source), &file_path(&target))
+        let state = probe_linked_state(&file_path(&source), &file_path(&target), false)
             .await
             .unwrap();
         assert!(matches!(state, DirectoryState::NotLinked));
@@ -771,7 +770,7 @@ mod tests {
         tokio::fs::create_dir(&source).await.unwrap();
         let target = dir.path().join("missing");
 
-        let state = probe_linked_state(&file_path(&source), &file_path(&target))
+        let state = probe_linked_state(&file_path(&source), &file_path(&target), false)
             .await
             .unwrap();
         assert!(matches!(state, DirectoryState::NotLinked));

@@ -4,7 +4,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use lusid_causality::{CausalityMeta, CausalityTree};
 use lusid_ctx::Context;
-use lusid_fs::{self as fs, FsError};
+use lusid_fs::SymlinkTarget;
 use lusid_operation::{
     Operation,
     operations::file::{FileGroup, FileMode, FileOperation, FilePath, FileSource, FileUser},
@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::probe::{self, ProbeError};
 use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
 
 /// Byte payload of a file as it appears in [`FileState`] / [`FileChange`].
@@ -411,7 +412,7 @@ impl Display for FileState {
 #[derive(Error, Debug)]
 pub enum FileStateError {
     #[error(transparent)]
-    Fs(#[from] FsError),
+    Probe(#[from] ProbeError),
 
     /// Fires at state probe time when diffing on-disk contents against a
     /// declared secret. Apply-side twin:
@@ -642,25 +643,26 @@ impl ResourceType for File {
         ctx: &mut Context,
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
-        // `sudo` is ignored by every probe in v1 - probes run as the calling
-        // user. The common case (root-owned 0644 files in 0755 parents)
-        // works; restricted paths (mode 0600, parents 0700) fail with a
-        // standard `FsError`. Sudo-wrapped probes are a follow-up.
+        // `sudo` is propagated into every probe so target paths under
+        // restricted parents (e.g. `/etc/sudoers.d/`, which is `0750
+        // root:root` on Arch) can still be observed. The `source` side
+        // of `Sourced` is always on the operator's filesystem, so reads
+        // there never need sudo.
         let state = match resource {
             FileResource::Sourced {
                 source,
                 path,
                 is_secret,
-                sudo: _,
+                sudo,
             } => {
-                let source_bytes = fs::read_file_to_bytes(source.as_path()).await?;
-                if !fs::path_exists(path.as_path()).await? {
+                let source_bytes = probe::read_file_to_bytes(source.as_path(), false).await?;
+                if !probe::path_exists(path.as_path(), *sudo).await? {
                     FileState::NotSourced {
                         current: None,
                         desired: Content::from_bytes(source_bytes, *is_secret),
                     }
                 } else {
-                    let path_bytes = fs::read_file_to_bytes(path.as_path()).await?;
+                    let path_bytes = probe::read_file_to_bytes(path.as_path(), *sudo).await?;
                     if path_bytes == source_bytes {
                         FileState::Sourced {
                             content: Content::from_bytes(path_bytes, *is_secret),
@@ -674,9 +676,13 @@ impl ResourceType for File {
                 }
             }
 
-            FileResource::Linked { source, path, .. } => probe_linked_state(source, path).await?,
+            FileResource::Linked { source, path, sudo } => {
+                probe_linked_state(source, path, *sudo).await?
+            }
 
-            FileResource::Secret { name, path, .. } => {
+            FileResource::Secret {
+                name, path, sudo, ..
+            } => {
                 // Compare the file's current contents against the
                 // decrypted secret plaintext. A missing secret here
                 // (e.g. typo in the plan's `name` field) surfaces as
@@ -687,13 +693,13 @@ impl ResourceType for File {
                     .ok_or_else(|| FileStateError::MissingSecret { name: name.clone() })?;
                 let secret_bytes = secret.expose_secret().as_bytes();
                 let desired = Content::redacted(secret_bytes);
-                if !fs::path_exists(path.as_path()).await? {
+                if !probe::path_exists(path.as_path(), *sudo).await? {
                     FileState::NotSourced {
                         current: None,
                         desired,
                     }
                 } else {
-                    let path_bytes = fs::read_file_to_bytes(path.as_path()).await?;
+                    let path_bytes = probe::read_file_to_bytes(path.as_path(), *sudo).await?;
                     if path_bytes.as_slice() == secret_bytes {
                         FileState::Sourced {
                             content: Content::redacted(&path_bytes),
@@ -707,19 +713,19 @@ impl ResourceType for File {
                 }
             }
 
-            FileResource::Present { path, .. } | FileResource::Absent { path, .. } => {
-                if fs::path_exists(path.as_path()).await? {
+            FileResource::Present { path, sudo } | FileResource::Absent { path, sudo } => {
+                if probe::path_exists(path.as_path(), *sudo).await? {
                     FileState::Present
                 } else {
                     FileState::Absent
                 }
             }
 
-            FileResource::Mode { path, mode, .. } => {
-                if !fs::path_exists(path.as_path()).await? {
+            FileResource::Mode { path, mode, sudo } => {
+                if !probe::path_exists(path.as_path(), *sudo).await? {
                     FileState::ModeIncorrect
                 } else {
-                    let actual_mode = fs::get_mode(path.as_path()).await?;
+                    let actual_mode = probe::get_mode(path.as_path(), *sudo).await?;
                     let actual_mode = actual_mode & 0o7777;
                     if actual_mode == mode.as_u32() {
                         FileState::ModeCorrect
@@ -729,11 +735,11 @@ impl ResourceType for File {
                 }
             }
 
-            FileResource::User { path, user, .. } => {
-                if !fs::path_exists(path.as_path()).await? {
+            FileResource::User { path, user, sudo } => {
+                if !probe::path_exists(path.as_path(), *sudo).await? {
                     FileState::UserIncorrect
                 } else {
-                    let actual_user = fs::get_owner_user(path.as_path()).await?;
+                    let actual_user = probe::get_owner_user(path.as_path(), *sudo).await?;
                     let actual_user = actual_user.map(|u| u.name.to_string());
                     if actual_user.as_deref() == Some(user.as_str()) {
                         FileState::UserCorrect
@@ -743,11 +749,11 @@ impl ResourceType for File {
                 }
             }
 
-            FileResource::Group { path, group, .. } => {
-                if !fs::path_exists(path.as_path()).await? {
+            FileResource::Group { path, group, sudo } => {
+                if !probe::path_exists(path.as_path(), *sudo).await? {
                     FileState::GroupIncorrect
                 } else {
-                    let actual_group = fs::get_owner_group(path.as_path()).await?;
+                    let actual_group = probe::get_owner_group(path.as_path(), *sudo).await?;
                     let actual_group = actual_group.map(|g| g.name.to_string());
                     if actual_group.as_deref() == Some(group.as_str()) {
                         FileState::GroupCorrect
@@ -909,9 +915,10 @@ impl ResourceType for File {
 async fn probe_linked_state(
     source: &FilePath,
     path: &FilePath,
+    sudo: bool,
 ) -> Result<FileState, FileStateError> {
-    match fs::probe_symlink(path.as_path()).await? {
-        fs::SymlinkTarget::Symlink(target) if target == source.as_path() => Ok(FileState::Linked),
+    match probe::probe_symlink(path.as_path(), sudo).await? {
+        SymlinkTarget::Symlink(target) if target == source.as_path() => Ok(FileState::Linked),
         // Wrong-target symlink, regular file, or missing path - all mean
         // "(re)create the symlink".
         _ => Ok(FileState::NotLinked),
@@ -1042,7 +1049,7 @@ mod tests {
         let target = dir.path().join("link.txt");
         tokio::fs::symlink(&source, &target).await.unwrap();
 
-        let state = probe_linked_state(&file_path(&source), &file_path(&target))
+        let state = probe_linked_state(&file_path(&source), &file_path(&target), false)
             .await
             .unwrap();
         assert!(matches!(state, FileState::Linked));
@@ -1056,7 +1063,7 @@ mod tests {
         let target = dir.path().join("regular.txt");
         tokio::fs::write(&target, b"shared").await.unwrap();
 
-        let state = probe_linked_state(&file_path(&source), &file_path(&target))
+        let state = probe_linked_state(&file_path(&source), &file_path(&target), false)
             .await
             .unwrap();
         assert!(matches!(state, FileState::NotLinked));
@@ -1072,7 +1079,7 @@ mod tests {
         let target = dir.path().join("link.txt");
         tokio::fs::symlink(&other, &target).await.unwrap();
 
-        let state = probe_linked_state(&file_path(&source), &file_path(&target))
+        let state = probe_linked_state(&file_path(&source), &file_path(&target), false)
             .await
             .unwrap();
         assert!(matches!(state, FileState::NotLinked));
@@ -1085,7 +1092,7 @@ mod tests {
         tokio::fs::write(&source, b"x").await.unwrap();
         let target = dir.path().join("link.txt");
 
-        let state = probe_linked_state(&file_path(&source), &file_path(&target))
+        let state = probe_linked_state(&file_path(&source), &file_path(&target), false)
             .await
             .unwrap();
         assert!(matches!(state, FileState::NotLinked));
