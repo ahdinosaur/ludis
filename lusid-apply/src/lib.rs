@@ -565,43 +565,17 @@ async fn apply_op_phase(
                 Ok::<(), ApplyError>(())
             };
 
-            let stdout_task = {
-                let mut lines = BufReader::new(stdout).lines();
-                let redactor = redactor.clone();
-                async move {
-                    while let Some(line) = lines
-                        .next_line()
-                        .await
-                        .map_err(ApplyError::ReadOperationStdio)?
-                    {
-                        emit(AppUpdate::OperationApplyStdout {
-                            index,
-                            stdout: redactor.redact(&line),
-                        })
-                        .await?;
-                    }
-                    Ok::<(), ApplyError>(())
-                }
-            };
+            let stdout_task = stream_operation_lines(
+                stdout,
+                redactor.clone(),
+                move |data| AppUpdate::OperationApplyStdout { index, stdout: data },
+            );
 
-            let stderr_task = {
-                let mut lines = BufReader::new(stderr).lines();
-                let redactor = redactor.clone();
-                async move {
-                    while let Some(line) = lines
-                        .next_line()
-                        .await
-                        .map_err(ApplyError::ReadOperationStdio)?
-                    {
-                        emit(AppUpdate::OperationApplyStderr {
-                            index,
-                            stderr: redactor.redact(&line),
-                        })
-                        .await?;
-                    }
-                    Ok::<(), ApplyError>(())
-                }
-            };
+            let stderr_task = stream_operation_lines(
+                stderr,
+                redactor.clone(),
+                move |data| AppUpdate::OperationApplyStderr { index, stderr: data },
+            );
 
             if let Err(error) = tokio::try_join!(output_task, stdout_task, stderr_task) {
                 let error_message = error.to_string();
@@ -626,6 +600,56 @@ async fn apply_op_phase(
         *op_epoch_counter += 1;
     }
 
+    Ok(())
+}
+
+/// Read one operation pipe line-at-a-time as raw bytes, redact, and emit each
+/// line via `make_update`. Used by `apply_op_phase` for both stdout and
+/// stderr - the only thing that differs is which event variant the bytes
+/// get wrapped in.
+///
+/// Why bytes instead of `lines()`: ANSI escape sequences (colour, cursor
+/// moves) and any non-UTF-8 bytes must survive verbatim so the consumer can
+/// render them through a terminal emulator. `BufReader::lines()` returns
+/// `String`, which lossily replaces invalid UTF-8 and strips the delimiter.
+/// `read_until(b'\n', ...)` is binary-safe and preserves nothing-but-`\n`
+/// semantics.
+///
+/// Redaction stays line-bounded (same safety bar as before): we feed each
+/// complete line through `String::from_utf8_lossy` -> `redactor.redact` and
+/// re-encode. A secret straddling a newline would not have been caught by
+/// the prior `String`-based path either, so this is no regression. ANSI
+/// escape bytes are all 7-bit ASCII and pass through the lossy step intact.
+async fn stream_operation_lines<R, F>(
+    reader: R,
+    redactor: Redactor,
+    make_update: F,
+) -> Result<(), ApplyError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    F: Fn(Vec<u8>) -> AppUpdate,
+{
+    let mut reader = BufReader::new(reader);
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    loop {
+        buf.clear();
+        let n = reader
+            .read_until(b'\n', &mut buf)
+            .await
+            .map_err(ApplyError::ReadOperationStdio)?;
+        if n == 0 {
+            break;
+        }
+        // `read_until` includes the delimiter when present, but a final
+        // partial line on EOF arrives without one. Strip the trailing `\n`
+        // only when it's actually there so the consumer can re-add a
+        // single newline per event without doubling up on EOF tails.
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+        }
+        let redacted = redactor.redact(&String::from_utf8_lossy(&buf));
+        emit(make_update(redacted.into_bytes())).await?;
+    }
     Ok(())
 }
 
