@@ -1,10 +1,10 @@
 [package]
 name = "lusid-ctx"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-lusid-http = { path = "../http", version = "0.1" }
-lusid-secrets = { path = "../secrets", version = "0.1" }
+lusid-http = { path = "../http", version = "0.2" }
+lusid-secrets = { path = "../secrets", version = "0.2" }
 thiserror.workspace = true
 tracing.workspace = true

@@ -2586,7 +2586,7 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lusid"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "comfy-table",
@@ -2622,7 +2622,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-apply"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "futures-util",
@@ -2649,7 +2649,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-apply-stdio"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lusid-operation",
  "lusid-plan",
@@ -2662,7 +2662,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-causality"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lusid-tree",
  "thiserror 2.0.18",
@@ -2670,7 +2670,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-cmd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-promise",
  "shell-words",
@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-ctx"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lusid-http",
  "lusid-secrets",
@@ -2690,7 +2690,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-fs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "filetime",
  "nix 0.31.3",
@@ -2701,7 +2701,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-http"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lusid-fs",
  "reqwest",
@@ -2713,7 +2713,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-machine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lusid-system",
  "serde",
@@ -2723,7 +2723,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-operation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "displaydoc",
@@ -2745,7 +2745,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-params"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "displaydoc",
  "indexmap",
@@ -2758,7 +2758,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-plan"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cuid2",
  "displaydoc",
@@ -2779,7 +2779,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lusid-operation",
  "lusid-plan",
@@ -2791,7 +2791,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-resource"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2818,7 +2818,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-secrets"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "age",
  "age-core",
@@ -2836,7 +2836,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-ssh"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-promise",
  "base64ct",
@@ -2856,7 +2856,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "displaydoc",
@@ -2867,7 +2867,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-system"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "etc-os-release",
  "hostname",
@@ -2880,7 +2880,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-tree"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -2888,7 +2888,7 @@ dependencies = [
 
 [[package]]
 name = "lusid-vm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lusid-cmd",
  "lusid-ctx",
@@ -4113,7 +4113,7 @@ dependencies = [
 
 [[package]]
 name = "rimu-interop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "displaydoc",
  "rimu",

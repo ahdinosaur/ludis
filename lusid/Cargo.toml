@@ -1,29 +1,29 @@
 [package]
 name = "lusid"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-lusid-apply-stdio = { path = "../apply-stdio", version = "0.1" }
-lusid-cmd = { path = "../cmd", version = "0.1" }
-lusid-ctx = { path = "../ctx", version = "0.1" }
-lusid-machine = { path = "../machine", version = "0.1" }
-lusid-params = { path = "../params", version = "0.1" }
-lusid-plan = { path = "../plan", version = "0.1" }
-lusid-render = { path = "../render", version = "0.1" }
-lusid-tree = { path = "../tree", version = "0.1" }
-lusid-secrets = { path = "../secrets", version = "0.1" }
-lusid-ssh = { path = "../ssh", version = "0.1" }
-lusid-store = { path = "../store", version = "0.1" }
-lusid-system = { path = "../system", version = "0.1" }
-lusid-vm = { path = "../vm", version = "0.1" }
+lusid-apply-stdio = { path = "../apply-stdio", version = "0.2" }
+lusid-cmd = { path = "../cmd", version = "0.2" }
+lusid-ctx = { path = "../ctx", version = "0.2" }
+lusid-machine = { path = "../machine", version = "0.2" }
+lusid-params = { path = "../params", version = "0.2" }
+lusid-plan = { path = "../plan", version = "0.2" }
+lusid-render = { path = "../render", version = "0.2" }
+lusid-tree = { path = "../tree", version = "0.2" }
+lusid-secrets = { path = "../secrets", version = "0.2" }
+lusid-ssh = { path = "../ssh", version = "0.2" }
+lusid-store = { path = "../store", version = "0.2" }
+lusid-system = { path = "../system", version = "0.2" }
+lusid-vm = { path = "../vm", version = "0.2" }
 comfy-table = "7.2.2"
 clap.workspace = true
 crossterm = "0.29"
 displaydoc.workspace = true
 ratatui = "0.30"
 rimu.workspace = true
-rimu-interop = { path = "../rimu-interop", version = "0.1" }
+rimu-interop = { path = "../rimu-interop", version = "0.2" }
 serde.workspace = true
 serde_json.workspace = true
 shell-words = "1.1.1"
@@ -34,5 +34,5 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [dev-dependencies]
-lusid-operation = { path = "../operation", version = "0.1" }
-lusid-resource = { path = "../resource", version = "0.1" }
+lusid-operation = { path = "../operation", version = "0.2" }
+lusid-resource = { path = "../resource", version = "0.2" }

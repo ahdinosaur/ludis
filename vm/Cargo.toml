@@ -1,16 +1,16 @@
 [package]
 name = "lusid-vm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-lusid-cmd = { path = "../cmd", version = "0.1" }
-lusid-ctx = { path = "../ctx", version = "0.1" }
-lusid-fs = { path = "../fs", version = "0.1" }
-lusid-http = { path = "../http", version = "0.1" }
-lusid-machine = { path = "../machine", version = "0.1" }
-lusid-ssh = { path = "../ssh", version = "0.1" }
-lusid-system = { path = "../system", version = "0.1" }
+lusid-cmd = { path = "../cmd", version = "0.2" }
+lusid-ctx = { path = "../ctx", version = "0.2" }
+lusid-fs = { path = "../fs", version = "0.2" }
+lusid-http = { path = "../http", version = "0.2" }
+lusid-machine = { path = "../machine", version = "0.2" }
+lusid-ssh = { path = "../ssh", version = "0.2" }
+lusid-system = { path = "../system", version = "0.2" }
 nix.workspace = true
 russh.workspace = true
 serde.workspace = true

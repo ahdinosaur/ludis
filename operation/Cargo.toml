@@ -1,14 +1,14 @@
 [package]
 name = "lusid-operation"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-lusid-cmd = { path = "../cmd", version = "0.1" }
-lusid-ctx = { path = "../ctx", version = "0.1" }
-lusid-fs = { path = "../fs", version = "0.1" }
-lusid-http = { path = "../http", version = "0.1" }
-lusid-params = { path = "../params", version = "0.1" }
+lusid-cmd = { path = "../cmd", version = "0.2" }
+lusid-ctx = { path = "../ctx", version = "0.2" }
+lusid-fs = { path = "../fs", version = "0.2" }
+lusid-http = { path = "../http", version = "0.2" }
+lusid-params = { path = "../params", version = "0.2" }
 rimu.workspace = true
 async-trait.workspace = true
 displaydoc.workspace = true

@@ -1,10 +1,10 @@
 [package]
 name = "lusid-http"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-lusid-fs = { path = "../fs", version = "0.1" }
+lusid-fs = { path = "../fs", version = "0.2" }
 reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "brotli", "gzip", "stream", "http2", "charset"] }
 thiserror.workspace = true
 tokio.workspace = true

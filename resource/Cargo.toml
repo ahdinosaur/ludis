@@ -1,15 +1,15 @@
 [package]
 name = "lusid-resource"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-lusid-causality = { path = "../causality", version = "0.1" }
-lusid-cmd = { path = "../cmd", version = "0.1" }
-lusid-ctx = { path = "../ctx", version = "0.1" }
-lusid-fs = { path = "../fs", version = "0.1" }
-lusid-params = { path = "../params", version = "0.1" }
-lusid-operation = { path = "../operation", version = "0.1" }
+lusid-causality = { path = "../causality", version = "0.2" }
+lusid-cmd = { path = "../cmd", version = "0.2" }
+lusid-ctx = { path = "../ctx", version = "0.2" }
+lusid-fs = { path = "../fs", version = "0.2" }
+lusid-params = { path = "../params", version = "0.2" }
+lusid-operation = { path = "../operation", version = "0.2" }
 async-trait.workspace = true
 base64.workspace = true
 futures-util = "0.3.32"
@@ -25,5 +25,5 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-lusid-tree = { path = "../tree", version = "0.1" }
+lusid-tree = { path = "../tree", version = "0.2" }
 tempfile = "3"
