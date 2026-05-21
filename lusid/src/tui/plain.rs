@@ -238,7 +238,11 @@ fn scrub_for_log(bytes: &[u8]) -> String {
                     }
                 }
             }
-            '\r' | '\x07' => {} // CR alone is a cursor reset; bell is noise.
+            // CR/LF are chunk terminators kept on the wire for the TUI
+            // pane; the plain log writes one line per event via `eprintln!`,
+            // so re-emitting them here would produce blank lines or
+            // mid-line breaks. Bell is just noise.
+            '\r' | '\n' | '\x07' => {}
             _ => out.push(c),
         }
     }

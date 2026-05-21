@@ -169,16 +169,18 @@ pub enum AppUpdate {
     OperationApplyStart {
         index: (usize, usize),
     },
-    /// One line's worth of bytes from the operation's stdout (delimiter
-    /// stripped). Carries raw bytes so ANSI escape sequences survive the
-    /// wire and the consumer can render them via a terminal emulator.
+    /// One chunk of stdout bytes from the operation, delimited by `\r` or
+    /// `\n` (whichever comes first); the terminator is retained so the
+    /// consumer can render bare-`\r` progress redraws in place. Carries
+    /// raw bytes so ANSI escape sequences survive the wire and the
+    /// consumer can render them via a terminal emulator.
     OperationApplyStdout {
         index: (usize, usize),
         #[serde(with = "bytes_base64")]
         stdout: Vec<u8>,
     },
-    /// One line's worth of bytes from the operation's stderr (delimiter
-    /// stripped). Same shape as `OperationApplyStdout`.
+    /// One chunk of stderr bytes from the operation. Same shape and
+    /// delimiter semantics as `OperationApplyStdout`.
     OperationApplyStderr {
         index: (usize, usize),
         #[serde(with = "bytes_base64")]

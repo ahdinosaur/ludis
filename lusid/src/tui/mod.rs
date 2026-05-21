@@ -511,23 +511,29 @@ impl TuiApp {
         Ok(())
     }
 
-    /// Append one delimited line's bytes (plus the line terminator the
-    /// producer stripped before sending) into the per-op terminal
+    /// Append one chunk of operation output into the per-op terminal
     /// emulator. Creates the parser on first call.
     ///
-    /// The terminator is `\r\n` rather than bare `\n` because operation
-    /// pipes aren't backed by a PTY, so programs emit `\n` without the
-    /// kernel's tty-layer CR translation. Feeding bare `\n` to vt100
-    /// yields the LF-without-CR staircase effect. If the line already
-    /// ends in `\r` (programs that knowingly write `\r\n`), only `\n` is
-    /// appended to avoid `\r\r\n`.
+    /// Chunks ship from the producer with their original terminator
+    /// retained: `\r\n`, `\r` alone (a progress-bar redraw), `\n` alone,
+    /// or none (the final EOF tail). The match splits the body from the
+    /// trailing terminator so we can decide what to feed vt100:
+    ///
+    /// - `\r\n` or `\r` alone: pass through as-is. Bare `\r` resets the
+    ///   cursor column without advancing the row, so the next chunk
+    ///   overwrites the current row in place.
+    /// - `\n` alone: feed `\r\n` instead. Operation pipes aren't backed
+    ///   by a PTY, so programs emit `\n` without the kernel's tty-layer
+    ///   CR translation; feeding bare `\n` to vt100 yields the
+    ///   LF-without-CR staircase effect.
+    /// - no terminator (EOF tail): feed body only.
     ///
     /// `stream` distinguishes stdout from stderr so stderr lines render
     /// in red - matching the prior plain-text section's colour treatment
     /// without losing the terminal-emulator semantics for either stream.
-    /// The SGR reset (`\x1b[0m`) follows the terminator so any leftover
-    /// styling does not bleed into the next event.
-    fn feed_op_terminal(&mut self, index: (usize, usize), line: &[u8], stream: OutputStream) {
+    /// The SGR reset (`\x1b[0m`) follows the body so any leftover styling
+    /// does not bleed past the terminator.
+    fn feed_op_terminal(&mut self, index: (usize, usize), chunk: &[u8], stream: OutputStream) {
         let parser = self.op_terminals.entry(index).or_insert_with(|| {
             vt100::Parser::new(
                 OP_TERM_INITIAL_ROWS,
@@ -535,18 +541,18 @@ impl TuiApp {
                 OP_TERM_SCROLLBACK,
             )
         });
+        let (body, terminator): (&[u8], &[u8]) = match chunk {
+            [body @ .., b'\r', b'\n'] => (body, b"\r\n"),
+            [body @ .., b'\r'] => (body, b"\r"),
+            [body @ .., b'\n'] => (body, b"\r\n"),
+            _ => (chunk, b""),
+        };
         if let OutputStream::Stderr = stream {
             parser.process(b"\x1b[31m");
         }
-        parser.process(line);
-        // `\x1b[0m` first so any SGR the program left on still resets
-        // before the carriage return.
+        parser.process(body);
         parser.process(b"\x1b[0m");
-        if line.last() == Some(&b'\r') {
-            parser.process(b"\n");
-        } else {
-            parser.process(b"\r\n");
-        }
+        parser.process(terminator);
     }
 
     fn handle_event(&mut self, event: Event) -> Result<bool, TuiError> {
@@ -4591,7 +4597,7 @@ mod tests {
         // scroll the top off as expected.
         app.apply_update(AppUpdate::OperationApplyStdout {
             index: (0, 0),
-            stdout: b"start".to_vec(),
+            stdout: b"start\n".to_vec(),
         })
         .unwrap();
         let mut terminal =
@@ -4602,7 +4608,7 @@ mod tests {
         for i in 0..40 {
             app.apply_update(AppUpdate::OperationApplyStdout {
                 index: (0, 0),
-                stdout: format!("line {i:03}").into_bytes(),
+                stdout: format!("line {i:03}\n").into_bytes(),
             })
             .unwrap();
         }
@@ -4621,9 +4627,9 @@ mod tests {
     }
 
     /// Verifies that ANSI colour escapes survive the wire and reach the
-    /// `vt100::Parser` intact. The producer's `read_until(b'\n', ...)`
-    /// preserves escape bytes (which are 7-bit ASCII), and the base64
-    /// adapter is binary-safe; this test exercises both ends.
+    /// `vt100::Parser` intact. The producer's chunk reader preserves
+    /// escape bytes (which are 7-bit ASCII), and the base64 adapter is
+    /// binary-safe; this test exercises both ends.
     #[test]
     fn ansi_colour_bytes_reach_the_vt100_screen() {
         let mut app = TuiApp::new("test".into());
@@ -4675,16 +4681,18 @@ mod tests {
         .unwrap();
         app.apply_update(AppUpdate::OperationApplyStart { index: (0, 0) })
             .unwrap();
-        // Two lines, then jump home and overwrite. Producer events strip
-        // the trailing `\n`; the TUI re-adds `\r\n` per event.
+        // Two `\n`-terminated lines, then a no-terminator chunk that
+        // jumps home and overwrites. The first two chunks land on rows
+        // 0/1 (consumer injects CR for LF-only); `\x1b[HX` then
+        // repositions the cursor and writes `X` at (0,0).
         app.apply_update(AppUpdate::OperationApplyStdout {
             index: (0, 0),
-            stdout: b"hello".to_vec(),
+            stdout: b"hello\n".to_vec(),
         })
         .unwrap();
         app.apply_update(AppUpdate::OperationApplyStdout {
             index: (0, 0),
-            stdout: b"world".to_vec(),
+            stdout: b"world\n".to_vec(),
         })
         .unwrap();
         app.apply_update(AppUpdate::OperationApplyStdout {
@@ -4697,10 +4705,11 @@ mod tests {
         assert_eq!(cell.contents(), "X");
     }
 
-    /// Each `OperationApplyStdout` event lands its content on its own row,
-    /// because the consumer appends a `\r\n` after the line and vt100
-    /// honours both the CR (return to col 0) and the LF (advance row).
-    /// Without the `\r`, content would staircase to the right.
+    /// Each `\n`-terminated `OperationApplyStdout` event lands its
+    /// content on its own row: the consumer injects `\r` before the `\n`
+    /// (operation pipes aren't a PTY), and vt100 honours both the CR
+    /// (return to col 0) and the LF (advance row). Without the CR
+    /// injection, content would staircase to the right.
     #[test]
     fn stdout_events_each_land_on_a_fresh_row() {
         let mut app = TuiApp::new("test".into());
@@ -4716,18 +4725,63 @@ mod tests {
             .unwrap();
         app.apply_update(AppUpdate::OperationApplyStdout {
             index: (0, 0),
-            stdout: b"a".to_vec(),
+            stdout: b"a\n".to_vec(),
         })
         .unwrap();
         app.apply_update(AppUpdate::OperationApplyStdout {
             index: (0, 0),
-            stdout: b"b".to_vec(),
+            stdout: b"b\n".to_vec(),
         })
         .unwrap();
         let parser = app.op_terminals.get(&(0, 0)).expect("parser exists");
         let screen = parser.screen();
         assert_eq!(screen.cell(0, 0).map(|c| c.contents()), Some("a".into()));
         assert_eq!(screen.cell(1, 0).map(|c| c.contents()), Some("b".into()));
+    }
+
+    /// Bare-`\r` chunks (progress bars: apt, curl, dd, docker pull)
+    /// reset the cursor column without advancing the row, so successive
+    /// chunks overwrite the current row in place. The first update's
+    /// "45%" text must not survive to a second row, and row 0 must end
+    /// in "46%".
+    #[test]
+    fn cr_terminated_chunks_overwrite_in_place() {
+        let mut app = TuiApp::new("test".into());
+        app.app_view = epochs_view();
+        app.apply_update(AppUpdate::OperationsApplyEpochAdded {
+            epoch_index: 0,
+            resource_epoch: 0,
+            phase: Phase::Change,
+            operations: vec![command_op("progress")],
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStart { index: (0, 0) })
+            .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStdout {
+            index: (0, 0),
+            stdout: b"Downloading 45%\r".to_vec(),
+        })
+        .unwrap();
+        app.apply_update(AppUpdate::OperationApplyStdout {
+            index: (0, 0),
+            stdout: b"Downloading 46%\r".to_vec(),
+        })
+        .unwrap();
+        let parser = app.op_terminals.get(&(0, 0)).expect("parser exists");
+        let screen = parser.screen();
+        let row0: String = (0..b"Downloading 46%".len() as u16)
+            .filter_map(|col| screen.cell(0, col).map(|c| c.contents()))
+            .collect();
+        assert_eq!(row0, "Downloading 46%");
+        // The bare `\r` does not advance the cursor to row 1, so the
+        // second row should be untouched (empty).
+        let row1: String = (0..b"Downloading".len() as u16)
+            .filter_map(|col| screen.cell(1, col).map(|c| c.contents()))
+            .collect();
+        assert!(
+            row1.trim().is_empty(),
+            "row 1 should be empty after CR-only redraw; got {row1:?}",
+        );
     }
 
     /// Stderr events are wrapped in `\x1b[31m`...`\x1b[0m` before reaching the
