@@ -140,7 +140,7 @@ The on-change phase's ordering inside K means handlers fire strictly after the r
 - Run tests:
   - `cargo test`
 - Lint:
-  - `cargo clippy --workspace -- -D warnings`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
 - Format:
   - `cargo fmt --all`
 
