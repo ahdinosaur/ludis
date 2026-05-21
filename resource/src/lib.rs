@@ -1260,6 +1260,7 @@ mod dispatch_tests {
                     is_installed: None,
                     install: None,
                     uninstall: None,
+                    sudo: false,
                 }),
                 "command",
             ),
