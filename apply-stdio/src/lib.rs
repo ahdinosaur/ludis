@@ -49,13 +49,38 @@
 
 use std::collections::HashMap;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD_NO_PAD;
 use lusid_operation::Operation;
 use lusid_plan::{PlanMeta, PlanTree};
 pub use lusid_resource::ChangeKind;
 use lusid_resource::{Resource, ResourceChange, ResourceParams, ResourceState};
 use lusid_tree::Tree;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
+
+/// Base64 codec for raw operation-output bytes on the JSON wire.
+///
+/// Stdout/stderr from arbitrary programs is not guaranteed UTF-8 (ANSI
+/// escapes survive, but a `\xff` from an unlucky encoding does not), so the
+/// payload travels as bytes. Base64 over the NDJSON line keeps the wire
+/// printable and small (~1.33x) compared to a JSON array of integers (~4x).
+/// `NO_PAD` shaves the trailing `=`s; the decoder accepts both forms.
+mod bytes_base64 {
+    use super::*;
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD_NO_PAD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        STANDARD_NO_PAD
+            .decode(s.as_bytes())
+            .or_else(|_| base64::engine::general_purpose::STANDARD.decode(s.as_bytes()))
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 /// Protocol message from `lusid-apply` to the TUI.
 ///
@@ -144,13 +169,20 @@ pub enum AppUpdate {
     OperationApplyStart {
         index: (usize, usize),
     },
+    /// One line's worth of bytes from the operation's stdout (delimiter
+    /// stripped). Carries raw bytes so ANSI escape sequences survive the
+    /// wire and the consumer can render them via a terminal emulator.
     OperationApplyStdout {
         index: (usize, usize),
-        stdout: String,
+        #[serde(with = "bytes_base64")]
+        stdout: Vec<u8>,
     },
+    /// One line's worth of bytes from the operation's stderr (delimiter
+    /// stripped). Same shape as `OperationApplyStdout`.
     OperationApplyStderr {
         index: (usize, usize),
-        stderr: String,
+        #[serde(with = "bytes_base64")]
+        stderr: Vec<u8>,
     },
     OperationApplyComplete {
         index: (usize, usize),
@@ -243,14 +275,18 @@ pub struct OperationEpochMeta {
     pub phase: Phase,
 }
 
-/// One operation's live state during the apply phase. `stdout`/`stderr` are
-/// appended to as `OperationApplyStdout`/`OperationApplyStderr` arrive; the
-/// TUI renders the tail of these in the per-operation pane.
+/// One operation's live state during the apply phase. `stdout`/`stderr`
+/// accumulate raw bytes as `OperationApplyStdout`/`OperationApplyStderr`
+/// events arrive (one delimited line per event, `\n` re-appended on the
+/// consumer side so a replay reproduces the original stream). The TUI feeds
+/// these bytes into a per-op `vt100::Parser` for terminal-style rendering.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationView {
     pub label: Operation,
-    pub stdout: String,
-    pub stderr: String,
+    #[serde(with = "bytes_base64")]
+    pub stdout: Vec<u8>,
+    #[serde(with = "bytes_base64")]
+    pub stderr: Vec<u8>,
     pub is_complete: bool,
     pub error: Option<String>,
 }
@@ -259,8 +295,8 @@ impl OperationView {
     fn new(label: Operation) -> Self {
         Self {
             label,
-            stdout: String::new(),
-            stderr: String::new(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
             is_complete: false,
             error: None,
         }
@@ -783,8 +819,8 @@ impl AppView {
                 stdout,
             } => {
                 let op = self.op_mut(e, o)?;
-                op.stdout.push_str(&stdout);
-                op.stdout.push('\n');
+                op.stdout.extend_from_slice(&stdout);
+                op.stdout.push(b'\n');
                 self.last_activity_op = Some((e, o));
             }
             OperationApplyStderr {
@@ -792,8 +828,8 @@ impl AppView {
                 stderr,
             } => {
                 let op = self.op_mut(e, o)?;
-                op.stderr.push_str(&stderr);
-                op.stderr.push('\n');
+                op.stderr.extend_from_slice(&stderr);
+                op.stderr.push(b'\n');
                 self.last_activity_op = Some((e, o));
             }
             OperationApplyComplete {
@@ -2064,7 +2100,7 @@ mod tests {
         let v = v
             .update(AppUpdate::OperationApplyStdout {
                 index: (0, 0),
-                stdout: "line".into(),
+                stdout: b"line".to_vec(),
             })
             .unwrap();
         assert_eq!(v.last_activity_op, Some((0, 0)));
@@ -2072,7 +2108,7 @@ mod tests {
         let v = v
             .update(AppUpdate::OperationApplyStderr {
                 index: (0, 1),
-                stderr: "warn".into(),
+                stderr: b"warn".to_vec(),
             })
             .unwrap();
         assert_eq!(v.last_activity_op, Some((0, 1)));
@@ -2350,5 +2386,51 @@ mod tests {
             .update(AppUpdate::ResourceStatesNodeStart { index: 2 })
             .unwrap();
         assert!(v.auto_follow_armed, "stays armed after second Probing");
+    }
+
+    /// The base64 adapter must round-trip arbitrary bytes verbatim - ANSI
+    /// escape sequences in particular, since the whole point of swapping
+    /// the wire from `String` to `Vec<u8>` was to preserve them.
+    #[test]
+    fn stdout_payload_round_trips_ansi_bytes() {
+        let original = b"\x1b[31mred\x1b[0m \x07\xff\x00 done".to_vec();
+        let update = AppUpdate::OperationApplyStdout {
+            index: (0, 0),
+            stdout: original.clone(),
+        };
+        let line = serde_json::to_string(&update).unwrap();
+        let decoded: AppUpdate = serde_json::from_str(&line).unwrap();
+        match decoded {
+            AppUpdate::OperationApplyStdout { stdout, .. } => assert_eq!(stdout, original),
+            other => panic!("expected stdout variant, got {other:?}"),
+        }
+    }
+
+    /// Folding an `OperationApplyStdout` extends the accumulator and
+    /// re-appends a `\n`, mirroring the prior `String` semantics so a
+    /// replay produces the original delimited line stream.
+    #[test]
+    fn stdout_event_appends_bytes_plus_newline() {
+        let v = app_view_with_two_leaves()
+            .update(AppUpdate::OperationsApplyEpochAdded {
+                epoch_index: 0,
+                resource_epoch: 0,
+                phase: Phase::Change,
+                operations: vec![command_op("op-a")],
+            })
+            .unwrap()
+            .update(AppUpdate::OperationApplyStdout {
+                index: (0, 0),
+                stdout: b"hello".to_vec(),
+            })
+            .unwrap()
+            .update(AppUpdate::OperationApplyStderr {
+                index: (0, 0),
+                stderr: b"oops".to_vec(),
+            })
+            .unwrap();
+        let op = &v.operations_epochs[0][0];
+        assert_eq!(op.stdout, b"hello\n");
+        assert_eq!(op.stderr, b"oops\n");
     }
 }
