@@ -5,7 +5,7 @@
 //!
 //! ```toml
 //! [operators]
-//! mikey = "age1..."          # implicit recipient on every [files] entry
+//! mikey = "ssh-ed25519 AAAA... mikey@laptop"   # implicit recipient on every [files] entry
 //!
 //! [machines]
 //! rpi4b-1 = "ssh-ed25519 AAAA..."
@@ -147,9 +147,9 @@ impl Recipients {
         }
 
         // Duplicate key *value* across operators + machines. Compare by the
-        // canonical Display form: a stable string identity that's uniform
-        // across X25519 and SSH variants without exposing inner pubkey
-        // bytes. O(N²) - fine for the expected handful of recipients.
+        // canonical Display form: a stable string identity that doesn't
+        // expose inner pubkey bytes. O(N²) - fine for the expected handful
+        // of recipients.
         let labelled: Vec<(&String, AliasKind, String)> = operators
             .iter()
             .map(|(a, k)| (a, AliasKind::Operator, k.to_string()))
@@ -341,19 +341,14 @@ pub(crate) struct ResolvedRecipient {
 }
 
 /// Convert a resolved recipient list into the boxed form `age` expects for
-/// encryption. Cheap clones - both [`Key`] variants wrap small recipient
-/// types (a public point or an SSH pubkey).
+/// encryption. Cheap clones - the inner [`age::ssh::Recipient`] wraps a small
+/// pubkey representation.
 pub(crate) fn to_boxed_recipients(
     resolved: &[ResolvedRecipient],
 ) -> Vec<Box<dyn age::Recipient + Send>> {
     resolved
         .iter()
-        .map(|r| -> Box<dyn age::Recipient + Send> {
-            match &r.key {
-                Key::X25519(k) => Box::new(k.clone()),
-                Key::Ssh(k) => Box::new(k.clone()),
-            }
-        })
+        .map(|r| -> Box<dyn age::Recipient + Send> { Box::new(r.key.recipient().clone()) })
         .collect()
 }
 
@@ -432,27 +427,32 @@ pub enum ResolveError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixtures::{
+        TEST_SSH_ED25519_A_PUB, TEST_SSH_ED25519_B_PUB, TEST_SSH_ED25519_C_PUB,
+    };
 
-    /// Stable x25519 + SSH pubkey strings for fixture toml. Real keys
-    /// (bech32 / base64 valid) so `Key::from_str` accepts them.
-    const X25519_MIKEY: &str = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa";
-    const SSH_RPI: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN alice@rust";
+    const SSH_MIKEY: &str = TEST_SSH_ED25519_A_PUB;
+    const SSH_RPI: &str = TEST_SSH_ED25519_B_PUB;
 
-    const SAMPLE: &str = r#"
+    fn sample() -> String {
+        format!(
+            r#"
 [operators]
-mikey = "age1t7rxyev2z3rw82stdlrrepyc39nvn86l5078zqkf5uasdy86jp6svpy7pa"
+mikey = "{SSH_MIKEY}"
 
 [machines]
-rpi = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHsKLqeplhpW+uObz5dvMgjz1OxfM/XXUB+VHtZ6isGN alice@rust"
+rpi = "{SSH_RPI}"
 
 [groups]
 prod = ["rpi"]
 
 [files]
-"api_token" = { recipients = ["@prod"] }
-"db_pw" = { recipients = ["rpi"] }
-"local_only" = { recipients = [] }
-"#;
+"api_token" = {{ recipients = ["@prod"] }}
+"db_pw" = {{ recipients = ["rpi"] }}
+"local_only" = {{ recipients = [] }}
+"#
+        )
+    }
 
     fn parse_toml(s: &str) -> Result<Recipients, RecipientsError> {
         let raw: RecipientsToml = toml::from_str(s).unwrap();
@@ -460,16 +460,7 @@ prod = ["rpi"]
     }
 
     fn parse() -> Recipients {
-        parse_toml(SAMPLE).unwrap()
-    }
-
-    /// Two real, distinct x25519 public keys. Generated per-call so they
-    /// vary between tests; keys equal across two calls would defeat the
-    /// duplicate-key tests.
-    fn two_pubkeys() -> (String, String) {
-        let a = age::x25519::Identity::generate().to_public().to_string();
-        let b = age::x25519::Identity::generate().to_public().to_string();
-        (a, b)
+        parse_toml(&sample()).unwrap()
     }
 
     // -- shape & happy-path resolve ------------------------------------
@@ -511,7 +502,7 @@ prod = ["rpi"]
         let r = parse_toml(&format!(
             r#"
 [operators]
-mikey = "{X25519_MIKEY}"
+mikey = "{SSH_MIKEY}"
 
 [machines]
 rpi = "{SSH_RPI}"
@@ -550,19 +541,14 @@ prod = ["rpi"]
 
     #[test]
     fn files_for_alias_machine_filters() {
-        // Both machines parameterised as x25519 - `Key` allows either
-        // variant in `[machines]`, and using two fresh x25519 keys
-        // sidesteps needing a second SSH keypair just for this fixture.
-        let (op, m1) = two_pubkeys();
-        let m2 = age::x25519::Identity::generate().to_public().to_string();
         let r = parse_toml(&format!(
             r#"
 [operators]
-op = "{op}"
+op = "{SSH_MIKEY}"
 
 [machines]
-m1 = "{m1}"
-m2 = "{m2}"
+m1 = "{SSH_RPI}"
+m2 = "{TEST_SSH_ED25519_C_PUB}"
 
 [files]
 "only_m1" = {{ recipients = ["m1"] }}
@@ -586,16 +572,14 @@ m2 = "{m2}"
     /// machine groups still need to expand.
     #[test]
     fn files_for_alias_machine_via_group() {
-        let (op, m1) = two_pubkeys();
-        let m2 = age::x25519::Identity::generate().to_public().to_string();
         let r = parse_toml(&format!(
             r#"
 [operators]
-op = "{op}"
+op = "{SSH_MIKEY}"
 
 [machines]
-m1 = "{m1}"
-m2 = "{m2}"
+m1 = "{SSH_RPI}"
+m2 = "{TEST_SSH_ED25519_C_PUB}"
 
 [groups]
 prod = ["m1", "m2"]
@@ -618,7 +602,7 @@ prod = ["m1", "m2"]
         let err = parse_toml(&format!(
             r#"
 [operators]
-dup = "{X25519_MIKEY}"
+dup = "{SSH_MIKEY}"
 
 [machines]
 dup = "{SSH_RPI}"
@@ -630,12 +614,11 @@ dup = "{SSH_RPI}"
 
     #[test]
     fn duplicate_key_op_op_errors() {
-        let (a, _) = two_pubkeys();
         let err = parse_toml(&format!(
             r#"
 [operators]
-alpha = "{a}"
-beta  = "{a}"
+alpha = "{SSH_MIKEY}"
+beta  = "{SSH_MIKEY}"
 "#,
         ))
         .unwrap_err();
@@ -685,7 +668,7 @@ m  = "{SSH_RPI}"
         let err = parse_toml(&format!(
             r#"
 [operators]
-op = "{X25519_MIKEY}"
+op = "{SSH_MIKEY}"
 
 [machines]
 m = "{SSH_RPI}"
@@ -704,7 +687,7 @@ g2 = ["@g1"]
         let err = parse_toml(&format!(
             r#"
 [operators]
-op = "{X25519_MIKEY}"
+op = "{SSH_MIKEY}"
 
 [groups]
 g = []
@@ -719,7 +702,7 @@ g = []
         let err = parse_toml(&format!(
             r#"
 [operators]
-op = "{X25519_MIKEY}"
+op = "{SSH_MIKEY}"
 
 [machines]
 m = "{SSH_RPI}"
@@ -743,7 +726,7 @@ g = ["op", "m"]
         let err = parse_toml(&format!(
             r#"
 [operators]
-op = "{X25519_MIKEY}"
+op = "{SSH_MIKEY}"
 
 [groups]
 g = ["mystery"]
@@ -760,7 +743,7 @@ g = ["mystery"]
         let err = parse_toml(&format!(
             r#"
 [operators]
-op = "{X25519_MIKEY}"
+op = "{SSH_MIKEY}"
 
 [files]
 "f" = {{ recipients = ["bogus"] }}
@@ -775,7 +758,7 @@ op = "{X25519_MIKEY}"
         let err = parse_toml(&format!(
             r#"
 [operators]
-op = "{X25519_MIKEY}"
+op = "{SSH_MIKEY}"
 
 [files]
 "f" = {{ recipients = ["@bogus"] }}
@@ -790,7 +773,7 @@ op = "{X25519_MIKEY}"
         let err = parse_toml(&format!(
             r#"
 [operators]
-op = "{X25519_MIKEY}"
+op = "{SSH_MIKEY}"
 
 [machines]
 m = "{SSH_RPI}"
@@ -815,7 +798,7 @@ m = "{SSH_RPI}"
         let r = parse_toml(&format!(
             r#"
 [operators]
-op = "{X25519_MIKEY}"
+op = "{SSH_MIKEY}"
 
 [files]
 "only_op" = {{ recipients = [] }}

@@ -1,7 +1,7 @@
 //! Age-encrypted secrets for lusid plans.
 //!
 //! A lusid project stores secrets as individual `*.age` files under a
-//! `secrets/` directory. At apply time the host's age/SSH identity decrypts
+//! `secrets/` directory. At apply time the operator's SSH identity decrypts
 //! the subset of files it's a recipient for and hands the plaintexts to
 //! `@resource/secret` resources by name. Plaintexts never enter the Rimu
 //! evaluator - plans reference secrets by name, contents materialise at
@@ -42,6 +42,8 @@ mod recipients;
 mod redactor;
 mod reencrypt;
 mod secrets;
+#[cfg(test)]
+mod test_fixtures;
 
 pub use crate::load::LoadError;
 pub use crate::recipients::RecipientsError;

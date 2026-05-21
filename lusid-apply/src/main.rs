@@ -41,8 +41,8 @@ struct Cli {
     #[arg(long = "params")]
     params_json: Option<String>,
 
-    /// Path to the age/SSH identity file used to decrypt project secrets.
-    /// Omit to run without secrets (plans referencing `@resource/secret` will
+    /// Path to the SSH private key used to decrypt project secrets. Omit
+    /// to run without secrets (plans referencing `@resource/secret` will
     /// fail at apply time).
     #[arg(long = "identity")]
     identity_path: Option<PathBuf>,

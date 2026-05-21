@@ -14,7 +14,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use clap::Subcommand;
 use displaydoc::Display;
 use secrecy::ExposeSecret;
-use secrecy::zeroize::Zeroizing;
 use thiserror::Error;
 use tokio::fs;
 use tokio::process::Command;
@@ -46,15 +45,6 @@ pub enum SecretsCommand {
         name: Option<String>,
     },
 
-    /// Generate a fresh x25519 identity and write it to disk.
-    Keygen {
-        /// Output path. Defaults to `$XDG_CONFIG_HOME/lusid/identity`
-        /// (or `$HOME/.config/lusid/identity`). Refuses to overwrite an
-        /// existing file.
-        #[arg(short = 'o', long = "output")]
-        output: Option<PathBuf>,
-    },
-
     /// Audit `<secrets_dir>` against `lusid-secrets.toml`. Non-zero exit on
     /// any finding; suitable for CI.
     Check,
@@ -74,7 +64,7 @@ pub struct CliEnv {
     /// invoking `run`.
     pub secrets_dir: PathBuf,
 
-    /// Optional path to the operator's decryption identity. Required only
+    /// Optional path to the operator's SSH decryption identity. Required only
     /// by subcommands that need to decrypt (`edit`, `rekey`, `cat`).
     pub identity_path: Option<PathBuf>,
 }
@@ -85,7 +75,6 @@ pub async fn run(cmd: SecretsCommand, env: CliEnv) -> Result<(), CliError> {
         SecretsCommand::Ls => cmd_ls(&env).await,
         SecretsCommand::Edit { name } => cmd_edit(&env, &name).await,
         SecretsCommand::Rekey { name } => cmd_rekey(&env, name.as_deref()).await,
-        SecretsCommand::Keygen { output } => cmd_keygen(output.as_deref()).await,
         SecretsCommand::Check => cmd_check(&env).await,
         SecretsCommand::Cat { name } => cmd_cat(&env, &name).await,
     }
@@ -181,9 +170,9 @@ async fn cmd_rekey(env: &CliEnv, only: Option<&str>) -> Result<(), CliError> {
         })?;
 
         // No-op when the ciphertext header already matches the intended
-        // recipients. Each x25519 re-encryption produces different bytes
-        // (ephemeral pubkey), so without this check every `rekey` would
-        // rewrite every file and churn git history.
+        // recipients. Each SSH re-encryption produces different bytes
+        // (fresh ephemeral material), so without this check every `rekey`
+        // would rewrite every file and churn git history.
         let stanzas = crypto::read_header_stanzas(&ciphertext)?;
         if check::compare_stanzas(&resolved, &stanzas).is_none() {
             tracing::debug!(stem, "header already matches, skipping");
@@ -250,56 +239,6 @@ async fn cmd_edit(env: &CliEnv, stem: &str) -> Result<(), CliError> {
     let ciphertext = encrypt_to(&resolved, &path, &new_plaintext)?;
     atomic_write(&path, &ciphertext).await?;
     println!("wrote {}", path.display());
-    Ok(())
-}
-
-async fn cmd_keygen(output: Option<&Path>) -> Result<(), CliError> {
-    let default = default_identity_path()?;
-    let dest = output.unwrap_or(default.as_path()).to_path_buf();
-
-    if fs::try_exists(&dest).await.unwrap_or(false) {
-        return Err(CliError::IdentityExists { path: dest });
-    }
-
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|source| CliError::CreateParentDir {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-    }
-
-    let identity = age::x25519::Identity::generate();
-    let pubkey = identity.to_public();
-    let privkey = identity.to_string();
-
-    // Wrap the file body in `Zeroizing<String>` so the bytes are scrubbed
-    // when the function returns. Without this, the plain `String`
-    // holding the private-key block would just be deallocated on drop -
-    // contents potentially lingering in freed heap until reused.
-    let mut contents: Zeroizing<String> = Zeroizing::new(String::new());
-    contents.push_str(&format!("# created at unix:{}\n", now_unix_secs()));
-    contents.push_str(&format!("# public key: {pubkey}\n"));
-    contents.push_str(privkey.expose_secret());
-    contents.push('\n');
-
-    // 0600 - this is the long-lived decryption key.
-    let mut opts = std::fs::OpenOptions::new();
-    opts.create_new(true).write(true).mode(0o600);
-    let mut file = opts.open(&dest).map_err(|source| CliError::WriteIdentity {
-        path: dest.clone(),
-        source,
-    })?;
-    std::io::Write::write_all(&mut file, contents.as_bytes()).map_err(|source| {
-        CliError::WriteIdentity {
-            path: dest.clone(),
-            source,
-        }
-    })?;
-
-    println!("wrote identity to {}", dest.display());
-    println!("public key: {pubkey}");
     Ok(())
 }
 
@@ -401,53 +340,15 @@ async fn best_effort_scrub(path: &Path) {
     let _ = fs::remove_file(path).await;
 }
 
-fn default_identity_path() -> Result<PathBuf, CliError> {
-    if let Some(base) = std::env::var_os("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(base).join("lusid").join("identity"));
-    }
-    let home = std::env::var_os("HOME").ok_or(CliError::NoHome)?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join("lusid")
-        .join("identity"))
-}
-
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 // -- errors ----------------------------------------------------------------
 
 #[derive(Debug, Error, Display)]
 pub enum CliError {
-    /// Identity path is required for this subcommand but not configured (set via `--identity`, `LUSID_IDENTITY`, or `identity` in `lusid.toml`)
+    /// Identity path is required for this subcommand but not configured (set via `--identity`, `LUSID_IDENTITY`, or by having `~/.ssh/id_ed25519` on disk)
     MissingIdentity,
 
     /// No [files] entry for {stem:?} in lusid-secrets.toml
     UnknownFile { stem: String },
-
-    /// Cannot determine default identity path (no HOME or XDG_CONFIG_HOME)
-    NoHome,
-
-    /// Refusing to overwrite existing identity at {path}
-    IdentityExists { path: PathBuf },
-
-    /// Failed to create parent dir {path}: {source}
-    CreateParentDir {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// Failed to write identity to {path}: {source}
-    WriteIdentity {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
 
     /// Failed to read {path}: {source}
     ReadFile {

@@ -34,8 +34,8 @@ use tracing::{debug, info, warn};
 /// [`Context::create`]; `plan_id` selects a plan; `params_json` is an
 /// optional JSON object (validated against the plan's params schema).
 ///
-/// Secrets: if `identity_path` is `Some`, `lusid-apply` loads that identity,
-/// reads `lusid-secrets.toml` from `secrets_dir` (defaulting to
+/// Secrets: if `identity_path` is `Some`, `lusid-apply` loads that SSH
+/// identity, reads `lusid-secrets.toml` from `secrets_dir` (defaulting to
 /// `<root>/secrets`), matches the identity to an alias, and decrypts the
 /// subset of `*.age` files declared for that alias. `None` skips secrets
 /// entirely (plans that reference `@resource/secret` will fail at apply with a

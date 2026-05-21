@@ -30,16 +30,11 @@ pub(crate) fn decrypt_bytes(
     path: &Path,
     ciphertext: &[u8],
 ) -> Result<Secret, DecryptError> {
-    let decryptor = age::Decryptor::new(ciphertext).map_err(|source| DecryptError::Decrypt {
-        path: path.to_path_buf(),
-        source: Box::new(source),
-    })?;
+    let decryptor =
+        age::Decryptor::new(ciphertext).map_err(|source| map_decrypt_error(path, source))?;
     let mut reader = decryptor
         .decrypt(std::iter::once(identity.as_age()))
-        .map_err(|source| DecryptError::Decrypt {
-            path: path.to_path_buf(),
-            source: Box::new(source),
-        })?;
+        .map_err(|source| map_decrypt_error(path, source))?;
 
     let mut plaintext = Vec::new();
     reader
@@ -113,6 +108,23 @@ pub(crate) fn read_header_stanzas(ciphertext: &[u8]) -> Result<Vec<Stanza>, Head
     Ok(stanzas)
 }
 
+/// Translate an `age::DecryptError` to our richer surface. `NoMatchingKeys`
+/// gets its own variant because it's the symptom an operator sees when their
+/// SSH identity doesn't match any stanza in the file - most commonly because
+/// the ciphertext pre-dates the x25519 → SSH migration. Surfacing it as a
+/// distinct variant lets the Display message carry the rekey hint.
+fn map_decrypt_error(path: &Path, source: age::DecryptError) -> DecryptError {
+    if matches!(source, age::DecryptError::NoMatchingKeys) {
+        return DecryptError::NoMatchingKeys {
+            path: path.to_path_buf(),
+        };
+    }
+    DecryptError::Decrypt {
+        path: path.to_path_buf(),
+        source: Box::new(source),
+    }
+}
+
 #[derive(Debug, Error, Display)]
 pub enum DecryptError {
     /// Failed to decrypt {path}: {source}
@@ -124,6 +136,9 @@ pub enum DecryptError {
         #[source]
         source: Box<age::DecryptError>,
     },
+
+    /// No matching key for {path}; this ciphertext may pre-date the x25519 → SSH migration. Re-encrypt with `lusid secrets rekey` after updating `[operators]` in `lusid-secrets.toml` to your SSH public key.
+    NoMatchingKeys { path: PathBuf },
 
     /// I/O error while decrypting {path}: {source}
     DecryptIo {
@@ -165,26 +180,35 @@ pub enum HeaderError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use age::x25519;
+    use std::str::FromStr;
+
     use secrecy::ExposeSecret;
 
-    fn x25519_recipient(id: &x25519::Identity) -> Box<dyn Recipient + Send> {
-        Box::new(id.to_public())
+    use super::*;
+    use crate::test_fixtures::{
+        TEST_SSH_ED25519_A_PRIV, TEST_SSH_ED25519_A_PUB, TEST_SSH_ED25519_B_PRIV,
+    };
+
+    fn ssh_recipient(pubkey: &str) -> Box<dyn Recipient + Send> {
+        // age::ssh::Recipient drops trailing comments via FromStr; we still
+        // canonicalise here to mirror what Key::from_str does in production.
+        let mut parts = pubkey.split_whitespace();
+        let kind = parts.next().unwrap();
+        let body = parts.next().unwrap();
+        Box::new(age::ssh::Recipient::from_str(&format!("{kind} {body}")).unwrap())
     }
 
     #[test]
-    fn round_trip_x25519() {
-        let id = x25519::Identity::generate();
-        let recipients = vec![x25519_recipient(&id)];
+    fn round_trip_ssh() {
+        let recipients = vec![ssh_recipient(TEST_SSH_ED25519_A_PUB)];
         let ct = encrypt_bytes(&recipients, Path::new("test"), b"hello").unwrap();
 
-        // Header is readable.
+        // Header is readable; one of the stanzas is an SSH stanza.
         let stanzas = read_header_stanzas(&ct).unwrap();
-        assert!(stanzas.iter().any(|s| s.tag == "X25519"));
+        assert!(stanzas.iter().any(|s| s.tag == "ssh-ed25519"));
 
         // Round-trip through Identity.
-        let identity: crate::identity::Identity = id.to_string().expose_secret().parse().unwrap();
+        let identity: crate::identity::Identity = TEST_SSH_ED25519_A_PRIV.parse().unwrap();
         let pt = decrypt_bytes(&identity, Path::new("test"), &ct).unwrap();
         assert_eq!(pt.expose_secret().as_str(), "hello");
     }
@@ -199,9 +223,20 @@ mod tests {
 
     #[test]
     fn decrypts_invalid_ciphertext_fails() {
-        let id = x25519::Identity::generate();
-        let identity: crate::identity::Identity = id.to_string().expose_secret().parse().unwrap();
+        let identity: crate::identity::Identity = TEST_SSH_ED25519_A_PRIV.parse().unwrap();
         let err = decrypt_bytes(&identity, Path::new("test"), b"garbage").unwrap_err();
         assert!(matches!(err, DecryptError::Decrypt { .. }));
+    }
+
+    /// A ciphertext encrypted to keypair A, decrypted with keypair B, must
+    /// surface as `NoMatchingKeys` (not the generic `Decrypt`) so the
+    /// migration hint in Display reaches the operator.
+    #[test]
+    fn unrelated_identity_returns_no_matching_keys() {
+        let recipients = vec![ssh_recipient(TEST_SSH_ED25519_A_PUB)];
+        let ct = encrypt_bytes(&recipients, Path::new("test"), b"hi").unwrap();
+        let other: crate::identity::Identity = TEST_SSH_ED25519_B_PRIV.parse().unwrap();
+        let err = decrypt_bytes(&other, Path::new("test"), &ct).unwrap_err();
+        assert!(matches!(err, DecryptError::NoMatchingKeys { .. }));
     }
 }

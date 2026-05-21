@@ -11,7 +11,7 @@ lusid [--config <path>] <subcommand>
 | `--config <path>` | `LUSID_CONFIG` | `./lusid.toml` | Path to the project config. |
 | `--log <level>` | `LUSID_LOG` | `error` | Log level: `error`, `warn`, `info`, `debug`, `trace`. |
 | `--secrets-dir <path>` | `LUSID_SECRETS_DIR` | `<root>/secrets` | Override the secrets directory. |
-| `--identity <path>` | `LUSID_IDENTITY` | (none) | Age identity file. Required by `local apply`, `secrets cat`, `secrets edit`, `secrets rekey`; ignored by `secrets ls`, `secrets check`, `secrets keygen`. |
+| `--identity <path>` | `LUSID_IDENTITY` | `~/.ssh/id_ed25519` if present | SSH private key for decrypting project secrets. Required by `local apply`, `secrets cat`, `secrets edit`, `secrets rekey`; ignored by `secrets ls` and `secrets check`. |
 
 The TOML `log = "..."` in `lusid.toml` is overridden by `--log` / `LUSID_LOG`.
 
@@ -81,7 +81,6 @@ Manage age-encrypted secrets in the project's `secrets/` directory. See the [sec
 | `lusid secrets cat <name>` | Decrypt to stdout. |
 | `lusid secrets edit <name>` | Decrypt → `$EDITOR` → re-encrypt on save. |
 | `lusid secrets rekey [<name>]` | Re-encrypt to the current recipient list. Bulk-rekeys without `<name>`. |
-| `lusid secrets keygen [-o <path>]` | Generate an x25519 operator identity. |
 | `lusid secrets check` | Audit `secrets/` against `lusid-secrets.toml`. Non-zero exit on any finding. |
 
 ## Exit codes

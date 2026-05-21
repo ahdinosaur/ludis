@@ -100,17 +100,28 @@ pub enum LoadError {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::str::FromStr;
 
     use secrecy::ExposeSecret;
     use tempfile::TempDir;
 
     use super::*;
     use crate::crypto::encrypt_bytes;
+    use crate::test_fixtures::{
+        TEST_SSH_ED25519_A_PRIV, TEST_SSH_ED25519_A_PUB, TEST_SSH_ED25519_B_PUB,
+    };
 
-    fn write_identity(dir: &Path, id: &age::x25519::Identity) -> std::path::PathBuf {
+    fn write_identity(dir: &Path, private_pem: &str) -> std::path::PathBuf {
         let path = dir.join("identity");
-        std::fs::write(&path, id.to_string().expose_secret()).unwrap();
+        std::fs::write(&path, private_pem).unwrap();
         path
+    }
+
+    fn ssh_recipient(pubkey: &str) -> Box<dyn age::Recipient + Send> {
+        let mut parts = pubkey.split_whitespace();
+        let kind = parts.next().unwrap();
+        let body = parts.next().unwrap();
+        Box::new(age::ssh::Recipient::from_str(&format!("{kind} {body}")).unwrap())
     }
 
     #[tokio::test]
@@ -129,12 +140,16 @@ mod tests {
 
     #[tokio::test]
     async fn guest_mode_decrypts_every_age_file() {
-        let id = age::x25519::Identity::generate();
         let dir = TempDir::new().unwrap();
-        let identity_path = write_identity(dir.path(), &id);
+        let identity_path = write_identity(dir.path(), TEST_SSH_ED25519_A_PRIV);
 
         for (stem, value) in &[("a", b"aaaaaaaa" as &[u8]), ("b", b"bbbbbbbb")] {
-            let ct = encrypt_bytes(&[Box::new(id.to_public())], Path::new(stem), value).unwrap();
+            let ct = encrypt_bytes(
+                &[ssh_recipient(TEST_SSH_ED25519_A_PUB)],
+                Path::new(stem),
+                value,
+            )
+            .unwrap();
             std::fs::write(dir.path().join(format!("{stem}.age")), &ct).unwrap();
         }
 
@@ -150,17 +165,15 @@ mod tests {
     /// (which it can't, under the current schema).
     #[tokio::test]
     async fn host_mode_decrypts_every_file_for_operator() {
-        let id = age::x25519::Identity::generate();
-        let pub_key = id.to_public().to_string();
         let dir = TempDir::new().unwrap();
-        let identity_path = write_identity(dir.path(), &id);
+        let identity_path = write_identity(dir.path(), TEST_SSH_ED25519_A_PRIV);
 
         std::fs::write(
             dir.path().join("lusid-secrets.toml"),
             format!(
                 r#"
 [operators]
-me = "{pub_key}"
+me = "{TEST_SSH_ED25519_A_PUB}"
 
 [files]
 "mine"      = {{ recipients = [] }}
@@ -171,7 +184,12 @@ me = "{pub_key}"
         .unwrap();
 
         for (stem, value) in &[("mine", b"hunter22" as &[u8]), ("shared", b"shareme!")] {
-            let ct = encrypt_bytes(&[Box::new(id.to_public())], Path::new(stem), value).unwrap();
+            let ct = encrypt_bytes(
+                &[ssh_recipient(TEST_SSH_ED25519_A_PUB)],
+                Path::new(stem),
+                value,
+            )
+            .unwrap();
             std::fs::write(dir.path().join(format!("{stem}.age")), &ct).unwrap();
         }
 
@@ -187,18 +205,16 @@ me = "{pub_key}"
 
     #[tokio::test]
     async fn host_mode_unknown_identity_errors() {
-        let id_listed = age::x25519::Identity::generate();
-        let id_other = age::x25519::Identity::generate();
-        let listed_pub = id_listed.to_public().to_string();
+        // Listed identity is B, the file on disk is A.
         let dir = TempDir::new().unwrap();
-        let identity_path = write_identity(dir.path(), &id_other);
+        let identity_path = write_identity(dir.path(), TEST_SSH_ED25519_A_PRIV);
 
         std::fs::write(
             dir.path().join("lusid-secrets.toml"),
             format!(
                 r#"
 [operators]
-listed = "{listed_pub}"
+listed = "{TEST_SSH_ED25519_B_PUB}"
 
 [files]
 "x" = {{ recipients = [] }}

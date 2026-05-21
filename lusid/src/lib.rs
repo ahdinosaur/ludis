@@ -59,9 +59,10 @@ pub struct Cli {
     #[arg(long = "secrets-dir", env = "LUSID_SECRETS_DIR", global = true)]
     pub secrets_dir: Option<PathBuf>,
 
-    /// Path to an age identity file. Required by `local apply`,
-    /// `secrets cat`, `secrets edit`, and `secrets rekey`; ignored by
-    /// `secrets ls`, `secrets check`, and `secrets keygen`.
+    /// Path to an SSH private key for decrypting project secrets. Defaults
+    /// to `~/.ssh/id_ed25519` when that file exists. Required by `local
+    /// apply`, `secrets cat`, `secrets edit`, and `secrets rekey`; ignored
+    /// by `secrets ls` and `secrets check`.
     #[arg(long = "identity", env = "LUSID_IDENTITY", global = true)]
     pub identity: Option<PathBuf>,
 
@@ -279,7 +280,7 @@ pub async fn get_config(cli: &Cli) -> Result<Config, AppError> {
 /// Dispatch on the parsed subcommand.
 pub async fn run(cli: Cli, config: Config) -> Result<(), AppError> {
     let secrets_dir = resolve_secrets_dir(&cli, &config);
-    let identity_path = cli.identity.clone();
+    let identity_path = resolve_identity_path(cli.identity.as_deref());
     // Pick the renderer once at dispatch time: TUI only when the operator
     // didn't opt out AND stdout is a real terminal. Both checks live here so
     // a non-TTY pipe never accidentally writes ratatui escape sequences.
@@ -363,6 +364,49 @@ fn resolve_secrets_dir(cli: &Cli, config: &Config) -> PathBuf {
     cli.secrets_dir
         .clone()
         .unwrap_or_else(|| config.root().join("secrets"))
+}
+
+/// Pick the SSH private key used to decrypt project secrets.
+///
+/// Order: explicit `--identity` / `LUSID_IDENTITY` wins; otherwise we fall
+/// back to `~/.ssh/id_ed25519` if it exists on disk. `None` means "no
+/// identity supplied" - `Secrets::load` then returns an empty bundle, and
+/// plans that reference `@resource/secret` fail at apply time with a clear
+/// missing-secret error.
+///
+/// The auto-selection is logged so the operator sees which key was picked
+/// when no flag was passed; without that, a CI runner with an unrelated
+/// ed25519 key would silently fail later with "no alias for identity".
+fn resolve_identity_path(explicit: Option<&Path>) -> Option<PathBuf> {
+    let home = env::var_os("HOME").filter(|h| !h.is_empty());
+    let resolved = resolve_identity_path_with_home(explicit, home.as_deref(), |p| {
+        std::fs::metadata(p).is_ok()
+    });
+    if explicit.is_none()
+        && let Some(path) = &resolved
+    {
+        tracing::info!(
+            path = %path.display(),
+            "auto-selected SSH identity for secrets decryption",
+        );
+    }
+    resolved
+}
+
+/// Pure helper for [`resolve_identity_path`]: `home` and the existence probe
+/// are injected so the resolution is testable without touching the
+/// environment or filesystem.
+fn resolve_identity_path_with_home(
+    explicit: Option<&Path>,
+    home: Option<&std::ffi::OsStr>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    if let Some(path) = explicit {
+        return Some(path.to_path_buf());
+    }
+    let home = home?;
+    let candidate = PathBuf::from(home).join(".ssh/id_ed25519");
+    exists(&candidate).then_some(candidate)
 }
 
 /// Refuse to start an apply that would block on a per-epoch confirm we
@@ -1240,6 +1284,43 @@ mod tests {
             expand_tilde(Path::new("~bob/.ssh/k"), Some(home)),
             PathBuf::from("~bob/.ssh/k")
         );
+    }
+
+    #[test]
+    fn resolve_identity_explicit_wins_over_default() {
+        // An explicit path is returned as-is even if HOME is set and the
+        // default key would also exist; we never silently override the
+        // operator's choice.
+        let explicit = Path::new("/etc/lusid/operator");
+        let resolved = resolve_identity_path_with_home(
+            Some(explicit),
+            Some(OsStr::new("/home/alice")),
+            |_| true,
+        );
+        assert_eq!(resolved.as_deref(), Some(explicit));
+    }
+
+    #[test]
+    fn resolve_identity_uses_ssh_key_when_present() {
+        let resolved =
+            resolve_identity_path_with_home(None, Some(OsStr::new("/home/alice")), |_| true);
+        assert_eq!(resolved, Some(PathBuf::from("/home/alice/.ssh/id_ed25519")));
+    }
+
+    #[test]
+    fn resolve_identity_returns_none_when_default_absent() {
+        // No explicit path and the default key doesn't exist: fall through
+        // to "no identity", matching today's "no --identity supplied"
+        // behaviour.
+        let resolved =
+            resolve_identity_path_with_home(None, Some(OsStr::new("/home/alice")), |_| false);
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn resolve_identity_returns_none_when_home_unset() {
+        let resolved = resolve_identity_path_with_home(None, None, |_| true);
+        assert!(resolved.is_none());
     }
 
     #[test]
