@@ -565,43 +565,19 @@ async fn apply_op_phase(
                 Ok::<(), ApplyError>(())
             };
 
-            let stdout_task = {
-                let mut lines = BufReader::new(stdout).lines();
-                let redactor = redactor.clone();
-                async move {
-                    while let Some(line) = lines
-                        .next_line()
-                        .await
-                        .map_err(ApplyError::ReadOperationStdio)?
-                    {
-                        emit(AppUpdate::OperationApplyStdout {
-                            index,
-                            stdout: redactor.redact(&line),
-                        })
-                        .await?;
-                    }
-                    Ok::<(), ApplyError>(())
+            let stdout_task = stream_operation_chunks(stdout, redactor.clone(), move |data| {
+                AppUpdate::OperationApplyStdout {
+                    index,
+                    stdout: data,
                 }
-            };
+            });
 
-            let stderr_task = {
-                let mut lines = BufReader::new(stderr).lines();
-                let redactor = redactor.clone();
-                async move {
-                    while let Some(line) = lines
-                        .next_line()
-                        .await
-                        .map_err(ApplyError::ReadOperationStdio)?
-                    {
-                        emit(AppUpdate::OperationApplyStderr {
-                            index,
-                            stderr: redactor.redact(&line),
-                        })
-                        .await?;
-                    }
-                    Ok::<(), ApplyError>(())
+            let stderr_task = stream_operation_chunks(stderr, redactor.clone(), move |data| {
+                AppUpdate::OperationApplyStderr {
+                    index,
+                    stderr: data,
                 }
-            };
+            });
 
             if let Err(error) = tokio::try_join!(output_task, stdout_task, stderr_task) {
                 let error_message = error.to_string();
@@ -627,6 +603,82 @@ async fn apply_op_phase(
     }
 
     Ok(())
+}
+
+/// Read one operation pipe chunk-at-a-time as raw bytes, redact, and emit
+/// each chunk via `make_update`. Used by `apply_op_phase` for both stdout
+/// and stderr - the only thing that differs is which event variant the
+/// bytes get wrapped in.
+///
+/// Why bytes instead of `lines()`: ANSI escape sequences (colour, cursor
+/// moves) and any non-UTF-8 bytes must survive verbatim so the consumer
+/// can render them through a terminal emulator. `BufReader::lines()`
+/// returns `String`, which lossily replaces invalid UTF-8 and strips the
+/// delimiter.
+///
+/// Chunks are delimited by `\r` or `\n`, whichever comes first; the
+/// terminator stays in the buffer. A `\r\n` pair ships as two adjacent
+/// chunks (`b"...\r"` then `b"\n"`); vt100 reconstructs identical screen
+/// state. The `\r` delimiter is what lets bare-`\r` progress bars (apt,
+/// curl, dd, docker pull) stream live instead of buffering until EOF.
+///
+/// Redaction stays chunk-bounded (same safety bar as before): we feed
+/// each complete chunk through `String::from_utf8_lossy` -> `redactor.redact`
+/// and re-encode. Terminator bytes (`\r`, `\n`) are 7-bit ASCII not
+/// present in real secret plaintexts, so passing them through the
+/// substring matcher is safe. A secret straddling a terminator was not
+/// caught by the prior `\n`-only path either, so this is no regression.
+async fn stream_operation_chunks<R, F>(
+    reader: R,
+    redactor: Redactor,
+    make_update: F,
+) -> Result<(), ApplyError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    F: Fn(Vec<u8>) -> AppUpdate,
+{
+    let mut reader = BufReader::new(reader);
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    loop {
+        buf.clear();
+        let got = read_chunk(&mut reader, &mut buf)
+            .await
+            .map_err(ApplyError::ReadOperationStdio)?;
+        if !got {
+            break;
+        }
+        let redacted = redactor.redact(&String::from_utf8_lossy(&buf));
+        emit(make_update(redacted.into_bytes())).await?;
+    }
+    Ok(())
+}
+
+/// Read bytes from `reader` into `buf` until the first `\r` or `\n`, or
+/// EOF. Returns `true` if a chunk (with or without terminator) was read,
+/// `false` on a clean EOF before any bytes arrived. The terminator byte,
+/// when present, is included in `buf`.
+async fn read_chunk<R>(reader: &mut R, buf: &mut Vec<u8>) -> std::io::Result<bool>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(!buf.is_empty());
+        }
+        match available.iter().position(|&b| b == b'\r' || b == b'\n') {
+            None => {
+                let n = available.len();
+                buf.extend_from_slice(available);
+                reader.consume(n);
+            }
+            Some(i) => {
+                buf.extend_from_slice(&available[..=i]);
+                reader.consume(i + 1);
+                return Ok(true);
+            }
+        }
+    }
 }
 
 /// Walk a `PlanTree<Operation>` and tag every leaf with `atoms`, preserving
@@ -1311,5 +1363,78 @@ mod tests {
     fn merge_with_attributions_empty_input_is_empty_output() {
         let merged = merge_with_attributions(Vec::new());
         assert!(merged.is_empty());
+    }
+
+    /// Drain `input` through `read_chunk` and return one `Vec<u8>` per
+    /// chunk. EOF returns the final non-terminated tail as its own
+    /// chunk; a clean EOF after a terminator returns nothing.
+    async fn drain_chunks(input: &[u8]) -> Vec<Vec<u8>> {
+        let mut reader = tokio::io::BufReader::new(input);
+        let mut chunks = Vec::new();
+        loop {
+            let mut buf = Vec::new();
+            let got = read_chunk(&mut reader, &mut buf).await.unwrap();
+            if !got {
+                break;
+            }
+            chunks.push(buf);
+        }
+        chunks
+    }
+
+    #[tokio::test]
+    async fn read_chunk_splits_on_lf() {
+        let chunks = drain_chunks(b"hello\nworld\n").await;
+        assert_eq!(chunks, vec![b"hello\n".to_vec(), b"world\n".to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn read_chunk_splits_on_bare_cr() {
+        let chunks = drain_chunks(b"hello\rworld\r").await;
+        assert_eq!(chunks, vec![b"hello\r".to_vec(), b"world\r".to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn read_chunk_treats_crlf_as_two_chunks() {
+        // CR and LF are independent delimiters; CRLF input ships as
+        // `b"...\r"` then `b"\n"`. vt100 on the consumer reconstructs
+        // identical screen state.
+        let chunks = drain_chunks(b"hello\r\nworld\r\n").await;
+        assert_eq!(
+            chunks,
+            vec![
+                b"hello\r".to_vec(),
+                b"\n".to_vec(),
+                b"world\r".to_vec(),
+                b"\n".to_vec(),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn read_chunk_mixed_delimiters() {
+        let chunks = drain_chunks(b"a\rb\nc\r\nd").await;
+        assert_eq!(
+            chunks,
+            vec![
+                b"a\r".to_vec(),
+                b"b\n".to_vec(),
+                b"c\r".to_vec(),
+                b"\n".to_vec(),
+                b"d".to_vec(),
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn read_chunk_eof_tail_without_terminator() {
+        let chunks = drain_chunks(b"hello").await;
+        assert_eq!(chunks, vec![b"hello".to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn read_chunk_empty_input_yields_no_chunks() {
+        let chunks = drain_chunks(b"").await;
+        assert!(chunks.is_empty());
     }
 }

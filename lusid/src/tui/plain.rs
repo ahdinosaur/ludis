@@ -162,11 +162,11 @@ pub(crate) fn digest(update: &AppUpdate, app: &AppView) -> Option<String> {
         AppUpdate::OperationApplyStdout {
             index: (e, o),
             stdout,
-        } => Some(format!("[op {e}.{o}] {stdout}")),
+        } => Some(format!("[op {e}.{o}] {}", scrub_for_log(stdout))),
         AppUpdate::OperationApplyStderr {
             index: (e, o),
             stderr,
-        } => Some(format!("[op {e}.{o} err] {stderr}")),
+        } => Some(format!("[op {e}.{o} err] {}", scrub_for_log(stderr))),
         AppUpdate::OperationApplyComplete {
             index: (e, o),
             error,
@@ -205,6 +205,52 @@ pub(crate) fn digest(update: &AppUpdate, app: &AppView) -> Option<String> {
                 "apply complete: no changes".to_string()
             })
         }
+    }
+}
+
+/// Maximum length of an operation-output line in the plain-mode digest.
+/// Long lines (e.g. progress meters that pack many control sequences into
+/// one event) get truncated with an ellipsis so they don't flood the log.
+const SCRUB_MAX_LEN: usize = 240;
+
+/// Strip ANSI control sequences and bare `\r` characters from a byte slice,
+/// then truncate to `SCRUB_MAX_LEN` chars for plain-log display. The
+/// terminal-emulator path in the TUI interprets these bytes; the plain
+/// renderer just writes lines to stderr, so a noisy `pacman -S` with cursor
+/// moves and colour escapes would otherwise dump literal `\x1b[31m` runs.
+/// Non-UTF-8 bytes pass through as U+FFFD via `from_utf8_lossy`.
+fn scrub_for_log(bytes: &[u8]) -> String {
+    let lossy = String::from_utf8_lossy(bytes);
+    let mut out = String::with_capacity(lossy.len());
+    let mut chars = lossy.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => {
+                // CSI sequence: ESC '[' params... final-byte. The final
+                // byte is 0x40..=0x7E. Two-char sequences (ESC + non-`[`)
+                // are dropped by simply consuming the next char without
+                // emitting it.
+                if let Some('[') = chars.next() {
+                    for inner in chars.by_ref() {
+                        if matches!(inner, '\x40'..='\x7e') {
+                            break;
+                        }
+                    }
+                }
+            }
+            // CR/LF are chunk terminators kept on the wire for the TUI
+            // pane; the plain log writes one line per event via `eprintln!`,
+            // so re-emitting them here would produce blank lines or
+            // mid-line breaks. Bell is just noise.
+            '\r' | '\n' | '\x07' => {}
+            _ => out.push(c),
+        }
+    }
+    if out.chars().count() > SCRUB_MAX_LEN {
+        let truncated: String = out.chars().take(SCRUB_MAX_LEN).collect();
+        format!("{truncated}…")
+    } else {
+        out
     }
 }
 
@@ -457,5 +503,31 @@ mod tests {
         };
         let line = digest(&update, &AppView::default()).unwrap();
         assert_eq!(line, "parsed plan: 3 items");
+    }
+
+    #[test]
+    fn scrub_strips_csi_sequences_and_cr() {
+        // Colour and cursor sequences disappear; the plain text survives.
+        assert_eq!(
+            scrub_for_log(b"\x1b[31mred\x1b[0m \x1b[Hhome\rover"),
+            "red homeover",
+        );
+    }
+
+    #[test]
+    fn scrub_truncates_long_lines() {
+        let huge: Vec<u8> = (0..(SCRUB_MAX_LEN + 50)).map(|_| b'x').collect();
+        let scrubbed = scrub_for_log(&huge);
+        assert_eq!(scrubbed.chars().count(), SCRUB_MAX_LEN + 1); // + ellipsis
+        assert!(scrubbed.ends_with('…'));
+    }
+
+    #[test]
+    fn scrub_passes_non_utf8_through_as_replacement_char() {
+        // The lossy decode replaces `\xff` with U+FFFD; the scrub leaves
+        // it in place because the replacement is a normal character.
+        let scrubbed = scrub_for_log(b"a\xffb");
+        assert!(scrubbed.starts_with('a'));
+        assert!(scrubbed.ends_with('b'));
     }
 }
