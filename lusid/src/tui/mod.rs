@@ -3209,6 +3209,7 @@ mod tests {
                         lusid_operation::operations::command::CommandOperation {
                             command: "true".into(),
                             executor: lusid_operation::operations::command::CommandExecutor::Shell,
+                            sudo: false,
                         },
                     ),
                 },
@@ -3281,6 +3282,7 @@ mod tests {
         lusid_operation::Operation::Command(CommandOperation {
             command: label.into(),
             executor: CommandExecutor::Shell,
+            sudo: false,
         })
     }
 

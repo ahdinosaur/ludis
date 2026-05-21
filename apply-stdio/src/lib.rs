@@ -1213,6 +1213,7 @@ mod tests {
         Operation::Command(CommandOperation {
             command: label.to_string(),
             executor: CommandExecutor::Shell,
+            sudo: false,
         })
     }
 
