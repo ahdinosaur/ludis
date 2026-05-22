@@ -16,6 +16,7 @@ mod tests {
     #[test]
     fn display_matches_render() {
         let id = PlanNodeId::PlanItem {
+            scope_path: Vec::new(),
             plan_id: PlanId::Path(PathBuf::from("plan.lusid")),
             item_id: "nginx".into(),
         };
