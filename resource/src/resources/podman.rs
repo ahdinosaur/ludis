@@ -349,8 +349,9 @@ impl ResourceType for Podman {
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
         let (name, sudo) = match resource {
-            PodmanResource::Present { name, sudo, .. }
-            | PodmanResource::Absent { name, sudo } => (name, *sudo),
+            PodmanResource::Present { name, sudo, .. } | PodmanResource::Absent { name, sudo } => {
+                (name, *sudo)
+            }
         };
 
         // `podman container inspect` exits non-zero (125) when the container is
