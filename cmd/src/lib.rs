@@ -273,20 +273,14 @@ impl Command {
     /// name. Unlike [`Self::handle`], the success and failure paths don't need to
     /// share a return type; unlike [`Self::run`], non-zero exits are not errors.
     pub async fn outcome(&mut self) -> Result<CommandOutcome, CommandError> {
-        let mut output = self.output().await?;
-        let status = output.status.await?;
-        let mut stdout = Vec::new();
-        output
-            .stdout
-            .read_to_end(&mut stdout)
-            .await
-            .map_err(CommandError::ReadStdout)?;
-        let mut stderr = Vec::new();
-        output
-            .stderr
-            .read_to_end(&mut stderr)
-            .await
-            .map_err(CommandError::ReadStderr)?;
+        let CommandOutput {
+            stdout,
+            stderr,
+            stdin: _stdin,
+            status,
+        } = self.output().await?;
+        let (status, stdout, stderr) =
+            tokio::try_join!(status, drain_stdout(stdout), drain_stderr(stderr))?;
         Ok(CommandOutcome {
             status,
             stdout,
@@ -297,26 +291,20 @@ impl Command {
     /// Run the command to completion, returning captured stdout on success or a
     /// [`CommandError::Failure`] (with stderr attached) on non-zero exit.
     pub async fn run(&mut self) -> Result<Vec<u8>, CommandError> {
-        let mut output = self.output().await?;
-        let status = output.status.await?;
+        let CommandOutput {
+            stdout,
+            stderr,
+            stdin: _stdin,
+            status,
+        } = self.output().await?;
+        let (status, stdout, stderr) =
+            tokio::try_join!(status, drain_stdout(stdout), drain_stderr(stderr))?;
         if status.success() {
-            let mut stdout = Vec::new();
-            output
-                .stdout
-                .read_to_end(&mut stdout)
-                .await
-                .map_err(CommandError::ReadStdout)?;
             Ok(stdout)
         } else {
-            let mut stderr = String::new();
-            output
-                .stderr
-                .read_to_string(&mut stderr)
-                .await
-                .map_err(CommandError::ReadStderr)?;
             Err(CommandError::Failure {
                 command: self.to_string(),
-                stderr,
+                stderr: String::from_utf8_lossy(&stderr).to_string(),
             })
         }
     }
@@ -337,25 +325,17 @@ impl Command {
         ErrHandler: Fn(&Vec<u8>) -> Result<Option<HandlerValue>, HandlerError>,
         OutHandler: Fn(&Vec<u8>) -> Result<HandlerValue, HandlerError>,
     {
-        let mut output = self.output().await?;
-        let status = output.status.await?;
+        let CommandOutput {
+            stdout,
+            stderr,
+            stdin: _stdin,
+            status,
+        } = self.output().await?;
+        let (status, stdout, stderr) =
+            tokio::try_join!(status, drain_stdout(stdout), drain_stderr(stderr))?;
         if status.success() {
-            let mut stdout = Vec::new();
-            output
-                .stdout
-                .read_to_end(&mut stdout)
-                .await
-                .map_err(CommandError::ReadStdout)?;
             return Ok(stdout_handler(&stdout));
         }
-
-        let mut stderr = Vec::new();
-        output
-            .stderr
-            .read_to_end(&mut stderr)
-            .await
-            .map_err(CommandError::ReadStderr)?;
-
         match stderr_handler(&stderr) {
             Err(error) => Ok(Err(error)),
             Ok(Some(value)) => Ok(Ok(value)),
@@ -365,6 +345,31 @@ impl Command {
             }),
         }
     }
+}
+
+/// Drain a child's stdout pipe concurrently with awaiting [`Child::wait`].
+///
+/// Reading post-wait deadlocks on any output larger than the kernel pipe
+/// buffer (64 KiB on Linux): the child blocks on write once the buffer
+/// fills, so it can never exit, so `wait` never returns. `try_join!`ing
+/// this against the status future keeps the pipe drained as the child
+/// produces output.
+async fn drain_stdout(mut stdout: ChildStdout) -> Result<Vec<u8>, CommandError> {
+    let mut buf = Vec::new();
+    stdout
+        .read_to_end(&mut buf)
+        .await
+        .map_err(CommandError::ReadStdout)?;
+    Ok(buf)
+}
+
+async fn drain_stderr(mut stderr: ChildStderr) -> Result<Vec<u8>, CommandError> {
+    let mut buf = Vec::new();
+    stderr
+        .read_to_end(&mut buf)
+        .await
+        .map_err(CommandError::ReadStderr)?;
+    Ok(buf)
 }
 
 impl FromStr for Command {
@@ -413,5 +418,59 @@ mod tests {
             Command::new("lusid").arg("-a").arg("-b").to_string(),
             "lusid -a -b"
         )
+    }
+
+    /// Regression: pre-fix, `run`/`outcome`/`handle` awaited `child.wait()`
+    /// before draining stdout. Any output above the kernel pipe buffer
+    /// (64 KiB on Linux) wedged the child on `pipe_write`, which wedged the
+    /// parent on `wait`. 256 KiB exceeds the buffer with margin; the outer
+    /// `timeout` is the deadlock canary - a successful fix returns
+    /// well under it, a regression hits the timeout.
+    const LARGE_OUTPUT_BYTES: usize = 256 * 1024;
+    const DEADLOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    fn large_stdout_cmd() -> Command {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg(format!("head -c {LARGE_OUTPUT_BYTES} /dev/zero"));
+        cmd
+    }
+
+    #[tokio::test]
+    async fn run_drains_stdout_larger_than_pipe_buffer() {
+        let mut cmd = large_stdout_cmd();
+        let bytes = tokio::time::timeout(DEADLOCK_TIMEOUT, cmd.run())
+            .await
+            .expect("run must not deadlock on large stdout")
+            .expect("run must succeed");
+        assert_eq!(bytes.len(), LARGE_OUTPUT_BYTES);
+    }
+
+    #[tokio::test]
+    async fn outcome_drains_stdout_larger_than_pipe_buffer() {
+        let mut cmd = large_stdout_cmd();
+        let outcome = tokio::time::timeout(DEADLOCK_TIMEOUT, cmd.outcome())
+            .await
+            .expect("outcome must not deadlock on large stdout")
+            .expect("outcome must succeed");
+        assert!(outcome.status.success());
+        assert_eq!(outcome.stdout.len(), LARGE_OUTPUT_BYTES);
+    }
+
+    #[tokio::test]
+    async fn handle_drains_stdout_larger_than_pipe_buffer() {
+        let mut cmd = large_stdout_cmd();
+        let result = tokio::time::timeout(
+            DEADLOCK_TIMEOUT,
+            cmd.handle(
+                |stdout: &Vec<u8>| Ok::<_, ()>(stdout.len()),
+                |_stderr: &Vec<u8>| Ok::<_, ()>(None),
+            ),
+        )
+        .await
+        .expect("handle must not deadlock on large stdout")
+        .expect("handle must succeed")
+        .expect("stdout_handler must succeed");
+        assert_eq!(result, LARGE_OUTPUT_BYTES);
     }
 }
