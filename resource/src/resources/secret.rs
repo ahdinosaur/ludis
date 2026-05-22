@@ -143,11 +143,7 @@ impl ResourceType for Secret {
         if let Some(group) = group {
             nodes.push(CausalityTree::leaf(
                 CausalityMeta::requires(vec!["file".into()]),
-                FileResource::Group {
-                    path,
-                    group,
-                    sudo,
-                },
+                FileResource::Group { path, group, sudo },
             ));
         }
 
