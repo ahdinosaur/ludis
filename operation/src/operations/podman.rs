@@ -32,6 +32,11 @@ pub enum PodmanOperation {
         ports: Vec<String>,
         volumes: Vec<String>,
         restart_policy: Option<String>,
+        /// Passed through to `podman create --network <value>`. `None` omits
+        /// the flag entirely. See the resource-side field doc for accepted
+        /// values and the host-network interaction with `ports`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        network: Option<String>,
         config_hash: String,
         /// When set, the `podman create` shell-out runs under `sudo -n` so
         /// the container lives in the root podman runtime (rootful podman).
@@ -124,6 +129,7 @@ impl OperationType for Podman {
                 ports,
                 volumes,
                 restart_policy,
+                network,
                 config_hash,
                 sudo,
             } => {
@@ -137,6 +143,9 @@ impl OperationType for Podman {
                     .arg(format!("{CONFIG_HASH_LABEL}={config_hash}"));
                 if let Some(policy) = restart_policy {
                     cmd.arg("--restart").arg(policy);
+                }
+                if let Some(value) = network {
+                    cmd.arg("--network").arg(value);
                 }
                 for value in env {
                     cmd.arg("-e").arg(value);
