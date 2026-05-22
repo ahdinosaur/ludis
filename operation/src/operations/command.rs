@@ -22,6 +22,13 @@ pub enum CommandExecutor {
 pub struct CommandOperation {
     pub command: String,
     pub executor: CommandExecutor,
+    /// When set, the shell-out runs under `sudo -n`. Mirrors the
+    /// `sudo: true` opt-in on `@resource/file` / `@resource/directory`:
+    /// lets a `local apply` (or a non-root remote apply) shell out as
+    /// root for commands that touch root-owned paths without needing
+    /// the operator to wrap every `install:` string by hand.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sudo: bool,
 }
 
 impl ParseParams for CommandOperation {
@@ -31,8 +38,13 @@ impl ParseParams for CommandOperation {
         let executor = fields
             .optional("executor", parse_executor)?
             .unwrap_or(CommandExecutor::Shell);
+        let sudo = fields.optional_bool("sudo")?.unwrap_or(false);
         fields.finish()?;
-        Ok(CommandOperation { command, executor })
+        Ok(CommandOperation {
+            command,
+            executor,
+            sudo,
+        })
     }
 }
 
@@ -63,8 +75,9 @@ fn parse_executor(value: Spanned<Value>) -> Result<CommandExecutor, Spanned<Pars
 
 impl Display for CommandOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let CommandOperation { command, .. } = self;
-        write!(f, "Command({command})")
+        let CommandOperation { command, sudo, .. } = self;
+        let prefix = if *sudo { "[sudo] " } else { "" };
+        write!(f, "{prefix}Command({command})")
     }
 }
 
@@ -108,15 +121,20 @@ impl OperationType for Command {
         _ctx: &mut Context,
         operation: &Self::Operation,
     ) -> Result<(Self::ApplyOutput, Self::ApplyStdout, Self::ApplyStderr), Self::ApplyError> {
-        let CommandOperation { command, executor } = operation;
-        info!("[command] run: {command}");
+        let CommandOperation {
+            command,
+            executor,
+            sudo,
+        } = operation;
+        info!(sudo, "[command] run: {command}");
 
-        let mut cmd = match executor {
+        let cmd = match executor {
             CommandExecutor::Direct => {
                 RunCommand::from_str(command).map_err(CommandApplyError::ParseCommand)
             }
             CommandExecutor::Shell => Ok(RunCommand::new_sh(command)),
         }?;
+        let mut cmd = if *sudo { cmd.sudo() } else { cmd };
         let output = cmd.output().await?;
         Ok((
             Box::pin(async move {
@@ -138,6 +156,7 @@ mod tests {
         let op = CommandOperation {
             command: "echo hi".to_string(),
             executor: CommandExecutor::Shell,
+            sudo: false,
         };
         let out = Command::merge(vec![op.clone(), op.clone(), op]);
         assert_eq!(out.len(), 1);
@@ -149,11 +168,40 @@ mod tests {
         let shell = CommandOperation {
             command: "ls".to_string(),
             executor: CommandExecutor::Shell,
+            sudo: false,
         };
         let direct = CommandOperation {
             command: "ls".to_string(),
             executor: CommandExecutor::Direct,
+            sudo: false,
         };
         assert_eq!(Command::merge(vec![shell, direct]).len(), 2);
+    }
+
+    #[test]
+    fn merge_distinguishes_sudo() {
+        // Same command string with vs without sudo are different ops -
+        // running `systemctl reload nginx` as the operator and as root are
+        // genuinely different actions.
+        let plain = CommandOperation {
+            command: "systemctl reload nginx".to_string(),
+            executor: CommandExecutor::Shell,
+            sudo: false,
+        };
+        let elevated = CommandOperation {
+            command: "systemctl reload nginx".to_string(),
+            executor: CommandExecutor::Shell,
+            sudo: true,
+        };
+        assert_eq!(Command::merge(vec![plain, elevated]).len(), 2);
+    }
+
+    /// `serde(default)` on `sudo` lets older apply-stdio payloads (pre-sudo
+    /// wire) round-trip as `sudo: false`. Pins the back-compat contract.
+    #[test]
+    fn command_operation_back_compat_deserializes_missing_sudo_to_false() {
+        let json = r#"{"command":"echo hi","executor":"shell"}"#;
+        let op: CommandOperation = serde_json::from_str(json).expect("parse old payload");
+        assert!(!op.sudo);
     }
 }

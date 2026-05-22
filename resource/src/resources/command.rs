@@ -21,11 +21,27 @@ pub enum CommandParams {
         is_installed: Option<String>,
         install: String,
         uninstall: Option<String>,
+        /// When set, both the `is_installed` probe and the `install` /
+        /// `uninstall` shell-outs run under `sudo -n`. Mirrors the
+        /// `sudo: true` opt-in on `@resource/file` /
+        /// `@resource/directory` for plans that need to `sed -i` a
+        /// root-owned config or `timedatectl set-timezone` without
+        /// wrapping every command string by hand.
+        ///
+        /// Probe asymmetry: `is_installed` runs through `Direct`
+        /// (argv-split, no shell), so under sudo it becomes
+        /// `sudo -n <prog> <args>`. Plan authors who want shell
+        /// features in the probe (`&&`, pipes, globs) must write
+        /// `sh -c "..."` themselves. The install/uninstall side runs
+        /// through `Shell` and gets `sudo -n sh -c "..."`.
+        sudo: bool,
     },
     Uninstall {
         is_installed: Option<String>,
         install: Option<String>,
         uninstall: String,
+        /// See [`CommandParams::Install::sudo`].
+        sudo: bool,
     },
 }
 
@@ -38,11 +54,13 @@ impl ParseParams for CommandParams {
                 is_installed: fields.optional_string("is_installed")?,
                 install: fields.required_string("install")?,
                 uninstall: fields.optional_string("uninstall")?,
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
             },
             "uninstall" => CommandParams::Uninstall {
                 is_installed: fields.optional_string("is_installed")?,
                 install: fields.optional_string("install")?,
                 uninstall: fields.required_string("uninstall")?,
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
             },
             _ => unreachable!(),
         };
@@ -53,29 +71,38 @@ impl ParseParams for CommandParams {
 
 impl Display for CommandParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let prefix = |sudo: bool| if sudo { "[sudo] " } else { "" };
         match self {
             CommandParams::Install {
                 is_installed,
                 install,
                 uninstall,
+                sudo,
             } => {
                 write!(
                     f,
-                    "Command::Install(is_installed = {:?}, install = {}, uninstall = \
+                    "{}Command::Install(is_installed = {:?}, install = {}, uninstall = \
                      {:?})",
-                    is_installed, install, uninstall
+                    prefix(*sudo),
+                    is_installed,
+                    install,
+                    uninstall
                 )
             }
             CommandParams::Uninstall {
                 is_installed,
                 install,
                 uninstall,
+                sudo,
             } => {
                 write!(
                     f,
-                    "Command::Uninstall(is_installed = {:?}, install = {:?}, uninstall = \
+                    "{}Command::Uninstall(is_installed = {:?}, install = {:?}, uninstall = \
                      {})",
-                    is_installed, install, uninstall
+                    prefix(*sudo),
+                    is_installed,
+                    install,
+                    uninstall
                 )
             }
         }
@@ -94,6 +121,12 @@ pub struct CommandResource {
     pub is_installed: Option<String>,
     pub install: Option<String>,
     pub uninstall: Option<String>,
+    /// See [`CommandParams::Install::sudo`]. Propagated into the probe
+    /// command in `state()` and into the emitted [`CommandOperation`] so
+    /// both the `is_installed` check and the install/uninstall shell-out
+    /// run under `sudo -n`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sudo: bool,
 }
 
 impl Display for CommandResource {
@@ -103,16 +136,18 @@ impl Display for CommandResource {
             is_installed,
             install,
             uninstall,
+            sudo,
         } = self;
 
         let status = match status {
             CommandStatus::Install => "Install",
             CommandStatus::Uninstall => "Uninstall",
         };
+        let prefix = if *sudo { "[sudo] " } else { "" };
 
         write!(
             f,
-            "Command::{status}(is_installed = {:?}, install = {:?}, uninstall \
+            "{prefix}Command::{status}(is_installed = {:?}, install = {:?}, uninstall \
              = {:?})",
             is_installed, install, uninstall
         )
@@ -147,15 +182,28 @@ pub enum CommandStateError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandChange {
-    Install { command: String },
-    Uninstall { command: String },
+    Install {
+        command: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
+    Uninstall {
+        command: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
 }
 
 impl Display for CommandChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let prefix = |sudo: bool| if sudo { "[sudo] " } else { "" };
         match self {
-            CommandChange::Install { command } => write!(f, "Command::Install({command})"),
-            CommandChange::Uninstall { command } => write!(f, "Command::Uninstall({command})"),
+            CommandChange::Install { command, sudo } => {
+                write!(f, "{}Command::Install({command})", prefix(*sudo))
+            }
+            CommandChange::Uninstall { command, sudo } => {
+                write!(f, "{}Command::Uninstall({command})", prefix(*sudo))
+            }
         }
     }
 }
@@ -185,21 +233,25 @@ impl ResourceType for Command {
                 is_installed,
                 install,
                 uninstall,
+                sudo,
             } => CommandResource {
                 status: CommandStatus::Install,
                 is_installed,
                 install: Some(install),
                 uninstall,
+                sudo,
             },
             CommandParams::Uninstall {
                 is_installed,
                 install,
                 uninstall,
+                sudo,
             } => CommandResource {
                 status: CommandStatus::Uninstall,
                 is_installed,
                 install,
                 uninstall: Some(uninstall),
+                sudo,
             },
         };
 
@@ -221,8 +273,8 @@ impl ResourceType for Command {
             return Ok(CommandState::Unknown);
         };
 
-        let mut cmd =
-            RunCommand::from_str(is_installed).map_err(CommandStateError::ParseCommand)?;
+        let cmd = RunCommand::from_str(is_installed).map_err(CommandStateError::ParseCommand)?;
+        let mut cmd = if resource.sudo { cmd.sudo() } else { cmd };
         let output = cmd.output().await?;
         let status = output.status.await?;
         let state = if status.success() {
@@ -236,32 +288,99 @@ impl ResourceType for Command {
     type Change = CommandChange;
 
     fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change> {
+        let sudo = resource.sudo;
         match (&resource.status, state) {
             (CommandStatus::Install, CommandState::Installed) => None,
             (CommandStatus::Install, CommandState::NotInstalled) => resource
                 .install
                 .clone()
-                .map(|command| CommandChange::Install { command }),
+                .map(|command| CommandChange::Install { command, sudo }),
             (CommandStatus::Uninstall, CommandState::NotInstalled) => None,
             (CommandStatus::Uninstall, CommandState::Installed) => resource
                 .uninstall
                 .clone()
-                .map(|command| CommandChange::Uninstall { command }),
+                .map(|command| CommandChange::Uninstall { command, sudo }),
             (_, CommandState::Unknown) => None,
         }
     }
 
     fn operations(change: Self::Change) -> Vec<CausalityTree<Operation>> {
         match change {
-            CommandChange::Install { command } | CommandChange::Uninstall { command } => {
+            CommandChange::Install { command, sudo }
+            | CommandChange::Uninstall { command, sudo } => {
                 vec![CausalityTree::leaf(
                     CausalityMeta::default(),
                     Operation::Command(CommandOperation {
                         command,
                         executor: CommandExecutor::Shell,
+                        sudo,
                     }),
                 )]
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn change_propagates_sudo_into_command_change() {
+        let resource = CommandResource {
+            status: CommandStatus::Install,
+            is_installed: Some("test -f /etc/foo".into()),
+            install: Some("touch /etc/foo".into()),
+            uninstall: None,
+            sudo: true,
+        };
+        let change = Command::change(&resource, &CommandState::NotInstalled).expect("Some change");
+        match change {
+            CommandChange::Install { sudo, .. } => {
+                assert!(sudo, "CommandChange::Install should carry sudo:true")
+            }
+            other => panic!("expected Install, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn operations_propagates_sudo_into_command_operation() {
+        let change = CommandChange::Install {
+            command: "touch /etc/foo".into(),
+            sudo: true,
+        };
+        let ops = Command::operations(change);
+        assert_eq!(ops.len(), 1);
+        let op = match &ops[0] {
+            CausalityTree::Leaf { node, .. } => node,
+            _ => panic!("expected leaf"),
+        };
+        match op {
+            Operation::Command(CommandOperation { sudo, .. }) => {
+                assert!(*sudo, "CommandOperation should carry sudo:true")
+            }
+            other => panic!("expected Command, got {other:?}"),
+        }
+    }
+
+    /// `serde(default)` on `sudo` lets older apply-stdio payloads (pre-sudo
+    /// wire) round-trip through the new types as `sudo: false`. Pins the
+    /// back-compat contract for `CommandResource` and `CommandChange`; the
+    /// contract is the same on every other variant by construction.
+    #[test]
+    fn command_resource_back_compat_deserializes_missing_sudo_to_false() {
+        let json = r#"{"status":"Install","is_installed":null,"install":"touch /tmp/foo","uninstall":null}"#;
+        let resource: CommandResource = serde_json::from_str(json).expect("parse old payload");
+        assert!(!resource.sudo);
+    }
+
+    #[test]
+    fn command_change_back_compat_deserializes_missing_sudo_to_false() {
+        let json = r#"{"Install":{"command":"touch /tmp/foo"}}"#;
+        let change: CommandChange = serde_json::from_str(json).expect("parse old payload");
+        match change {
+            CommandChange::Install { sudo, .. } => assert!(!sudo),
+            other => panic!("expected Install, got {other:?}"),
         }
     }
 }

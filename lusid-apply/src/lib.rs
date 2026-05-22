@@ -974,6 +974,7 @@ mod tests {
         Operation::Command(CommandOperation {
             command: "true".to_string(),
             executor: CommandExecutor::Shell,
+            sudo: false,
         })
     }
 
@@ -1294,6 +1295,7 @@ mod tests {
         Operation::Command(CommandOperation {
             command: cmd.to_string(),
             executor: CommandExecutor::Shell,
+            sudo: false,
         })
     }
 
