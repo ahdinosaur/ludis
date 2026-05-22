@@ -334,8 +334,7 @@ mod tests {
             uninstall: None,
             sudo: true,
         };
-        let change =
-            Command::change(&resource, &CommandState::NotInstalled).expect("Some change");
+        let change = Command::change(&resource, &CommandState::NotInstalled).expect("Some change");
         match change {
             CommandChange::Install { sudo, .. } => {
                 assert!(sudo, "CommandChange::Install should carry sudo:true")
