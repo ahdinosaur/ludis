@@ -272,9 +272,7 @@ async fn plan_item_to_resource(
         // also implies the invocation can't be referenced by `requires:` -
         // anonymous invocations are leaves of the dependency graph).
         let mut child_scope = scope_path.to_vec();
-        child_scope.push(
-            item_id_str.unwrap_or_else(cuid2::create_id),
-        );
+        child_scope.push(item_id_str.unwrap_or_else(cuid2::create_id));
         let children = plan_recursive(plan_id, &child_scope, params_value, ctx, store, system)
             .await
             .map_err(Box::new)?;
