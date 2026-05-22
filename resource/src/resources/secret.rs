@@ -18,6 +18,12 @@
 //! a `/run/...` (tmpfs) location when the consumer doesn't need the
 //! plaintext to survive reboots - that keeps plaintext out of backups
 //! and off persistent disk.
+//!
+//! `sudo: true` opts the underlying write, chmod/chown, and state probe
+//! into `sudo -n` - same shape as `@resource/file`. Use when the
+//! consuming service expects the plaintext under a root-owned path
+//! (`/etc/grafana/admin_password`, `/root/.config/certbot/credentials.ini`,
+//! etc.). Default `false`; the secret stays a user-side write.
 
 use std::fmt::{self, Display};
 
@@ -47,6 +53,9 @@ pub struct SecretParams {
     pub mode: Option<FileMode>,
     pub user: Option<FileUser>,
     pub group: Option<FileGroup>,
+    /// See module docs. When true, the write + chmod/chown + state
+    /// probe shell out under `sudo -n`.
+    pub sudo: bool,
 }
 
 impl ParseParams for SecretParams {
@@ -57,6 +66,7 @@ impl ParseParams for SecretParams {
         let mode = fields.optional_u32("mode")?.map(FileMode::new);
         let user = fields.optional_string("user")?.map(FileUser::new);
         let group = fields.optional_string("group")?.map(FileGroup::new);
+        let sudo = fields.optional_bool("sudo")?.unwrap_or(false);
         fields.finish()?;
         Ok(SecretParams {
             name,
@@ -64,13 +74,15 @@ impl ParseParams for SecretParams {
             mode,
             user,
             group,
+            sudo,
         })
     }
 }
 
 impl Display for SecretParams {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Secret(name={}, path={})", self.name, self.path)
+        let prefix = if self.sudo { "[sudo] " } else { "" };
+        write!(f, "{prefix}Secret(name={}, path={})", self.name, self.path)
     }
 }
 
@@ -91,6 +103,7 @@ impl ResourceType for Secret {
             mode,
             user,
             group,
+            sudo,
         } = params;
         let mode = mode.unwrap_or_else(|| FileMode::new(DEFAULT_MODE));
 
@@ -100,11 +113,7 @@ impl ResourceType for Secret {
                 FileResource::Secret {
                     name,
                     path: path.clone(),
-                    // `@resource/secret` doesn't expose `sudo:` today.
-                    // Plaintext secrets are expected to land in
-                    // user-writable paths (e.g. `/run/<user>/...`); a
-                    // future `/etc/secrets/...` use-case can wire this up.
-                    sudo: false,
+                    sudo,
                 },
             ),
             // Always emit a Mode atom: the default mode is a guarantee of this
@@ -115,7 +124,7 @@ impl ResourceType for Secret {
                 FileResource::Mode {
                     path: path.clone(),
                     mode,
-                    sudo: false,
+                    sudo,
                 },
             ),
         ];
@@ -126,7 +135,7 @@ impl ResourceType for Secret {
                 FileResource::User {
                     path: path.clone(),
                     user,
-                    sudo: false,
+                    sudo,
                 },
             ));
         }
@@ -134,11 +143,7 @@ impl ResourceType for Secret {
         if let Some(group) = group {
             nodes.push(CausalityTree::leaf(
                 CausalityMeta::requires(vec!["file".into()]),
-                FileResource::Group {
-                    path,
-                    group,
-                    sudo: false,
-                },
+                FileResource::Group { path, group, sudo },
             ));
         }
 
