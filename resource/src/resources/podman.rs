@@ -39,9 +39,16 @@ pub enum PodmanParams {
         volumes: Option<Vec<String>>,
         restart_policy: Option<String>,
         running: Option<bool>,
+        /// When set, the state probe (`podman container inspect`) and every
+        /// emitted [`PodmanOperation`] run under `sudo -n`. Selects rootful
+        /// podman: containers live in root's podman runtime and can
+        /// bind-mount root-owned host paths or bind privileged ports.
+        sudo: bool,
     },
     Absent {
         name: String,
+        /// See [`PodmanParams::Present::sudo`].
+        sudo: bool,
     },
 }
 
@@ -59,9 +66,11 @@ impl ParseParams for PodmanParams {
                 volumes: fields.optional_string_list("volumes")?,
                 restart_policy: fields.optional_string("restart_policy")?,
                 running: fields.optional_bool("running")?,
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
             },
             "absent" => PodmanParams::Absent {
                 name: fields.required_string("name")?,
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
             },
             _ => unreachable!(),
         };
@@ -72,11 +81,18 @@ impl ParseParams for PodmanParams {
 
 impl Display for PodmanParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let prefix = |sudo: bool| if sudo { "[sudo] " } else { "" };
         match self {
-            PodmanParams::Present { name, image, .. } => {
-                write!(f, "Podman::Present(name = {name}, image = {image})")
+            PodmanParams::Present {
+                name, image, sudo, ..
+            } => write!(
+                f,
+                "{}Podman::Present(name = {name}, image = {image})",
+                prefix(*sudo)
+            ),
+            PodmanParams::Absent { name, sudo } => {
+                write!(f, "{}Podman::Absent(name = {name})", prefix(*sudo))
             }
-            PodmanParams::Absent { name } => write!(f, "Podman::Absent(name = {name})"),
         }
     }
 }
@@ -92,25 +108,35 @@ pub enum PodmanResource {
         volumes: Vec<String>,
         restart_policy: Option<String>,
         running: bool,
+        /// See [`PodmanParams::Present::sudo`].
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Absent {
         name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
 }
 
 impl Display for PodmanResource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let prefix = |sudo: bool| if sudo { "[sudo] " } else { "" };
         match self {
             PodmanResource::Present {
                 name,
                 image,
                 running,
+                sudo,
                 ..
             } => write!(
                 f,
-                "Podman::Present(name = {name}, image = {image}, running = {running})"
+                "{}Podman::Present(name = {name}, image = {image}, running = {running})",
+                prefix(*sudo)
             ),
-            PodmanResource::Absent { name } => write!(f, "Podman::Absent(name = {name})"),
+            PodmanResource::Absent { name, sudo } => {
+                write!(f, "{}Podman::Absent(name = {name})", prefix(*sudo))
+            }
         }
     }
 }
@@ -198,11 +224,21 @@ pub enum PodmanChange {
         volumes: Vec<String>,
         restart_policy: Option<String>,
         start: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     /// Container exists with the right config, but needs to be started.
-    Start { name: String },
+    Start {
+        name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
     /// Container exists with the right config, but needs to be stopped.
-    Stop { name: String },
+    Stop {
+        name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
     /// Container exists but its config hash no longer matches; remove and recreate.
     Recreate {
         name: String,
@@ -213,23 +249,44 @@ pub enum PodmanChange {
         volumes: Vec<String>,
         restart_policy: Option<String>,
         start: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     /// Declared absent but the container exists; remove it.
-    Remove { name: String },
+    Remove {
+        name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
 }
 
 impl Display for PodmanChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let prefix = |sudo: bool| if sudo { "[sudo] " } else { "" };
         match self {
-            PodmanChange::Create { name, image, .. } => {
-                write!(f, "Podman::Create(name = {name}, image = {image})")
+            PodmanChange::Create {
+                name, image, sudo, ..
+            } => write!(
+                f,
+                "{}Podman::Create(name = {name}, image = {image})",
+                prefix(*sudo)
+            ),
+            PodmanChange::Start { name, sudo } => {
+                write!(f, "{}Podman::Start({name})", prefix(*sudo))
             }
-            PodmanChange::Start { name } => write!(f, "Podman::Start({name})"),
-            PodmanChange::Stop { name } => write!(f, "Podman::Stop({name})"),
-            PodmanChange::Recreate { name, image, .. } => {
-                write!(f, "Podman::Recreate(name = {name}, image = {image})")
+            PodmanChange::Stop { name, sudo } => {
+                write!(f, "{}Podman::Stop({name})", prefix(*sudo))
             }
-            PodmanChange::Remove { name } => write!(f, "Podman::Remove({name})"),
+            PodmanChange::Recreate {
+                name, image, sudo, ..
+            } => write!(
+                f,
+                "{}Podman::Recreate(name = {name}, image = {image})",
+                prefix(*sudo)
+            ),
+            PodmanChange::Remove { name, sudo } => {
+                write!(f, "{}Podman::Remove({name})", prefix(*sudo))
+            }
         }
     }
 }
@@ -267,6 +324,7 @@ impl ResourceType for Podman {
                 volumes,
                 restart_policy,
                 running,
+                sudo,
             } => PodmanResource::Present {
                 name,
                 image,
@@ -276,8 +334,9 @@ impl ResourceType for Podman {
                 volumes: volumes.unwrap_or_default(),
                 restart_policy,
                 running: running.unwrap_or(true),
+                sudo,
             },
-            PodmanParams::Absent { name } => PodmanResource::Absent { name },
+            PodmanParams::Absent { name, sudo } => PodmanResource::Absent { name, sudo },
         };
         vec![CausalityTree::leaf(CausalityMeta::default(), resource)]
     }
@@ -289,8 +348,10 @@ impl ResourceType for Podman {
         _ctx: &mut Context,
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
-        let name = match resource {
-            PodmanResource::Present { name, .. } | PodmanResource::Absent { name } => name,
+        let (name, sudo) = match resource {
+            PodmanResource::Present { name, sudo, .. } | PodmanResource::Absent { name, sudo } => {
+                (name, *sudo)
+            }
         };
 
         // `podman container inspect` exits non-zero (125) when the container is
@@ -298,10 +359,15 @@ impl ResourceType for Podman {
         // "absent" from "podman itself failed" via stderr is unreliable across
         // versions, so we treat any non-success as Absent. A broken podman
         // install will then surface at apply-time on the first create.
-        let outcome = Command::new("podman")
-            .args(["container", "inspect", name])
-            .outcome()
-            .await?;
+        //
+        // Rootful and rootless podman are entirely separate runtimes, so the
+        // probe must run under sudo when the resource declares it - otherwise
+        // we'd inspect the worm-user runtime while the container actually
+        // lives in root's, see "Absent" every time, and recreate forever.
+        let mut cmd = Command::new("podman");
+        cmd.args(["container", "inspect", name]);
+        let mut cmd = if sudo { cmd.sudo() } else { cmd };
+        let outcome = cmd.outcome().await?;
         if !outcome.status.success() {
             return Ok(PodmanState::Absent);
         }
@@ -333,8 +399,11 @@ impl ResourceType for Podman {
         match (resource, state) {
             (PodmanResource::Absent { .. }, PodmanState::Absent) => None,
 
-            (PodmanResource::Absent { name }, PodmanState::Present { .. }) => {
-                Some(PodmanChange::Remove { name: name.clone() })
+            (PodmanResource::Absent { name, sudo }, PodmanState::Present { .. }) => {
+                Some(PodmanChange::Remove {
+                    name: name.clone(),
+                    sudo: *sudo,
+                })
             }
 
             (
@@ -347,6 +416,7 @@ impl ResourceType for Podman {
                     volumes,
                     restart_policy,
                     running,
+                    sudo,
                 },
                 PodmanState::Absent,
             ) => Some(PodmanChange::Create {
@@ -358,6 +428,7 @@ impl ResourceType for Podman {
                 volumes: volumes.clone(),
                 restart_policy: restart_policy.clone(),
                 start: *running,
+                sudo: *sudo,
             }),
 
             (
@@ -370,6 +441,7 @@ impl ResourceType for Podman {
                     volumes,
                     restart_policy,
                     running,
+                    sudo,
                 },
                 PodmanState::Present {
                     running: current_running,
@@ -403,12 +475,19 @@ impl ResourceType for Podman {
                         volumes: volumes.clone(),
                         restart_policy: restart_policy.clone(),
                         start: *running,
+                        sudo: *sudo,
                     })
                 } else if *running != *current_running {
                     if *running {
-                        Some(PodmanChange::Start { name: name.clone() })
+                        Some(PodmanChange::Start {
+                            name: name.clone(),
+                            sudo: *sudo,
+                        })
                     } else {
-                        Some(PodmanChange::Stop { name: name.clone() })
+                        Some(PodmanChange::Stop {
+                            name: name.clone(),
+                            sudo: *sudo,
+                        })
                     }
                 } else {
                     None
@@ -428,6 +507,7 @@ impl ResourceType for Podman {
                 volumes,
                 restart_policy,
                 start,
+                sudo,
             } => create_ops(
                 name,
                 image,
@@ -437,15 +517,16 @@ impl ResourceType for Podman {
                 volumes,
                 restart_policy,
                 start,
+                sudo,
                 None,
             ),
-            PodmanChange::Start { name } => vec![CausalityTree::leaf(
+            PodmanChange::Start { name, sudo } => vec![CausalityTree::leaf(
                 CausalityMeta::default(),
-                Operation::Podman(PodmanOperation::Start { name }),
+                Operation::Podman(PodmanOperation::Start { name, sudo }),
             )],
-            PodmanChange::Stop { name } => vec![CausalityTree::leaf(
+            PodmanChange::Stop { name, sudo } => vec![CausalityTree::leaf(
                 CausalityMeta::default(),
-                Operation::Podman(PodmanOperation::Stop { name }),
+                Operation::Podman(PodmanOperation::Stop { name, sudo }),
             )],
             PodmanChange::Recreate {
                 name,
@@ -456,6 +537,7 @@ impl ResourceType for Podman {
                 volumes,
                 restart_policy,
                 start,
+                sudo,
             } => create_ops(
                 name,
                 image,
@@ -465,11 +547,12 @@ impl ResourceType for Podman {
                 volumes,
                 restart_policy,
                 start,
+                sudo,
                 Some("remove"),
             ),
-            PodmanChange::Remove { name } => vec![CausalityTree::leaf(
+            PodmanChange::Remove { name, sudo } => vec![CausalityTree::leaf(
                 CausalityMeta::default(),
-                Operation::Podman(PodmanOperation::Remove { name }),
+                Operation::Podman(PodmanOperation::Remove { name, sudo }),
             )],
         }
     }
@@ -488,6 +571,7 @@ fn create_ops(
     volumes: Vec<String>,
     restart_policy: Option<String>,
     start: bool,
+    sudo: bool,
     remove_id: Option<&'static str>,
 ) -> Vec<CausalityTree<Operation>> {
     let mut ops: Vec<CausalityTree<Operation>> = Vec::new();
@@ -495,7 +579,10 @@ fn create_ops(
     if let Some(id) = remove_id {
         ops.push(CausalityTree::leaf(
             CausalityMeta::id(id.into()),
-            Operation::Podman(PodmanOperation::Remove { name: name.clone() }),
+            Operation::Podman(PodmanOperation::Remove {
+                name: name.clone(),
+                sudo,
+            }),
         ));
     }
 
@@ -524,13 +611,14 @@ fn create_ops(
             volumes,
             restart_policy,
             config_hash: hash,
+            sudo,
         }),
     ));
 
     if start {
         ops.push(CausalityTree::leaf(
             CausalityMeta::requires(vec!["create".into()]),
-            Operation::Podman(PodmanOperation::Start { name }),
+            Operation::Podman(PodmanOperation::Start { name, sudo }),
         ));
     }
 
@@ -683,6 +771,7 @@ mod tests {
             volumes: spec.volumes,
             restart_policy: spec.restart_policy,
             running: spec.running,
+            sudo: false,
         }
     }
 
@@ -878,7 +967,10 @@ mod tests {
 
     #[test]
     fn change_remove_when_declared_absent_but_present() {
-        let declared = PodmanResource::Absent { name: "web".into() };
+        let declared = PodmanResource::Absent {
+            name: "web".into(),
+            sudo: false,
+        };
         let current = state_matching(&ResourceSpec::default());
         let change = Podman::change(&declared, &current).expect("change");
         assert!(matches!(change, PodmanChange::Remove { .. }));
@@ -886,7 +978,10 @@ mod tests {
 
     #[test]
     fn change_none_when_absent_matches() {
-        let declared = PodmanResource::Absent { name: "web".into() };
+        let declared = PodmanResource::Absent {
+            name: "web".into(),
+            sudo: false,
+        };
         assert!(Podman::change(&declared, &PodmanState::Absent).is_none());
     }
 

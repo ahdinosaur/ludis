@@ -33,29 +33,53 @@ pub enum PodmanOperation {
         volumes: Vec<String>,
         restart_policy: Option<String>,
         config_hash: String,
+        /// When set, the `podman create` shell-out runs under `sudo -n` so
+        /// the container lives in the root podman runtime (rootful podman).
+        /// Required when the container needs to bind-mount root-owned host
+        /// paths or bind privileged ports. See module docs on
+        /// [`crate::OperationType`] for the shared rationale.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Start {
         name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     Stop {
         name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
     /// Remove a container. Uses `--force` so a running container is stopped
     /// first; this matches the declarative "make this not exist" intent.
     Remove {
         name: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
     },
 }
 
 impl Display for PodmanOperation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let prefix = |sudo: bool| if sudo { "[sudo] " } else { "" };
         match self {
-            PodmanOperation::Create { name, image, .. } => {
-                write!(f, "Podman::Create(name = {name}, image = {image})")
+            PodmanOperation::Create {
+                name, image, sudo, ..
+            } => write!(
+                f,
+                "{}Podman::Create(name = {name}, image = {image})",
+                prefix(*sudo)
+            ),
+            PodmanOperation::Start { name, sudo } => {
+                write!(f, "{}Podman::Start({name})", prefix(*sudo))
             }
-            PodmanOperation::Start { name } => write!(f, "Podman::Start({name})"),
-            PodmanOperation::Stop { name } => write!(f, "Podman::Stop({name})"),
-            PodmanOperation::Remove { name } => write!(f, "Podman::Remove({name})"),
+            PodmanOperation::Stop { name, sudo } => {
+                write!(f, "{}Podman::Stop({name})", prefix(*sudo))
+            }
+            PodmanOperation::Remove { name, sudo } => {
+                write!(f, "{}Podman::Remove({name})", prefix(*sudo))
+            }
         }
     }
 }
@@ -101,8 +125,9 @@ impl OperationType for Podman {
                 volumes,
                 restart_policy,
                 config_hash,
+                sudo,
             } => {
-                info!("[podman] create: {} from {}", name, image);
+                info!(sudo, "[podman] create: {} from {}", name, image);
                 let mut cmd = Command::new("podman");
                 cmd.arg("create")
                     .arg("--pull=missing")
@@ -126,6 +151,7 @@ impl OperationType for Podman {
                 if let Some(command) = command {
                     cmd.args(command);
                 }
+                let mut cmd = if *sudo { cmd.sudo() } else { cmd };
                 let output = cmd.output().await?;
                 Ok((
                     Box::pin(async move {
@@ -136,10 +162,11 @@ impl OperationType for Podman {
                     output.stderr,
                 ))
             }
-            PodmanOperation::Start { name } => {
-                info!("[podman] start: {}", name);
+            PodmanOperation::Start { name, sudo } => {
+                info!(sudo, "[podman] start: {}", name);
                 let mut cmd = Command::new("podman");
                 cmd.arg("start").arg("--").arg(name);
+                let mut cmd = if *sudo { cmd.sudo() } else { cmd };
                 let output = cmd.output().await?;
                 Ok((
                     Box::pin(async move {
@@ -150,10 +177,11 @@ impl OperationType for Podman {
                     output.stderr,
                 ))
             }
-            PodmanOperation::Stop { name } => {
-                info!("[podman] stop: {}", name);
+            PodmanOperation::Stop { name, sudo } => {
+                info!(sudo, "[podman] stop: {}", name);
                 let mut cmd = Command::new("podman");
                 cmd.arg("stop").arg("--").arg(name);
+                let mut cmd = if *sudo { cmd.sudo() } else { cmd };
                 let output = cmd.output().await?;
                 Ok((
                     Box::pin(async move {
@@ -164,10 +192,11 @@ impl OperationType for Podman {
                     output.stderr,
                 ))
             }
-            PodmanOperation::Remove { name } => {
-                info!("[podman] remove: {}", name);
+            PodmanOperation::Remove { name, sudo } => {
+                info!(sudo, "[podman] remove: {}", name);
                 let mut cmd = Command::new("podman");
                 cmd.arg("rm").arg("--force").arg("--").arg(name);
+                let mut cmd = if *sudo { cmd.sudo() } else { cmd };
                 let output = cmd.output().await?;
                 Ok((
                     Box::pin(async move {
