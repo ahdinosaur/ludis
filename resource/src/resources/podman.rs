@@ -38,6 +38,13 @@ pub enum PodmanParams {
         ports: Option<Vec<String>>,
         volumes: Option<Vec<String>>,
         restart_policy: Option<String>,
+        /// Passed straight through to `podman create --network <value>`.
+        /// Common values: `host` (share the host's network namespace -
+        /// `ports` becomes meaningless and podman refuses the combination),
+        /// `none`, a user-defined network name. `None` here omits the flag
+        /// and podman uses its default (rootful: the `podman` bridge
+        /// network; rootless: pasta or slirp4netns depending on version).
+        network: Option<String>,
         running: Option<bool>,
         /// When set, the state probe (`podman container inspect`) and every
         /// emitted [`PodmanOperation`] run under `sudo -n`. Selects rootful
@@ -65,6 +72,7 @@ impl ParseParams for PodmanParams {
                 ports: fields.optional_string_list("ports")?,
                 volumes: fields.optional_string_list("volumes")?,
                 restart_policy: fields.optional_string("restart_policy")?,
+                network: fields.optional_string("network")?,
                 running: fields.optional_bool("running")?,
                 sudo: fields.optional_bool("sudo")?.unwrap_or(false),
             },
@@ -107,6 +115,9 @@ pub enum PodmanResource {
         ports: Vec<String>,
         volumes: Vec<String>,
         restart_policy: Option<String>,
+        /// See [`PodmanParams::Present::network`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        network: Option<String>,
         running: bool,
         /// See [`PodmanParams::Present::sudo`].
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -223,6 +234,8 @@ pub enum PodmanChange {
         ports: Vec<String>,
         volumes: Vec<String>,
         restart_policy: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        network: Option<String>,
         start: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         sudo: bool,
@@ -248,6 +261,8 @@ pub enum PodmanChange {
         ports: Vec<String>,
         volumes: Vec<String>,
         restart_policy: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        network: Option<String>,
         start: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         sudo: bool,
@@ -323,6 +338,7 @@ impl ResourceType for Podman {
                 ports,
                 volumes,
                 restart_policy,
+                network,
                 running,
                 sudo,
             } => PodmanResource::Present {
@@ -333,6 +349,7 @@ impl ResourceType for Podman {
                 ports: ports.unwrap_or_default(),
                 volumes: volumes.unwrap_or_default(),
                 restart_policy,
+                network,
                 running: running.unwrap_or(true),
                 sudo,
             },
@@ -415,6 +432,7 @@ impl ResourceType for Podman {
                     ports,
                     volumes,
                     restart_policy,
+                    network,
                     running,
                     sudo,
                 },
@@ -427,6 +445,7 @@ impl ResourceType for Podman {
                 ports: ports.clone(),
                 volumes: volumes.clone(),
                 restart_policy: restart_policy.clone(),
+                network: network.clone(),
                 start: *running,
                 sudo: *sudo,
             }),
@@ -440,6 +459,7 @@ impl ResourceType for Podman {
                     ports,
                     volumes,
                     restart_policy,
+                    network,
                     running,
                     sudo,
                 },
@@ -462,6 +482,7 @@ impl ResourceType for Podman {
                     ports,
                     volumes,
                     restart_policy.as_ref(),
+                    network.as_ref(),
                 );
                 let hash_matches = current_config_hash.as_deref() == Some(declared_hash.as_str());
 
@@ -474,6 +495,7 @@ impl ResourceType for Podman {
                         ports: ports.clone(),
                         volumes: volumes.clone(),
                         restart_policy: restart_policy.clone(),
+                        network: network.clone(),
                         start: *running,
                         sudo: *sudo,
                     })
@@ -506,6 +528,7 @@ impl ResourceType for Podman {
                 ports,
                 volumes,
                 restart_policy,
+                network,
                 start,
                 sudo,
             } => create_ops(
@@ -516,6 +539,7 @@ impl ResourceType for Podman {
                 ports,
                 volumes,
                 restart_policy,
+                network,
                 start,
                 sudo,
                 None,
@@ -536,6 +560,7 @@ impl ResourceType for Podman {
                 ports,
                 volumes,
                 restart_policy,
+                network,
                 start,
                 sudo,
             } => create_ops(
@@ -546,6 +571,7 @@ impl ResourceType for Podman {
                 ports,
                 volumes,
                 restart_policy,
+                network,
                 start,
                 sudo,
                 Some("remove"),
@@ -570,6 +596,7 @@ fn create_ops(
     ports: Vec<String>,
     volumes: Vec<String>,
     restart_policy: Option<String>,
+    network: Option<String>,
     start: bool,
     sudo: bool,
     remove_id: Option<&'static str>,
@@ -593,6 +620,7 @@ fn create_ops(
         &ports,
         &volumes,
         restart_policy.as_ref(),
+        network.as_ref(),
     );
 
     let create_meta = CausalityMeta {
@@ -610,6 +638,7 @@ fn create_ops(
             ports,
             volumes,
             restart_policy,
+            network,
             config_hash: hash,
             sudo,
         }),
@@ -645,6 +674,7 @@ fn config_hash(
     ports: &[String],
     volumes: &[String],
     restart_policy: Option<&String>,
+    network: Option<&String>,
 ) -> String {
     /// Stable, declaration-ordered serialisation target for hashing. Adding,
     /// removing, or reordering a field changes the hash for every existing
@@ -658,6 +688,7 @@ fn config_hash(
         ports: &'a [String],
         volumes: &'a [String],
         restart_policy: Option<&'a String>,
+        network: Option<&'a String>,
     }
 
     let canonical_image = canonicalize_image(image);
@@ -668,6 +699,7 @@ fn config_hash(
         ports,
         volumes,
         restart_policy,
+        network,
     };
     // Serialising a fixed-shape struct of owned-string-like fields cannot fail.
     let bytes = serde_json::to_vec(&cfg).expect("ConfigForHash serialisation is infallible");
@@ -744,6 +776,7 @@ mod tests {
         ports: Vec<String>,
         volumes: Vec<String>,
         restart_policy: Option<String>,
+        network: Option<String>,
         running: bool,
     }
 
@@ -756,6 +789,7 @@ mod tests {
                 ports: vec!["8080:80".into()],
                 volumes: vec![],
                 restart_policy: Some("unless-stopped".into()),
+                network: None,
                 running: true,
             }
         }
@@ -770,6 +804,7 @@ mod tests {
             ports: spec.ports,
             volumes: spec.volumes,
             restart_policy: spec.restart_policy,
+            network: spec.network,
             running: spec.running,
             sudo: false,
         }
@@ -788,6 +823,7 @@ mod tests {
                 &spec.ports,
                 &spec.volumes,
                 spec.restart_policy.as_ref(),
+                spec.network.as_ref(),
             )),
         }
     }
@@ -987,8 +1023,16 @@ mod tests {
 
     #[test]
     fn config_hash_is_stable_for_equivalent_image_refs() {
-        let a = config_hash("nginx", None, &[], &[], &[], None);
-        let b = config_hash("docker.io/library/nginx:latest", None, &[], &[], &[], None);
+        let a = config_hash("nginx", None, &[], &[], &[], None, None);
+        let b = config_hash(
+            "docker.io/library/nginx:latest",
+            None,
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+        );
         assert_eq!(a, b);
     }
 
@@ -1001,6 +1045,7 @@ mod tests {
             &["80:80".into()],
             &["/x:/x".into()],
             Some(&"always".into()),
+            None,
         );
 
         // Each variation should produce a distinct hash. We don't assert exact
@@ -1013,6 +1058,7 @@ mod tests {
                 &["80:80".into()],
                 &["/x:/x".into()],
                 Some(&"always".into()),
+                None,
             ),
             config_hash(
                 "nginx",
@@ -1021,6 +1067,7 @@ mod tests {
                 &["80:80".into()],
                 &["/x:/x".into()],
                 Some(&"always".into()),
+                None,
             ),
             config_hash(
                 "nginx",
@@ -1029,6 +1076,7 @@ mod tests {
                 &["80:80".into()],
                 &["/x:/x".into()],
                 Some(&"always".into()),
+                None,
             ),
             config_hash(
                 "nginx",
@@ -1037,6 +1085,7 @@ mod tests {
                 &["81:80".into()],
                 &["/x:/x".into()],
                 Some(&"always".into()),
+                None,
             ),
             config_hash(
                 "nginx",
@@ -1045,6 +1094,7 @@ mod tests {
                 &["80:80".into()],
                 &["/y:/y".into()],
                 Some(&"always".into()),
+                None,
             ),
             config_hash(
                 "nginx",
@@ -1053,6 +1103,7 @@ mod tests {
                 &["80:80".into()],
                 &["/x:/x".into()],
                 Some(&"unless-stopped".into()),
+                None,
             ),
             config_hash(
                 "nginx",
@@ -1061,6 +1112,7 @@ mod tests {
                 &["80:80".into()],
                 &["/x:/x".into()],
                 Some(&"always".into()),
+                None,
             ),
             config_hash(
                 "nginx",
@@ -1069,11 +1121,32 @@ mod tests {
                 &["80:80".into()],
                 &["/x:/x".into()],
                 None,
+                None,
+            ),
+            config_hash(
+                "nginx",
+                Some(&vec!["sh".into()]),
+                &["A=1".into()],
+                &["80:80".into()],
+                &["/x:/x".into()],
+                Some(&"always".into()),
+                Some(&"host".into()),
             ),
         ];
         for v in &variants {
             assert_ne!(*v, base, "variant collided with base: {v}");
         }
+    }
+
+    #[test]
+    fn change_recreate_when_network_differs() {
+        let declared = ResourceSpec {
+            network: Some("host".into()),
+            ..ResourceSpec::default()
+        };
+        let current = state_matching(&ResourceSpec::default());
+        let change = Podman::change(&resource(declared), &current).expect("change");
+        assert!(matches!(change, PodmanChange::Recreate { .. }));
     }
 
     #[test]
