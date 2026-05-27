@@ -946,7 +946,7 @@ impl ResourceType for Podman {
                 config_hash,
                 sudo,
             } => compose_recreate_ops(project, files, working_dir, env_file, config_hash, sudo),
-            PodmanChange::ComposeDown { project, sudo } => compose_down_ops(project, sudo, None),
+            PodmanChange::ComposeDown { project, sudo } => compose_down_ops(project, sudo),
         }
     }
 }
@@ -1256,43 +1256,27 @@ fn compose_up_ops(
     ops
 }
 
-/// Build the operation list for a `ComposeDown`. Optionally followed by
-/// downstream ops (used by `ComposeRecreate` to chain marker-uninstall +
-/// down → up + marker-install). When `recreate_for_up: false`, this is the
-/// bare teardown emitted by a `ComposeDown` change.
-fn compose_down_ops(
-    project: String,
-    sudo: bool,
-    chain_id: Option<&'static str>,
-) -> Vec<CausalityTree<Operation>> {
-    let mut ops: Vec<CausalityTree<Operation>> = Vec::new();
-
-    // Marker first so a half-failed down does not leave a marker pointing
-    // at a stale project.
-    let marker_meta = match chain_id {
-        Some(id) => CausalityMeta::id(id.into()),
-        None => CausalityMeta::id("compose_marker_uninstall".into()),
-    };
-    ops.push(CausalityTree::leaf(
-        marker_meta,
-        Operation::Podman(PodmanOperation::ComposeMarkerUninstall {
-            project: project.clone(),
-            sudo,
-        }),
-    ));
-
-    let down_id = chain_id.map(|_| "compose_down").unwrap_or("compose_down");
-    let down_meta = CausalityMeta {
-        id: Some(down_id.into()),
-        requires: vec![chain_id.unwrap_or("compose_marker_uninstall").into()],
-        required_by: vec![],
-    };
-    ops.push(CausalityTree::leaf(
-        down_meta,
-        Operation::Podman(PodmanOperation::ComposeDown { project, sudo }),
-    ));
-
-    ops
+/// Build the operation list for a `ComposeDown`: marker uninstall, then
+/// the project teardown. Causality IDs are scoped per branch by
+/// `map_plan_subitems`'s `scope_id` machinery (see AGENTS.md), so the same
+/// IDs are reused by `compose_recreate_ops` without collision.
+///
+/// Marker uninstall runs first so a half-failed down does not leave a
+/// marker pointing at a stale project.
+fn compose_down_ops(project: String, sudo: bool) -> Vec<CausalityTree<Operation>> {
+    vec![
+        CausalityTree::leaf(
+            CausalityMeta::id("compose_marker_uninstall".into()),
+            Operation::Podman(PodmanOperation::ComposeMarkerUninstall {
+                project: project.clone(),
+                sudo,
+            }),
+        ),
+        CausalityTree::leaf(
+            CausalityMeta::requires(vec!["compose_marker_uninstall".into()]),
+            Operation::Podman(PodmanOperation::ComposeDown { project, sudo }),
+        ),
+    ]
 }
 
 /// Build the operation list for a `ComposeRecreate`: tear down, then bring
@@ -1305,7 +1289,7 @@ fn compose_recreate_ops(
     config_hash: String,
     sudo: bool,
 ) -> Vec<CausalityTree<Operation>> {
-    let mut ops = compose_down_ops(project.clone(), sudo, Some("compose_marker_uninstall"));
+    let mut ops = compose_down_ops(project.clone(), sudo);
     let up_ops = compose_up_ops(
         project,
         files,
