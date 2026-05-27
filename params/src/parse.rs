@@ -242,6 +242,20 @@ impl StructFields {
         self.optional(key, parse_string)
     }
 
+    /// Same as [`required_string`](Self::required_string) but also returns
+    /// the [`Span`] of the source value, for downstream validation failures
+    /// (e.g. "project name does not match the compose regex") that need to
+    /// point at the offending `.lusid` line.
+    pub fn required_string_spanned(
+        &mut self,
+        key: &str,
+    ) -> Result<Spanned<String>, Spanned<ParseError>> {
+        self.required(key, |value| {
+            let span = value.span();
+            parse_string(value).map(|s| Spanned::new(s, span))
+        })
+    }
+
     /// Convenience: read a required boolean field.
     pub fn required_bool(&mut self, key: &str) -> Result<bool, Spanned<ParseError>> {
         self.required(key, parse_bool)
@@ -277,6 +291,17 @@ impl StructFields {
         key: &str,
     ) -> Result<Spanned<PathBuf>, Spanned<ParseError>> {
         self.required(key, |value| {
+            let span = value.span();
+            parse_host_path(value).map(|path| Spanned::new(path, span))
+        })
+    }
+
+    /// Optional analogue of [`required_host_path_spanned`](Self::required_host_path_spanned).
+    pub fn optional_host_path_spanned(
+        &mut self,
+        key: &str,
+    ) -> Result<Option<Spanned<PathBuf>>, Spanned<ParseError>> {
+        self.optional(key, |value| {
             let span = value.span();
             parse_host_path(value).map(|path| Spanned::new(path, span))
         })
