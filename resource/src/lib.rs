@@ -731,6 +731,27 @@ impl ResourceParams {
                 source_span,
                 ..
             }) => check_source_is_directory(source, source_span).await,
+            ResourceParams::Podman(PodmanParams::ComposePresent {
+                files,
+                files_spans,
+                working_dir,
+                working_dir_span,
+                env_file,
+                env_file_span,
+                ..
+            }) => {
+                // Per-element index-aware diagnostics for `files: [...]` so an
+                // "entry 2 of `files:` is missing" error points at the right
+                // list element rather than the list as a whole.
+                for (index, file) in files.iter().enumerate() {
+                    check_compose_file(file, &files_spans[index], index).await?;
+                }
+                check_compose_working_dir(working_dir, working_dir_span).await?;
+                if let (Some(ef), Some(span)) = (env_file.as_ref(), env_file_span.as_ref()) {
+                    check_compose_env_file(ef, span).await?;
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -782,6 +803,69 @@ async fn check_source_is_file(
     };
     if !metadata.is_file() {
         return Err(HostPathValidationError::FileSourceNotFile {
+            path: path.to_path_buf(),
+            span: span.clone(),
+        });
+    }
+    Ok(())
+}
+
+async fn check_compose_file(
+    source: &FilePath,
+    span: &Span,
+    index: usize,
+) -> Result<(), HostPathValidationError> {
+    let path = source.as_path();
+    let Some(metadata) = resolved_metadata(path).await? else {
+        return Err(HostPathValidationError::ComposeFileMissing {
+            path: path.to_path_buf(),
+            span: span.clone(),
+            index,
+        });
+    };
+    if !metadata.is_file() {
+        return Err(HostPathValidationError::ComposeFileNotFile {
+            path: path.to_path_buf(),
+            span: span.clone(),
+            index,
+        });
+    }
+    Ok(())
+}
+
+async fn check_compose_env_file(
+    source: &FilePath,
+    span: &Span,
+) -> Result<(), HostPathValidationError> {
+    let path = source.as_path();
+    let Some(metadata) = resolved_metadata(path).await? else {
+        return Err(HostPathValidationError::ComposeEnvFileMissing {
+            path: path.to_path_buf(),
+            span: span.clone(),
+        });
+    };
+    if !metadata.is_file() {
+        return Err(HostPathValidationError::ComposeEnvFileNotFile {
+            path: path.to_path_buf(),
+            span: span.clone(),
+        });
+    }
+    Ok(())
+}
+
+async fn check_compose_working_dir(
+    source: &FilePath,
+    span: &Span,
+) -> Result<(), HostPathValidationError> {
+    let path = source.as_path();
+    let Some(metadata) = resolved_metadata(path).await? else {
+        return Err(HostPathValidationError::ComposeWorkingDirMissing {
+            path: path.to_path_buf(),
+            span: span.clone(),
+        });
+    };
+    if !metadata.is_dir() {
+        return Err(HostPathValidationError::ComposeWorkingDirNotDirectory {
             path: path.to_path_buf(),
             span: span.clone(),
         });
@@ -1129,6 +1213,136 @@ mod tests {
         assert!(matches!(
             err,
             HostPathValidationError::DirectorySourceMissing { .. }
+        ));
+    }
+
+    // -- compose --------------------------------------------------------
+
+    fn compose_params(
+        files: Vec<FilePath>,
+        files_spans: Vec<Span>,
+        working_dir: FilePath,
+        env_file: Option<FilePath>,
+        env_file_span: Option<Span>,
+    ) -> ResourceParams {
+        use crate::resources::podman::PodmanParams;
+        ResourceParams::Podman(PodmanParams::ComposePresent {
+            project: "app".into(),
+            project_span: empty_span(),
+            files,
+            files_spans,
+            working_dir,
+            working_dir_span: empty_span(),
+            env_file,
+            env_file_span,
+            config_hash: None,
+            sudo: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn compose_validates_existing_files() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("compose.yaml");
+        tokio::fs::write(&file, b"services: {}\n").await.unwrap();
+        compose_params(
+            vec![file_path(&file)],
+            vec![empty_span()],
+            file_path(dir.path()),
+            None,
+            None,
+        )
+        .validate_host_paths()
+        .await
+        .expect("should validate");
+    }
+
+    #[tokio::test]
+    async fn compose_reports_missing_file_with_index() {
+        let dir = tempdir().unwrap();
+        let real = dir.path().join("real.yaml");
+        tokio::fs::write(&real, b"x").await.unwrap();
+        let missing = dir.path().join("missing.yaml");
+        let err = compose_params(
+            vec![file_path(&real), file_path(&missing)],
+            vec![empty_span(), empty_span()],
+            file_path(dir.path()),
+            None,
+            None,
+        )
+        .validate_host_paths()
+        .await
+        .unwrap_err();
+        match err {
+            HostPathValidationError::ComposeFileMissing { index, .. } => {
+                assert_eq!(index, 1, "should report the second (missing) entry");
+            }
+            other => panic!("expected ComposeFileMissing, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn compose_reports_directory_as_not_file() {
+        let dir = tempdir().unwrap();
+        let subdir = dir.path().join("subdir");
+        tokio::fs::create_dir(&subdir).await.unwrap();
+        let err = compose_params(
+            vec![file_path(&subdir)],
+            vec![empty_span()],
+            file_path(dir.path()),
+            None,
+            None,
+        )
+        .validate_host_paths()
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            HostPathValidationError::ComposeFileNotFile { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn compose_reports_missing_env_file() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("compose.yaml");
+        tokio::fs::write(&file, b"x").await.unwrap();
+        let missing_env = dir.path().join("missing.env");
+        let err = compose_params(
+            vec![file_path(&file)],
+            vec![empty_span()],
+            file_path(dir.path()),
+            Some(file_path(&missing_env)),
+            Some(empty_span()),
+        )
+        .validate_host_paths()
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            HostPathValidationError::ComposeEnvFileMissing { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn compose_reports_working_dir_not_directory() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("compose.yaml");
+        tokio::fs::write(&file, b"x").await.unwrap();
+        // working_dir points at a regular file, not a directory.
+        let err = compose_params(
+            vec![file_path(&file)],
+            vec![empty_span()],
+            file_path(&file),
+            None,
+            None,
+        )
+        .validate_host_paths()
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            HostPathValidationError::ComposeWorkingDirNotDirectory { .. }
         ));
     }
 }

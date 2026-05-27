@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::fmt::Write;
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use lusid_causality::{CausalityMeta, CausalityTree};
@@ -8,15 +9,27 @@ use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
 use lusid_operation::{
     Operation,
-    operations::podman::{CONFIG_HASH_LABEL, PodmanOperation},
+    operations::{
+        file::FilePath,
+        podman::{
+            COMPOSE_CONFIG_HASH_LABEL, CONFIG_HASH_LABEL, PodmanOperation,
+            compose_marker_network_name,
+        },
+    },
 };
 use lusid_params::{ParseError, ParseParams, StructFields};
-use rimu::{Spanned, Value};
+use rimu::{Span, Spanned, Value};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use tokio::io;
 
 use crate::{ChangeKind, ResourceChangeTrait, ResourceType};
+
+/// Wire-format version baked into [`compose_config_hash`]. Bumping this
+/// invalidates every existing compose marker network on the next apply,
+/// forcing a recreate cycle. Treat as a versioned hash input.
+const COMPOSE_CONFIG_HASH_WIRE_VERSION: &str = "v1";
 
 /// Plan-level parameters for the `@resource/podman` resource.
 ///
@@ -57,12 +70,63 @@ pub enum PodmanParams {
         /// See [`PodmanParams::Present::sudo`].
         sudo: bool,
     },
+
+    /// Manage a podman-compose project. Drift is detected via a SHA-256 of
+    /// the project name + compose file bytes + env_file bytes (+ a versioned
+    /// `v1` prefix and the `sudo` flag), stored as a label on a lusid-owned
+    /// marker network created alongside the project. See the resource-level
+    /// docs in `docs/reference/resources.md` for the full lifecycle and
+    /// recovery story.
+    ///
+    /// The `config_hash` field is populated by [`PodmanParams::prepare`] (run
+    /// after `validate_host_paths` in the apply pipeline). At parse-time it
+    /// is `None`; resources expansion expects `Some(_)`.
+    ComposePresent {
+        project: String,
+        /// Span of the `project:` value, kept for project-name regex
+        /// diagnostics that surface post-parse. Skipped on the wire.
+        #[serde(skip, default)]
+        project_span: Span,
+        files: Vec<FilePath>,
+        /// Parallel to `files`: span per element so a "this file is missing"
+        /// diagnostic points at the offending list entry. Skipped on the
+        /// wire (validation runs pre-emit).
+        #[serde(skip, default)]
+        files_spans: Vec<Span>,
+        /// Compose project working directory. Defaults at parse-time to the
+        /// parent directory of `files[0]` so relative paths inside the
+        /// compose YAML resolve consistently.
+        working_dir: FilePath,
+        #[serde(skip, default)]
+        working_dir_span: Span,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env_file: Option<FilePath>,
+        #[serde(skip, default)]
+        env_file_span: Option<Span>,
+        /// Populated by [`PodmanParams::prepare`]; `None` until then.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config_hash: Option<String>,
+        sudo: bool,
+    },
+
+    /// Declare a compose project absent. Removes all containers and networks
+    /// bearing the `com.docker.compose.project=<project>` label. Named
+    /// volumes are preserved (matches `podman-compose down` default).
+    ComposeAbsent {
+        project: String,
+        #[serde(skip, default)]
+        project_span: Span,
+        sudo: bool,
+    },
 }
 
 impl ParseParams for PodmanParams {
     fn parse_params(value: Spanned<Value>) -> Result<Self, Spanned<ParseError>> {
         let mut fields = StructFields::new(value)?;
-        let state = fields.take_discriminator("state", &["present", "absent"])?;
+        let state = fields.take_discriminator(
+            "state",
+            &["present", "absent", "compose_present", "compose_absent"],
+        )?;
         let out = match state {
             "present" => PodmanParams::Present {
                 name: fields.required_string("name")?,
@@ -80,10 +144,109 @@ impl ParseParams for PodmanParams {
                 name: fields.required_string("name")?,
                 sudo: fields.optional_bool("sudo")?.unwrap_or(false),
             },
+            "compose_present" => {
+                let (project, project_span) = fields.required_string_spanned("project")?.take();
+                validate_project_name(&project, &project_span)?;
+                let files_spanned = fields.required_host_path_spanned_list("files")?;
+                if files_spanned.is_empty() {
+                    // The list parser allows empty; compose requires ≥1.
+                    return Err(Spanned::new(
+                        ParseError::InvalidValue {
+                            reason: "compose `files:` must contain at least one entry",
+                            got: Box::new(Value::List(vec![])),
+                        },
+                        project_span,
+                    ));
+                }
+                let (files, files_spans): (Vec<FilePath>, Vec<Span>) = files_spanned
+                    .into_iter()
+                    .map(|spanned| {
+                        let (path, span) = spanned.take();
+                        (FilePath::new(path.to_string_lossy().into_owned()), span)
+                    })
+                    .unzip();
+                let working_dir_spanned = fields.optional_host_path_spanned("working_dir")?;
+                let (working_dir, working_dir_span) = match working_dir_spanned {
+                    Some(spanned) => {
+                        let (path, span) = spanned.take();
+                        (FilePath::new(path.to_string_lossy().into_owned()), span)
+                    }
+                    None => {
+                        // Default to the parent directory of the first compose file.
+                        // The list-non-empty check above guarantees indexing is safe.
+                        let first = files[0].as_path();
+                        let parent = first.parent().unwrap_or_else(|| std::path::Path::new("."));
+                        (
+                            FilePath::new(parent.to_string_lossy().into_owned()),
+                            files_spans[0].clone(),
+                        )
+                    }
+                };
+                let env_file_spanned = fields.optional_host_path_spanned("env_file")?;
+                let (env_file, env_file_span) = match env_file_spanned {
+                    Some(spanned) => {
+                        let (path, span) = spanned.take();
+                        (
+                            Some(FilePath::new(path.to_string_lossy().into_owned())),
+                            Some(span),
+                        )
+                    }
+                    None => (None, None),
+                };
+                let sudo = fields.optional_bool("sudo")?.unwrap_or(false);
+                PodmanParams::ComposePresent {
+                    project,
+                    project_span,
+                    files,
+                    files_spans,
+                    working_dir,
+                    working_dir_span,
+                    env_file,
+                    env_file_span,
+                    config_hash: None,
+                    sudo,
+                }
+            }
+            "compose_absent" => {
+                let (project, project_span) = fields.required_string_spanned("project")?.take();
+                validate_project_name(&project, &project_span)?;
+                PodmanParams::ComposeAbsent {
+                    project,
+                    project_span,
+                    sudo: fields.optional_bool("sudo")?.unwrap_or(false),
+                }
+            }
             _ => unreachable!(),
         };
         fields.finish()?;
         Ok(out)
+    }
+}
+
+/// Validate a compose project name against `^[a-z0-9][a-z0-9_-]{0,62}$`.
+///
+/// The regex is enforced here so the value is safe to interpolate into the
+/// `compose_down` shell script (see `operation/src/operations/podman.rs`),
+/// and so an operator typo like `My_App` surfaces with a spanned diagnostic
+/// pointing at the `project:` line rather than failing late inside
+/// `podman-compose`'s own argument-parsing.
+fn validate_project_name(value: &str, span: &Span) -> Result<(), Spanned<ParseError>> {
+    let bytes = value.as_bytes();
+    let valid = (1..=63).contains(&bytes.len())
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes[1..]
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_' || *b == b'-');
+    if valid {
+        Ok(())
+    } else {
+        Err(Spanned::new(
+            ParseError::InvalidValue {
+                reason: "compose project name must match ^[a-z0-9][a-z0-9_-]{0,62}$ (lowercase letters, digits, `_`, `-`; ≤63 chars; cannot start with `-` or `_`)",
+                got: Box::new(Value::String(value.to_string())),
+            },
+            span.clone(),
+        ))
     }
 }
 
@@ -101,6 +264,16 @@ impl Display for PodmanParams {
             PodmanParams::Absent { name, sudo } => {
                 write!(f, "{}Podman::Absent(name = {name})", prefix(*sudo))
             }
+            PodmanParams::ComposePresent { project, sudo, .. } => write!(
+                f,
+                "{}Podman::ComposePresent(project = {project})",
+                prefix(*sudo)
+            ),
+            PodmanParams::ComposeAbsent { project, sudo, .. } => write!(
+                f,
+                "{}Podman::ComposeAbsent(project = {project})",
+                prefix(*sudo)
+            ),
         }
     }
 }
@@ -128,6 +301,27 @@ pub enum PodmanResource {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         sudo: bool,
     },
+
+    /// Compose project: bringing-up form. `config_hash` is baked in by
+    /// [`PodmanParams::prepare`] and is the SHA-256 of the project's declared
+    /// spec.
+    ComposePresent {
+        project: String,
+        files: Vec<FilePath>,
+        working_dir: FilePath,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env_file: Option<FilePath>,
+        config_hash: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
+
+    /// Compose project: bringing-down form.
+    ComposeAbsent {
+        project: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
 }
 
 impl Display for PodmanResource {
@@ -148,6 +342,16 @@ impl Display for PodmanResource {
             PodmanResource::Absent { name, sudo } => {
                 write!(f, "{}Podman::Absent(name = {name})", prefix(*sudo))
             }
+            PodmanResource::ComposePresent { project, sudo, .. } => write!(
+                f,
+                "{}Podman::ComposePresent(project = {project})",
+                prefix(*sudo)
+            ),
+            PodmanResource::ComposeAbsent { project, sudo } => write!(
+                f,
+                "{}Podman::ComposeAbsent(project = {project})",
+                prefix(*sudo)
+            ),
         }
     }
 }
@@ -164,6 +368,20 @@ pub enum PodmanState {
         /// `None` if the label is missing. `None` is treated as drift.
         config_hash: Option<String>,
     },
+    /// Compose project absent: no marker network found for the project.
+    /// Containers labelled with the project may exist (e.g. operator brought
+    /// the project up manually) - that is handled at change-time by treating
+    /// "missing marker" as drift and emitting `ComposeUp`, which is mostly
+    /// idempotent under `podman-compose up -d` on a healthy project.
+    ComposeAbsent,
+    /// Compose project present: marker network exists, carrying the hash
+    /// label from the most recent successful apply.
+    ComposePresent {
+        /// Value of the [`COMPOSE_CONFIG_HASH_LABEL`] on the marker network.
+        /// `None` if the label is missing - treated as drift so old or
+        /// foreign markers get recreated.
+        config_hash: Option<String>,
+    },
 }
 
 impl Display for PodmanState {
@@ -173,6 +391,8 @@ impl Display for PodmanState {
             PodmanState::Present { image, running, .. } => {
                 write!(f, "Podman::Present(image = {image}, running = {running})")
             }
+            PodmanState::ComposeAbsent => write!(f, "Podman::ComposeAbsent"),
+            PodmanState::ComposePresent { .. } => write!(f, "Podman::ComposePresent"),
         }
     }
 }
@@ -191,6 +411,16 @@ pub enum PodmanStateError {
 
     #[error("podman inspect returned empty array for container")]
     InspectEmpty,
+
+    #[error("failed to parse podman network inspect output: {source}\noutput: {output}")]
+    ParseNetworkInspect {
+        #[source]
+        source: serde_json::Error,
+        output: String,
+    },
+
+    #[error("podman network inspect returned empty array for marker network")]
+    NetworkInspectEmpty,
 }
 
 /// Subset of `podman container inspect` JSON we care about. We deliberately
@@ -273,6 +503,39 @@ pub enum PodmanChange {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         sudo: bool,
     },
+
+    /// Compose project absent on target but declared present. Bring it up.
+    ComposeUp {
+        project: String,
+        files: Vec<FilePath>,
+        working_dir: FilePath,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env_file: Option<FilePath>,
+        config_hash: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
+    /// Compose project present but its hash no longer matches; tear it down
+    /// and bring it back up. Marker is uninstalled first, then `compose
+    /// down`, then `compose up`, then marker is reinstalled - chained via
+    /// causality `requires` edges (see [`Podman::operations`]).
+    ComposeRecreate {
+        project: String,
+        files: Vec<FilePath>,
+        working_dir: FilePath,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        env_file: Option<FilePath>,
+        config_hash: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
+    /// Declared compose_absent and the project is up. Tear it down (containers
+    /// + networks; named volumes preserved).
+    ComposeDown {
+        project: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sudo: bool,
+    },
 }
 
 impl Display for PodmanChange {
@@ -302,6 +565,19 @@ impl Display for PodmanChange {
             PodmanChange::Remove { name, sudo } => {
                 write!(f, "{}Podman::Remove({name})", prefix(*sudo))
             }
+            PodmanChange::ComposeUp { project, sudo, .. } => {
+                write!(f, "{}Podman::ComposeUp(project = {project})", prefix(*sudo))
+            }
+            PodmanChange::ComposeRecreate { project, sudo, .. } => write!(
+                f,
+                "{}Podman::ComposeRecreate(project = {project})",
+                prefix(*sudo)
+            ),
+            PodmanChange::ComposeDown { project, sudo } => write!(
+                f,
+                "{}Podman::ComposeDown(project = {project})",
+                prefix(*sudo)
+            ),
         }
     }
 }
@@ -309,11 +585,12 @@ impl Display for PodmanChange {
 impl ResourceChangeTrait for PodmanChange {
     fn kind(&self) -> ChangeKind {
         match self {
-            PodmanChange::Create { .. } => ChangeKind::Added,
+            PodmanChange::Create { .. } | PodmanChange::ComposeUp { .. } => ChangeKind::Added,
             PodmanChange::Start { .. }
             | PodmanChange::Stop { .. }
-            | PodmanChange::Recreate { .. } => ChangeKind::Modified,
-            PodmanChange::Remove { .. } => ChangeKind::Removed,
+            | PodmanChange::Recreate { .. }
+            | PodmanChange::ComposeRecreate { .. } => ChangeKind::Modified,
+            PodmanChange::Remove { .. } | PodmanChange::ComposeDown { .. } => ChangeKind::Removed,
         }
     }
 }
@@ -354,6 +631,30 @@ impl ResourceType for Podman {
                 sudo,
             },
             PodmanParams::Absent { name, sudo } => PodmanResource::Absent { name, sudo },
+            PodmanParams::ComposePresent {
+                project,
+                files,
+                working_dir,
+                env_file,
+                config_hash,
+                sudo,
+                ..
+            } => PodmanResource::ComposePresent {
+                project,
+                files,
+                working_dir,
+                env_file,
+                // Programmer-invariant: `prepare()` must have run before
+                // `resources()`. The apply pipeline (lusid-apply) wires this
+                // between `validate_host_paths` and resources expansion;
+                // missing here means a caller is bypassing the pipeline.
+                config_hash: config_hash
+                    .expect("PodmanParams::prepare must run before Podman::resources"),
+                sudo,
+            },
+            PodmanParams::ComposeAbsent { project, sudo, .. } => {
+                PodmanResource::ComposeAbsent { project, sudo }
+            }
         };
         vec![CausalityTree::leaf(CausalityMeta::default(), resource)]
     }
@@ -365,55 +666,82 @@ impl ResourceType for Podman {
         _ctx: &mut Context,
         resource: &Self::Resource,
     ) -> Result<Self::State, Self::StateError> {
-        let (name, sudo) = match resource {
+        match resource {
             PodmanResource::Present { name, sudo, .. } | PodmanResource::Absent { name, sudo } => {
-                (name, *sudo)
+                probe_container_state(name, *sudo).await
             }
-        };
-
-        // `podman container inspect` exits non-zero (125) when the container is
-        // missing, which `outcome()` surfaces without raising. Distinguishing
-        // "absent" from "podman itself failed" via stderr is unreliable across
-        // versions, so we treat any non-success as Absent. A broken podman
-        // install will then surface at apply-time on the first create.
-        //
-        // Rootful and rootless podman are entirely separate runtimes, so the
-        // probe must run under sudo when the resource declares it - otherwise
-        // we'd inspect the worm-user runtime while the container actually
-        // lives in root's, see "Absent" every time, and recreate forever.
-        let mut cmd = Command::new("podman");
-        cmd.args(["container", "inspect", name]);
-        let mut cmd = if sudo { cmd.sudo() } else { cmd };
-        let outcome = cmd.outcome().await?;
-        if !outcome.status.success() {
-            return Ok(PodmanState::Absent);
+            PodmanResource::ComposePresent { project, sudo, .. }
+            | PodmanResource::ComposeAbsent { project, sudo } => {
+                probe_compose_state(project, *sudo).await
+            }
         }
-
-        let containers: Vec<InspectContainer> =
-            serde_json::from_slice(&outcome.stdout).map_err(|source| {
-                PodmanStateError::ParseInspect {
-                    source,
-                    output: String::from_utf8_lossy(&outcome.stdout).into_owned(),
-                }
-            })?;
-        let container = containers
-            .into_iter()
-            .next()
-            .ok_or(PodmanStateError::InspectEmpty)?;
-
-        let config_hash = container.config.labels.get(CONFIG_HASH_LABEL).cloned();
-
-        Ok(PodmanState::Present {
-            image: container.image_name,
-            running: container.state.running,
-            config_hash,
-        })
     }
 
     type Change = PodmanChange;
 
     fn change(resource: &Self::Resource, state: &Self::State) -> Option<Self::Change> {
         match (resource, state) {
+            // -- compose project --
+            (PodmanResource::ComposeAbsent { .. }, PodmanState::ComposeAbsent) => None,
+            (
+                PodmanResource::ComposeAbsent { project, sudo },
+                PodmanState::ComposePresent { .. },
+            ) => Some(PodmanChange::ComposeDown {
+                project: project.clone(),
+                sudo: *sudo,
+            }),
+            (
+                PodmanResource::ComposePresent {
+                    project,
+                    files,
+                    working_dir,
+                    env_file,
+                    config_hash,
+                    sudo,
+                },
+                PodmanState::ComposeAbsent,
+            ) => Some(PodmanChange::ComposeUp {
+                project: project.clone(),
+                files: files.clone(),
+                working_dir: working_dir.clone(),
+                env_file: env_file.clone(),
+                config_hash: config_hash.clone(),
+                sudo: *sudo,
+            }),
+            (
+                PodmanResource::ComposePresent {
+                    project,
+                    files,
+                    working_dir,
+                    env_file,
+                    config_hash,
+                    sudo,
+                },
+                PodmanState::ComposePresent {
+                    config_hash: current_config_hash,
+                },
+            ) => {
+                // Hash mismatch (or missing label on a foreign marker) is the
+                // sole drift signal. Match-by-hex avoids podman-compose
+                // version-dependent labelling quirks - the marker label was
+                // written by lusid with the same `compose_config_hash`
+                // function that ran here.
+                let hash_matches = current_config_hash.as_deref() == Some(config_hash.as_str());
+                if hash_matches {
+                    None
+                } else {
+                    Some(PodmanChange::ComposeRecreate {
+                        project: project.clone(),
+                        files: files.clone(),
+                        working_dir: working_dir.clone(),
+                        env_file: env_file.clone(),
+                        config_hash: config_hash.clone(),
+                        sudo: *sudo,
+                    })
+                }
+            }
+
+            // -- single container (existing) --
             (PodmanResource::Absent { .. }, PodmanState::Absent) => None,
 
             (PodmanResource::Absent { name, sudo }, PodmanState::Present { .. }) => {
@@ -515,6 +843,20 @@ impl ResourceType for Podman {
                     None
                 }
             }
+
+            // `state()` returns the compose state variants only for compose
+            // resources, and the container state variants only for container
+            // resources, so a cross-family pair here means a probe regression.
+            (PodmanResource::Present { .. }, PodmanState::ComposeAbsent)
+            | (PodmanResource::Present { .. }, PodmanState::ComposePresent { .. })
+            | (PodmanResource::Absent { .. }, PodmanState::ComposeAbsent)
+            | (PodmanResource::Absent { .. }, PodmanState::ComposePresent { .. })
+            | (PodmanResource::ComposePresent { .. }, PodmanState::Absent)
+            | (PodmanResource::ComposePresent { .. }, PodmanState::Present { .. })
+            | (PodmanResource::ComposeAbsent { .. }, PodmanState::Absent)
+            | (PodmanResource::ComposeAbsent { .. }, PodmanState::Present { .. }) => {
+                unreachable!("Podman::state returns the matching state family per resource family")
+            }
         }
     }
 
@@ -580,6 +922,31 @@ impl ResourceType for Podman {
                 CausalityMeta::default(),
                 Operation::Podman(PodmanOperation::Remove { name, sudo }),
             )],
+            PodmanChange::ComposeUp {
+                project,
+                files,
+                working_dir,
+                env_file,
+                config_hash,
+                sudo,
+            } => compose_up_ops(
+                project,
+                files,
+                working_dir,
+                env_file,
+                config_hash,
+                sudo,
+                None,
+            ),
+            PodmanChange::ComposeRecreate {
+                project,
+                files,
+                working_dir,
+                env_file,
+                config_hash,
+                sudo,
+            } => compose_recreate_ops(project, files, working_dir, env_file, config_hash, sudo),
+            PodmanChange::ComposeDown { project, sudo } => compose_down_ops(project, sudo, None),
         }
     }
 }
@@ -763,6 +1130,334 @@ fn canonicalize_image(reference: &str) -> String {
         out.push_str(&digest);
     }
     out
+}
+
+// ---------- compose ----------
+
+/// Probe a single container's state by name. Extracted from `state` so the
+/// compose branch can sit alongside without entangling.
+async fn probe_container_state(name: &str, sudo: bool) -> Result<PodmanState, PodmanStateError> {
+    // `podman container inspect` exits non-zero (125) when the container is
+    // missing, which `outcome()` surfaces without raising. Distinguishing
+    // "absent" from "podman itself failed" via stderr is unreliable across
+    // versions, so we treat any non-success as Absent. A broken podman
+    // install will then surface at apply-time on the first create.
+    //
+    // Rootful and rootless podman are entirely separate runtimes, so the
+    // probe must run under sudo when the resource declares it - otherwise
+    // we'd inspect the worm-user runtime while the container actually
+    // lives in root's, see "Absent" every time, and recreate forever.
+    let mut cmd = Command::new("podman");
+    cmd.args(["container", "inspect", name]);
+    let mut cmd = if sudo { cmd.sudo() } else { cmd };
+    let outcome = cmd.outcome().await?;
+    if !outcome.status.success() {
+        return Ok(PodmanState::Absent);
+    }
+
+    let containers: Vec<InspectContainer> =
+        serde_json::from_slice(&outcome.stdout).map_err(|source| {
+            PodmanStateError::ParseInspect {
+                source,
+                output: String::from_utf8_lossy(&outcome.stdout).into_owned(),
+            }
+        })?;
+    let container = containers
+        .into_iter()
+        .next()
+        .ok_or(PodmanStateError::InspectEmpty)?;
+
+    let config_hash = container.config.labels.get(CONFIG_HASH_LABEL).cloned();
+
+    Ok(PodmanState::Present {
+        image: container.image_name,
+        running: container.state.running,
+        config_hash,
+    })
+}
+
+/// Probe a compose project's state by inspecting its lusid marker network.
+/// `podman network inspect` exits non-zero when the network is missing;
+/// treat any non-success as `ComposeAbsent` for the same reason
+/// [`probe_container_state`] treats container-inspect non-success as Absent.
+async fn probe_compose_state(project: &str, sudo: bool) -> Result<PodmanState, PodmanStateError> {
+    let marker = compose_marker_network_name(project);
+    let mut cmd = Command::new("podman");
+    cmd.args(["network", "inspect", &marker]);
+    let mut cmd = if sudo { cmd.sudo() } else { cmd };
+    let outcome = cmd.outcome().await?;
+    if !outcome.status.success() {
+        return Ok(PodmanState::ComposeAbsent);
+    }
+
+    let networks: Vec<InspectNetwork> =
+        serde_json::from_slice(&outcome.stdout).map_err(|source| {
+            PodmanStateError::ParseNetworkInspect {
+                source,
+                output: String::from_utf8_lossy(&outcome.stdout).into_owned(),
+            }
+        })?;
+    let network = networks
+        .into_iter()
+        .next()
+        .ok_or(PodmanStateError::NetworkInspectEmpty)?;
+    let config_hash = network.labels.get(COMPOSE_CONFIG_HASH_LABEL).cloned();
+    Ok(PodmanState::ComposePresent { config_hash })
+}
+
+/// Subset of `podman network inspect` JSON we care about: just the labels
+/// map, where lusid stamps its config-hash on the marker network.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct InspectNetwork {
+    #[serde(rename = "labels", default)]
+    labels: BTreeMap<String, String>,
+}
+
+/// Build the operation list for a `ComposeUp`. Optionally preceded by a
+/// down + marker-uninstall pair when `recreate` is `Some`. Used by both
+/// `ComposeUp` and `ComposeRecreate` changes so the causality wiring lives
+/// in one place.
+fn compose_up_ops(
+    project: String,
+    files: Vec<FilePath>,
+    working_dir: FilePath,
+    env_file: Option<FilePath>,
+    config_hash: String,
+    sudo: bool,
+    after_down_id: Option<&'static str>,
+) -> Vec<CausalityTree<Operation>> {
+    let mut ops: Vec<CausalityTree<Operation>> = Vec::new();
+
+    let up_meta = CausalityMeta {
+        id: Some("compose_up".into()),
+        requires: after_down_id.map(|id| vec![id.into()]).unwrap_or_default(),
+        required_by: vec![],
+    };
+    ops.push(CausalityTree::leaf(
+        up_meta,
+        Operation::Podman(PodmanOperation::ComposeUp {
+            project: project.clone(),
+            files,
+            working_dir,
+            env_file,
+            sudo,
+        }),
+    ));
+
+    ops.push(CausalityTree::leaf(
+        CausalityMeta::requires(vec!["compose_up".into()]),
+        Operation::Podman(PodmanOperation::ComposeMarkerInstall {
+            project,
+            config_hash,
+            sudo,
+        }),
+    ));
+
+    ops
+}
+
+/// Build the operation list for a `ComposeDown`. Optionally followed by
+/// downstream ops (used by `ComposeRecreate` to chain marker-uninstall +
+/// down → up + marker-install). When `recreate_for_up: false`, this is the
+/// bare teardown emitted by a `ComposeDown` change.
+fn compose_down_ops(
+    project: String,
+    sudo: bool,
+    chain_id: Option<&'static str>,
+) -> Vec<CausalityTree<Operation>> {
+    let mut ops: Vec<CausalityTree<Operation>> = Vec::new();
+
+    // Marker first so a half-failed down does not leave a marker pointing
+    // at a stale project.
+    let marker_meta = match chain_id {
+        Some(id) => CausalityMeta::id(id.into()),
+        None => CausalityMeta::id("compose_marker_uninstall".into()),
+    };
+    ops.push(CausalityTree::leaf(
+        marker_meta,
+        Operation::Podman(PodmanOperation::ComposeMarkerUninstall {
+            project: project.clone(),
+            sudo,
+        }),
+    ));
+
+    let down_id = chain_id.map(|_| "compose_down").unwrap_or("compose_down");
+    let down_meta = CausalityMeta {
+        id: Some(down_id.into()),
+        requires: vec![chain_id.unwrap_or("compose_marker_uninstall").into()],
+        required_by: vec![],
+    };
+    ops.push(CausalityTree::leaf(
+        down_meta,
+        Operation::Podman(PodmanOperation::ComposeDown { project, sudo }),
+    ));
+
+    ops
+}
+
+/// Build the operation list for a `ComposeRecreate`: tear down, then bring
+/// back up, with causality edges so the scheduler runs them in order.
+fn compose_recreate_ops(
+    project: String,
+    files: Vec<FilePath>,
+    working_dir: FilePath,
+    env_file: Option<FilePath>,
+    config_hash: String,
+    sudo: bool,
+) -> Vec<CausalityTree<Operation>> {
+    let mut ops = compose_down_ops(project.clone(), sudo, Some("compose_marker_uninstall"));
+    let up_ops = compose_up_ops(
+        project,
+        files,
+        working_dir,
+        env_file,
+        config_hash,
+        sudo,
+        Some("compose_down"),
+    );
+    ops.extend(up_ops);
+    ops
+}
+
+/// Compute the SHA-256 of the compose project's declared spec. Stored as
+/// the [`COMPOSE_CONFIG_HASH_LABEL`] on the marker network at apply time
+/// and compared against on every state observation to detect drift.
+///
+/// Inputs are taken in declaration order with `\0` separators so reordering
+/// the `files` list (which has meaningful compose-merge semantics) busts
+/// the hash and triggers a recreate. The wire-version prefix
+/// ([`COMPOSE_CONFIG_HASH_WIRE_VERSION`]) lets a future input-schema change
+/// be observably distinct: bump it, and every existing marker is invalidated
+/// on the next apply.
+///
+/// Including the `sudo` flag in the hash means a runtime switch
+/// (rootless ↔ rootful) produces a distinct hash even though the two
+/// runtimes maintain entirely separate marker networks - matches the
+/// single-container resource's per-spec philosophy.
+fn compose_config_hash(
+    project: &str,
+    sudo: bool,
+    files: &[(FilePath, Vec<u8>)],
+    env_file: Option<(&FilePath, &[u8])>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(COMPOSE_CONFIG_HASH_WIRE_VERSION.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(project.as_bytes());
+    hasher.update(b"\0");
+    hasher.update([if sudo { 0x01 } else { 0x00 }]);
+    hasher.update(b"\0");
+    let file_count = u32::try_from(files.len()).unwrap_or(u32::MAX);
+    hasher.update(file_count.to_le_bytes());
+    for (_path, bytes) in files {
+        hasher.update(bytes);
+        hasher.update(b"\0");
+    }
+    match env_file {
+        Some((_path, bytes)) => {
+            hasher.update([0x01]);
+            hasher.update(bytes);
+        }
+        None => hasher.update([0x00]),
+    }
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+/// Span-aware errors surfaced by [`PodmanParams::prepare`].
+#[derive(Debug, Error)]
+pub enum PodmanPrepareError {
+    #[error("failed to read compose file {path:?} (entry {index} of `files:`)")]
+    ComposeFileRead {
+        path: PathBuf,
+        span: Span,
+        index: usize,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("failed to read compose env_file {path:?}")]
+    ComposeEnvFileRead {
+        path: PathBuf,
+        span: Span,
+        #[source]
+        source: io::Error,
+    },
+}
+
+impl PodmanParams {
+    /// Read any host-side files referenced by the params (e.g. compose YAML)
+    /// and bake the resulting hash into the params. Called by the apply
+    /// pipeline between [`crate::ResourceParams::validate_host_paths`] and
+    /// the `resources()` expansion.
+    ///
+    /// For non-compose variants this is a pass-through.
+    pub async fn prepare(self) -> Result<Self, PodmanPrepareError> {
+        match self {
+            PodmanParams::ComposePresent {
+                project,
+                project_span,
+                files,
+                files_spans,
+                working_dir,
+                working_dir_span,
+                env_file,
+                env_file_span,
+                config_hash: _,
+                sudo,
+            } => {
+                let mut files_with_bytes: Vec<(FilePath, Vec<u8>)> =
+                    Vec::with_capacity(files.len());
+                for (index, file) in files.iter().enumerate() {
+                    let bytes = tokio::fs::read(file.as_path()).await.map_err(|source| {
+                        PodmanPrepareError::ComposeFileRead {
+                            path: file.as_path().to_path_buf(),
+                            span: files_spans[index].clone(),
+                            index,
+                            source,
+                        }
+                    })?;
+                    files_with_bytes.push((file.clone(), bytes));
+                }
+                let env_file_bytes = match (env_file.as_ref(), env_file_span.as_ref()) {
+                    (Some(ef), Some(span)) => {
+                        let bytes = tokio::fs::read(ef.as_path()).await.map_err(|source| {
+                            PodmanPrepareError::ComposeEnvFileRead {
+                                path: ef.as_path().to_path_buf(),
+                                span: span.clone(),
+                                source,
+                            }
+                        })?;
+                        Some(bytes)
+                    }
+                    _ => None,
+                };
+                let hash = compose_config_hash(
+                    &project,
+                    sudo,
+                    &files_with_bytes,
+                    env_file.as_ref().zip(env_file_bytes.as_deref()),
+                );
+                Ok(PodmanParams::ComposePresent {
+                    project,
+                    project_span,
+                    files,
+                    files_spans,
+                    working_dir,
+                    working_dir_span,
+                    env_file,
+                    env_file_span,
+                    config_hash: Some(hash),
+                    sudo,
+                })
+            }
+            other => Ok(other),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -972,7 +1667,9 @@ mod tests {
                 running: false,
                 config_hash,
             },
-            PodmanState::Absent => unreachable!(),
+            other => {
+                unreachable!("state_matching always returns Present for container, got {other:?}")
+            }
         };
         let change = Podman::change(&resource(spec), &current).expect("change");
         assert!(matches!(change, PodmanChange::Start { .. }));
@@ -995,7 +1692,9 @@ mod tests {
                 running: true,
                 config_hash,
             },
-            PodmanState::Absent => unreachable!(),
+            other => {
+                unreachable!("state_matching always returns Present for container, got {other:?}")
+            }
         };
         let change = Podman::change(&resource(declared), &current).expect("change");
         assert!(matches!(change, PodmanChange::Stop { .. }));
@@ -1211,5 +1910,393 @@ mod tests {
             canonicalize_image("bitnami/redis@sha256:deadbeef"),
             "docker.io/bitnami/redis@sha256:deadbeef"
         );
+    }
+
+    // ---------- compose ----------
+
+    fn compose_resource(project: &str, hash: &str) -> PodmanResource {
+        PodmanResource::ComposePresent {
+            project: project.into(),
+            files: vec![FilePath::new("/etc/compose/app.yaml")],
+            working_dir: FilePath::new("/etc/compose"),
+            env_file: None,
+            config_hash: hash.into(),
+            sudo: false,
+        }
+    }
+
+    #[test]
+    fn compose_change_none_when_hash_matches() {
+        let r = compose_resource("app", "abc123");
+        let s = PodmanState::ComposePresent {
+            config_hash: Some("abc123".into()),
+        };
+        assert!(Podman::change(&r, &s).is_none());
+    }
+
+    #[test]
+    fn compose_change_up_when_marker_absent() {
+        let r = compose_resource("app", "abc123");
+        let s = PodmanState::ComposeAbsent;
+        let change = Podman::change(&r, &s).expect("change");
+        assert!(matches!(change, PodmanChange::ComposeUp { .. }));
+    }
+
+    #[test]
+    fn compose_change_recreate_when_hash_differs() {
+        let r = compose_resource("app", "newhash");
+        let s = PodmanState::ComposePresent {
+            config_hash: Some("oldhash".into()),
+        };
+        let change = Podman::change(&r, &s).expect("change");
+        assert!(matches!(change, PodmanChange::ComposeRecreate { .. }));
+    }
+
+    #[test]
+    fn compose_change_recreate_when_label_missing() {
+        // Foreign marker (e.g. older lusid version) - re-up so the new
+        // label gets installed and we own state going forward.
+        let r = compose_resource("app", "abc123");
+        let s = PodmanState::ComposePresent { config_hash: None };
+        let change = Podman::change(&r, &s).expect("change");
+        assert!(matches!(change, PodmanChange::ComposeRecreate { .. }));
+    }
+
+    #[test]
+    fn compose_change_down_when_declared_absent_and_present() {
+        let r = PodmanResource::ComposeAbsent {
+            project: "app".into(),
+            sudo: false,
+        };
+        let s = PodmanState::ComposePresent {
+            config_hash: Some("abc123".into()),
+        };
+        let change = Podman::change(&r, &s).expect("change");
+        assert!(matches!(change, PodmanChange::ComposeDown { .. }));
+    }
+
+    #[test]
+    fn compose_change_none_when_absent_matches() {
+        let r = PodmanResource::ComposeAbsent {
+            project: "app".into(),
+            sudo: false,
+        };
+        let s = PodmanState::ComposeAbsent;
+        assert!(Podman::change(&r, &s).is_none());
+    }
+
+    #[test]
+    fn compose_change_up_carries_files_and_sudo() {
+        let r = PodmanResource::ComposePresent {
+            project: "app".into(),
+            files: vec![FilePath::new("/c/a.yaml"), FilePath::new("/c/b.yaml")],
+            working_dir: FilePath::new("/c"),
+            env_file: Some(FilePath::new("/c/.env")),
+            config_hash: "h".into(),
+            sudo: true,
+        };
+        let change = Podman::change(&r, &PodmanState::ComposeAbsent).expect("change");
+        match change {
+            PodmanChange::ComposeUp {
+                project,
+                files,
+                working_dir,
+                env_file,
+                sudo,
+                ..
+            } => {
+                assert_eq!(project, "app");
+                assert_eq!(files.len(), 2);
+                assert_eq!(working_dir.as_path().to_str().unwrap(), "/c");
+                assert!(env_file.is_some());
+                assert!(sudo);
+            }
+            other => panic!("expected ComposeUp, got {other:?}"),
+        }
+    }
+
+    fn file_bytes(path: &str, body: &[u8]) -> (FilePath, Vec<u8>) {
+        (FilePath::new(path), body.to_vec())
+    }
+
+    #[test]
+    fn compose_hash_changes_when_project_name_changes() {
+        let files = vec![file_bytes(
+            "/c/a.yaml",
+            b"services:\n  web:\n    image: nginx\n",
+        )];
+        let a = compose_config_hash("app", false, &files, None);
+        let b = compose_config_hash("APP-renamed", false, &files, None);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn compose_hash_changes_when_file_bytes_change() {
+        let a = compose_config_hash(
+            "app",
+            false,
+            &[file_bytes(
+                "/c/a.yaml",
+                b"services: { a: { image: nginx } }",
+            )],
+            None,
+        );
+        let b = compose_config_hash(
+            "app",
+            false,
+            &[file_bytes(
+                "/c/a.yaml",
+                b"services: { a: { image: redis } }",
+            )],
+            None,
+        );
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn compose_hash_changes_when_file_order_changes() {
+        // Compose merge semantics make file order meaningful; reorder = drift.
+        let a_bytes = b"services:\n  a: { image: nginx }\n";
+        let b_bytes = b"services:\n  a: { image: redis }\n";
+        let a = compose_config_hash(
+            "app",
+            false,
+            &[
+                file_bytes("/c/a.yaml", a_bytes),
+                file_bytes("/c/b.yaml", b_bytes),
+            ],
+            None,
+        );
+        let b = compose_config_hash(
+            "app",
+            false,
+            &[
+                file_bytes("/c/b.yaml", b_bytes),
+                file_bytes("/c/a.yaml", a_bytes),
+            ],
+            None,
+        );
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn compose_hash_changes_when_env_file_added() {
+        let files = vec![file_bytes("/c/a.yaml", b"x")];
+        let env_path = FilePath::new("/c/.env");
+        let env_bytes: &[u8] = b"X=1\n";
+        let without = compose_config_hash("app", false, &files, None);
+        let with = compose_config_hash("app", false, &files, Some((&env_path, env_bytes)));
+        assert_ne!(without, with);
+    }
+
+    #[test]
+    fn compose_hash_changes_when_env_file_contents_change() {
+        let files = vec![file_bytes("/c/a.yaml", b"x")];
+        let env_path = FilePath::new("/c/.env");
+        let a = compose_config_hash("app", false, &files, Some((&env_path, b"X=1\n")));
+        let b = compose_config_hash("app", false, &files, Some((&env_path, b"X=2\n")));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn compose_hash_changes_when_sudo_flag_flips() {
+        let files = vec![file_bytes("/c/a.yaml", b"x")];
+        let rootless = compose_config_hash("app", false, &files, None);
+        let rootful = compose_config_hash("app", true, &files, None);
+        assert_ne!(rootless, rootful);
+    }
+
+    #[test]
+    fn compose_hash_stable_across_repeat_compute() {
+        // Regression: a HashMap-iteration-ordering bug in a future refactor
+        // would show up as nondeterminism here.
+        let files = vec![file_bytes("/c/a.yaml", b"a"), file_bytes("/c/b.yaml", b"b")];
+        assert_eq!(
+            compose_config_hash("app", false, &files, None),
+            compose_config_hash("app", false, &files, None)
+        );
+    }
+
+    // -- parser ------------------------------------------------------------
+
+    fn empty_span() -> rimu::Span {
+        use rimu::SourceId;
+        rimu::Span::new(SourceId::empty(), 0, 0)
+    }
+
+    fn s(value: Value) -> Spanned<Value> {
+        Spanned::new(value, empty_span())
+    }
+
+    fn object(pairs: Vec<(&str, Value)>) -> Spanned<Value> {
+        use indexmap::IndexMap;
+        let mut map: IndexMap<String, Spanned<Value>> = IndexMap::new();
+        for (k, v) in pairs {
+            map.insert(k.to_string(), s(v));
+        }
+        s(Value::Object(map))
+    }
+
+    fn host_path(p: &str) -> Value {
+        Value::HostPath(PathBuf::from(p))
+    }
+
+    #[test]
+    fn compose_present_parses_minimal_form() {
+        let params = PodmanParams::parse_params(object(vec![
+            ("state", Value::String("compose_present".into())),
+            ("project", Value::String("myapp".into())),
+            ("files", Value::List(vec![s(host_path("/c/app.yaml"))])),
+        ]))
+        .expect("parse");
+        match params {
+            PodmanParams::ComposePresent {
+                project,
+                files,
+                sudo,
+                ..
+            } => {
+                assert_eq!(project, "myapp");
+                assert_eq!(files.len(), 1);
+                assert!(!sudo);
+            }
+            other => panic!("expected ComposePresent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compose_present_defaults_working_dir_to_first_file_parent() {
+        let params = PodmanParams::parse_params(object(vec![
+            ("state", Value::String("compose_present".into())),
+            ("project", Value::String("myapp".into())),
+            (
+                "files",
+                Value::List(vec![s(host_path("/etc/compose/app.yaml"))]),
+            ),
+        ]))
+        .expect("parse");
+        match params {
+            PodmanParams::ComposePresent { working_dir, .. } => {
+                assert_eq!(working_dir.as_path().to_str().unwrap(), "/etc/compose");
+            }
+            other => panic!("expected ComposePresent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compose_present_carries_env_file_when_set() {
+        let params = PodmanParams::parse_params(object(vec![
+            ("state", Value::String("compose_present".into())),
+            ("project", Value::String("myapp".into())),
+            ("files", Value::List(vec![s(host_path("/c/app.yaml"))])),
+            ("env_file", host_path("/c/.env")),
+        ]))
+        .expect("parse");
+        match params {
+            PodmanParams::ComposePresent { env_file, .. } => {
+                assert!(env_file.is_some());
+            }
+            other => panic!("expected ComposePresent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compose_present_rejects_invalid_project_name() {
+        let err = PodmanParams::parse_params(object(vec![
+            ("state", Value::String("compose_present".into())),
+            ("project", Value::String("My_App".into())),
+            ("files", Value::List(vec![s(host_path("/c/app.yaml"))])),
+        ]))
+        .expect_err("should reject uppercase project");
+        match err.inner() {
+            ParseError::InvalidValue { reason, .. } => {
+                assert!(reason.contains("project name"), "got reason: {reason}");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compose_present_rejects_empty_files() {
+        let err = PodmanParams::parse_params(object(vec![
+            ("state", Value::String("compose_present".into())),
+            ("project", Value::String("app".into())),
+            ("files", Value::List(vec![])),
+        ]))
+        .expect_err("should reject empty files");
+        match err.inner() {
+            ParseError::InvalidValue { reason, .. } => {
+                assert!(reason.contains("at least one"), "got reason: {reason}");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compose_absent_parses_minimal_form() {
+        let params = PodmanParams::parse_params(object(vec![
+            ("state", Value::String("compose_absent".into())),
+            ("project", Value::String("myapp".into())),
+        ]))
+        .expect("parse");
+        match params {
+            PodmanParams::ComposeAbsent { project, sudo, .. } => {
+                assert_eq!(project, "myapp");
+                assert!(!sudo);
+            }
+            other => panic!("expected ComposeAbsent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compose_absent_rejects_invalid_project_name() {
+        let err = PodmanParams::parse_params(object(vec![
+            ("state", Value::String("compose_absent".into())),
+            ("project", Value::String("".into())),
+        ]))
+        .expect_err("should reject empty project");
+        assert!(matches!(err.inner(), ParseError::InvalidValue { .. }));
+    }
+
+    // -- operations lowering -------------------------------------------------
+
+    #[test]
+    fn compose_up_change_lowers_to_up_plus_marker_install() {
+        let change = PodmanChange::ComposeUp {
+            project: "app".into(),
+            files: vec![FilePath::new("/c/a.yaml")],
+            working_dir: FilePath::new("/c"),
+            env_file: None,
+            config_hash: "h".into(),
+            sudo: false,
+        };
+        let ops = Podman::operations(change);
+        // Two leaves: compose_up then compose_marker_install requires it.
+        assert_eq!(ops.len(), 2);
+    }
+
+    #[test]
+    fn compose_recreate_change_lowers_to_four_ops_in_order() {
+        let change = PodmanChange::ComposeRecreate {
+            project: "app".into(),
+            files: vec![FilePath::new("/c/a.yaml")],
+            working_dir: FilePath::new("/c"),
+            env_file: None,
+            config_hash: "h".into(),
+            sudo: false,
+        };
+        let ops = Podman::operations(change);
+        // marker uninstall, down, up, marker install.
+        assert_eq!(ops.len(), 4);
+    }
+
+    #[test]
+    fn compose_down_change_lowers_to_marker_uninstall_plus_down() {
+        let change = PodmanChange::ComposeDown {
+            project: "app".into(),
+            sudo: false,
+        };
+        let ops = Podman::operations(change);
+        assert_eq!(ops.len(), 2);
     }
 }
