@@ -6,6 +6,7 @@ use russh_sftp::{
 use std::{
     borrow::Cow,
     fmt::Debug,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 use thiserror::Error;
@@ -212,11 +213,32 @@ async fn sftp_upload_file(
     remote_file.flush().await?;
     remote_file.shutdown().await?;
 
-    let remote_metadata: FileAttributes = (&local_metadata).into();
-    sftp.set_metadata(remote, remote_metadata).await?;
+    sftp.set_metadata(remote, file_attrs_for_upload(&local_metadata))
+        .await?;
 
     debug!("File upload completed");
     Ok(())
+}
+
+/// Build the SFTP attributes to apply to a freshly-uploaded file.
+///
+/// `russh-sftp`'s blanket `From<&Metadata> for FileAttributes` populates
+/// `uid` / `gid` from the host file's owner. SFTP `set_metadata` then
+/// translates those into a `chown(2)`; when the SSH user's UID on the
+/// remote differs from the host file's UID and the SSH user lacks
+/// `CAP_CHOWN`, the call fails with `EPERM` and surfaces as a generic
+/// `Permission denied` from the SFTP server. Cross-machine UIDs are
+/// meaningless to a sync anyway: the file is created by the SSH session,
+/// so it is already owned by the SSH user.
+///
+/// Keep only the mode bits. `MetadataExt::mode()` returns the full
+/// `st_mode`; mask to `0o7777` so we ship permissions + setuid/setgid/
+/// sticky and nothing else, mirroring how `chmod(2)` would treat it.
+fn file_attrs_for_upload(metadata: &std::fs::Metadata) -> FileAttributes {
+    FileAttributes {
+        permissions: Some(metadata.mode() & 0o7777),
+        ..FileAttributes::empty()
+    }
 }
 
 #[instrument(skip(sftp))]
@@ -327,5 +349,69 @@ fn remote_parent(path: &str) -> Option<&str> {
     match path.rsplit_once('/') {
         Some((parent, _)) => Some(parent),
         None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::NamedTempFile;
+
+    fn file_with_mode(mode: u32) -> NamedTempFile {
+        let f = NamedTempFile::new().unwrap();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+        f
+    }
+
+    #[test]
+    fn upload_attrs_preserve_mode_bits() {
+        let f = file_with_mode(0o644);
+        let attrs = file_attrs_for_upload(&std::fs::metadata(f.path()).unwrap());
+        assert_eq!(attrs.permissions, Some(0o644));
+    }
+
+    #[test]
+    fn upload_attrs_preserve_executable_bit() {
+        let f = file_with_mode(0o755);
+        let attrs = file_attrs_for_upload(&std::fs::metadata(f.path()).unwrap());
+        assert_eq!(attrs.permissions, Some(0o755));
+    }
+
+    /// The original bug: `From<&Metadata> for FileAttributes` populates
+    /// `uid` / `gid` from the host file, which the SFTP server then tries
+    /// to `chown` to. When the SSH user's UID on the remote differs (e.g.
+    /// host `dinosaur` uid=1000 but remote `worm` uid=1001 because a
+    /// vestigial `pi` user squats 1000), the chown fails with `EPERM`.
+    /// The fix is to ship only the mode bits.
+    #[test]
+    fn upload_attrs_drop_owner_and_timestamps() {
+        let f = file_with_mode(0o644);
+        let attrs = file_attrs_for_upload(&std::fs::metadata(f.path()).unwrap());
+        assert_eq!(
+            attrs.uid, None,
+            "uid must not be sent: cross-machine UID is meaningless"
+        );
+        assert_eq!(
+            attrs.gid, None,
+            "gid must not be sent: cross-machine GID is meaningless"
+        );
+        assert_eq!(attrs.size, None);
+        assert_eq!(attrs.atime, None);
+        assert_eq!(attrs.mtime, None);
+    }
+
+    #[test]
+    fn upload_attrs_mask_off_file_type_bits() {
+        let f = file_with_mode(0o644);
+        let attrs = file_attrs_for_upload(&std::fs::metadata(f.path()).unwrap());
+        // Permission + setuid/setgid/sticky only, nothing above 0o7777
+        // (S_IFREG and friends live in higher bits of st_mode).
+        let perm = attrs.permissions.unwrap();
+        assert_eq!(
+            perm & !0o7777,
+            0,
+            "expected only low 12 bits set, got {perm:#o}"
+        );
     }
 }
