@@ -731,4 +731,15 @@ mod tests {
         .expect_err("should reject uppercase project");
         assert!(matches!(err.inner(), ParseError::InvalidValue { .. }));
     }
+
+    #[test]
+    fn parse_pull_rejects_invalid_project_name() {
+        let err = PodmanComposeOperation::parse_params(obj(vec![
+            ("action", Value::String("pull".into())),
+            ("project", Value::String("-bad".into())),
+            ("files", Value::List(vec![sv(hp("/c/app.yaml"))])),
+        ]))
+        .expect_err("should reject leading-hyphen project");
+        assert!(matches!(err.inner(), ParseError::InvalidValue { .. }));
+    }
 }

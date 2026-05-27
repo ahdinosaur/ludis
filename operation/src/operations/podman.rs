@@ -252,3 +252,42 @@ impl OperationType for Podman {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indexmap::IndexMap;
+
+    fn empty_span() -> rimu::Span {
+        rimu::Span::new(rimu::SourceId::empty(), 0, 0)
+    }
+
+    fn obj(pairs: Vec<(&str, Value)>) -> Spanned<Value> {
+        let mut map: IndexMap<String, Spanned<Value>> = IndexMap::new();
+        for (k, v) in pairs {
+            map.insert(k.to_string(), Spanned::new(v, empty_span()));
+        }
+        Spanned::new(Value::Object(map), empty_span())
+    }
+
+    #[test]
+    fn parse_start_action() {
+        let op = PodmanOperation::parse_params(obj(vec![
+            ("action", Value::String("start".into())),
+            ("name", Value::String("web".into())),
+        ]))
+        .expect("parse");
+        assert!(matches!(op, PodmanOperation::Start { .. }));
+    }
+
+    #[test]
+    fn parse_rejects_unknown_action() {
+        let err =
+            PodmanOperation::parse_params(obj(vec![("action", Value::String("create".into()))]))
+                .expect_err("create is intentionally not author-facing");
+        assert!(matches!(
+            err.inner(),
+            ParseError::UnknownDiscriminator { .. }
+        ));
+    }
+}

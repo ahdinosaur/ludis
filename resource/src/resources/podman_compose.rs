@@ -841,6 +841,39 @@ mod tests {
     }
 
     #[test]
+    fn change_up_carries_files_and_sudo() {
+        // Regression guard: the Up change must propagate every field from
+        // the resource. Catches a `..` rest-pattern accidentally swallowing
+        // a new field in a future refactor.
+        let r = PodmanComposeResource::Present {
+            project: "app".into(),
+            files: vec![FilePath::new("/c/a.yaml"), FilePath::new("/c/b.yaml")],
+            working_dir: FilePath::new("/c"),
+            env_file: Some(FilePath::new("/c/.env")),
+            config_hash: "h".into(),
+            sudo: true,
+        };
+        let change = PodmanCompose::change(&r, &PodmanComposeState::Absent).expect("change");
+        match change {
+            PodmanComposeChange::Up {
+                project,
+                files,
+                working_dir,
+                env_file,
+                sudo,
+                ..
+            } => {
+                assert_eq!(project, "app");
+                assert_eq!(files.len(), 2);
+                assert_eq!(working_dir.as_path().to_str().unwrap(), "/c");
+                assert!(env_file.is_some());
+                assert!(sudo);
+            }
+            other => panic!("expected Up, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn change_none_when_absent_matches() {
         let r = PodmanComposeResource::Absent {
             project: "app".into(),
