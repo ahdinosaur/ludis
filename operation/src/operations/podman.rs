@@ -586,10 +586,14 @@ impl ParseParams for PodmanOperation {
                     sudo,
                 },
             )?,
-            "compose_down" => PodmanOperation::ComposeDown {
-                project: fields.required_string("project")?,
-                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
-            },
+            "compose_down" => {
+                let (project, project_span) = fields.required_string_spanned("project")?.take();
+                check_project_name(&project, &project_span)?;
+                PodmanOperation::ComposeDown {
+                    project,
+                    sudo: fields.optional_bool("sudo")?.unwrap_or(false),
+                }
+            }
             "compose_pull" => parse_compose_action(
                 &mut fields,
                 |project, files, working_dir, env_file, sudo| PodmanOperation::ComposePull {
@@ -618,7 +622,8 @@ fn parse_compose_action<F>(
 where
     F: FnOnce(String, Vec<FilePath>, FilePath, Option<FilePath>, bool) -> PodmanOperation,
 {
-    let project = fields.required_string("project")?;
+    let (project, project_span) = fields.required_string_spanned("project")?.take();
+    check_project_name(&project, &project_span)?;
     let files_spanned = fields.required_host_path_spanned_list("files")?;
     if files_spanned.is_empty() {
         return Err(Spanned::new(
@@ -626,9 +631,7 @@ where
                 reason: "compose `files:` must contain at least one entry",
                 got: Box::new(Value::List(vec![])),
             },
-            // Note: span for the empty list itself is not separately tracked
-            // here; the diagnostic still points at the file-level location.
-            rimu::Span::new(rimu::SourceId::empty(), 0, 0),
+            project_span,
         ));
     }
     let files: Vec<FilePath> = files_spanned
@@ -648,6 +651,26 @@ where
         .map(|s| FilePath::new(s.into_inner().to_string_lossy().into_owned()));
     let sudo = fields.optional_bool("sudo")?.unwrap_or(false);
     Ok(build(project, files, working_dir, env_file, sudo))
+}
+
+/// Enforce the project-name regex on author-facing input. Mirrors
+/// `resource::resources::podman::validate_project_name` and exists here so the
+/// operation-layer parser can refuse a malicious value before it reaches
+/// [`build_compose_down`]'s shell interpolation. The two impls must stay in
+/// sync; the `is_valid_project_name` `debug_assert!` in `build_compose_down`
+/// catches drift in tests.
+fn check_project_name(value: &str, span: &rimu::Span) -> Result<(), Spanned<ParseError>> {
+    if is_valid_project_name(value) {
+        Ok(())
+    } else {
+        Err(Spanned::new(
+            ParseError::InvalidValue {
+                reason: "compose project name must match ^[a-z0-9][a-z0-9_-]{0,62}$ (lowercase letters, digits, `_`, `-`; ≤63 chars; cannot start with `-` or `_`)",
+                got: Box::new(Value::String(value.to_string())),
+            },
+            span.clone(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -896,6 +919,48 @@ mod compose_builder_tests {
             ("files", Value::List(vec![])),
         ]))
         .expect_err("should reject empty files");
+        assert!(matches!(err.inner(), ParseError::InvalidValue { .. }));
+    }
+
+    /// Refuse a project name with shell metacharacters before it can reach
+    /// `build_compose_down`'s `format!()` interpolation. The debug-only
+    /// `is_valid_project_name` guard in `build_compose_down` catches this in
+    /// tests if the parser stops enforcing, but production builds elide the
+    /// `debug_assert!` - so the parser is the load-bearing check.
+    #[test]
+    fn parse_compose_down_rejects_shell_metacharacters_in_project() {
+        let err = PodmanOperation::parse_params(obj(vec![
+            ("action", Value::String("compose_down".into())),
+            ("project", Value::String("x; rm -rf $HOME".into())),
+        ]))
+        .expect_err("should reject malicious project name");
+        match err.inner() {
+            ParseError::InvalidValue { reason, .. } => {
+                assert!(reason.contains("project name"), "got reason: {reason}");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_compose_up_rejects_invalid_project_name() {
+        let err = PodmanOperation::parse_params(obj(vec![
+            ("action", Value::String("compose_up".into())),
+            ("project", Value::String("My_App".into())),
+            ("files", Value::List(vec![sv(hp("/c/app.yaml"))])),
+        ]))
+        .expect_err("should reject uppercase project");
+        assert!(matches!(err.inner(), ParseError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn parse_compose_pull_rejects_invalid_project_name() {
+        let err = PodmanOperation::parse_params(obj(vec![
+            ("action", Value::String("compose_pull".into())),
+            ("project", Value::String("-bad".into())),
+            ("files", Value::List(vec![sv(hp("/c/app.yaml"))])),
+        ]))
+        .expect_err("should reject leading-hyphen project");
         assert!(matches!(err.inner(), ParseError::InvalidValue { .. }));
     }
 }
