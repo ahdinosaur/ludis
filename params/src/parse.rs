@@ -303,6 +303,22 @@ impl StructFields {
         self.optional(key, |value| parse_list(value, parse_string))
     }
 
+    /// Read a required list of host-path fields, returning each as a
+    /// [`Spanned<PathBuf>`] so per-element diagnostics (e.g. "this file is
+    /// missing on disk") can point at the offending list entry rather than
+    /// the list as a whole.
+    pub fn required_host_path_spanned_list(
+        &mut self,
+        key: &str,
+    ) -> Result<Vec<Spanned<PathBuf>>, Spanned<ParseError>> {
+        self.required(key, |value| {
+            parse_list(value, |item| {
+                let span = item.span();
+                parse_host_path(item).map(|path| Spanned::new(path, span))
+            })
+        })
+    }
+
     /// Assert no unknown fields remain. Call once after consuming every
     /// declared field.
     ///
@@ -571,5 +587,25 @@ mod tests {
             err.inner(),
             ParseError::TargetPathNotAbsolute { .. }
         ));
+    }
+
+    #[test]
+    fn parse_list_of_host_paths_preserves_per_element_spans() {
+        let span_a = span("/plans/a.lusid");
+        let span_b = span("/plans/b.lusid");
+        let items = Value::List(vec![
+            Spanned::new(Value::HostPath(PathBuf::from("/host/a")), span_a.clone()),
+            Spanned::new(Value::HostPath(PathBuf::from("/host/b")), span_b.clone()),
+        ]);
+        let parsed = parse_list(Spanned::new(items, empty_span()), |item| {
+            let span = item.span();
+            parse_host_path(item).map(|path| Spanned::new(path, span))
+        })
+        .expect("ok");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].inner(), &PathBuf::from("/host/a"));
+        assert_eq!(parsed[0].span().source().as_str(), "/plans/a.lusid");
+        assert_eq!(parsed[1].inner(), &PathBuf::from("/host/b"));
+        assert_eq!(parsed[1].span().source().as_str(), "/plans/b.lusid");
     }
 }
