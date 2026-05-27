@@ -8,7 +8,7 @@
 
 use lusid_operation::{
     Operation,
-    operations::{command::CommandOperation, systemd::SystemdOperation},
+    operations::{command::CommandOperation, podman::PodmanOperation, systemd::SystemdOperation},
 };
 use lusid_params::ParseParams;
 use rimu::{Span, Spanned, Value};
@@ -26,7 +26,7 @@ use crate::PlanItemToResourceError;
 /// any of them to author-facing means adding the id here, a parser arm in
 /// `operation_module`, and a doc page. Workaround today is
 /// `@operation/command "sudo apt update"` and friends.
-pub const AVAILABLE_OPERATION_MODULES: &[&str] = &["command", "systemd"];
+pub const AVAILABLE_OPERATION_MODULES: &[&str] = &["command", "systemd", "podman"];
 
 /// Returns the operation id (e.g. `"systemd"`) if `module` uses the
 /// `@operation/<id>` prefix, otherwise `None`.
@@ -44,6 +44,7 @@ pub fn operation_module(
     match operation_module_id {
         "command" => parse::<CommandOperation>(params).map(Operation::Command),
         "systemd" => parse::<SystemdOperation>(params).map(Operation::Systemd),
+        "podman" => parse::<PodmanOperation>(params).map(Operation::Podman),
         other => Err(PlanItemToResourceError::UnsupportedOperationModuleId {
             id: other.to_string(),
             available: AVAILABLE_OPERATION_MODULES.join(", "),

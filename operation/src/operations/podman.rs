@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
+use lusid_params::{ParseError, ParseParams, StructFields};
+use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Display, pin::Pin};
 use thiserror::Error;
@@ -541,6 +543,113 @@ fn is_valid_project_name(project: &str) -> bool {
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_' || *b == b'-')
 }
 
+impl ParseParams for PodmanOperation {
+    /// Parse an `@operation/podman` author-facing params object. The
+    /// discriminator is `action: "start" | "stop" | "remove" | "compose_up"
+    /// | "compose_down" | "compose_pull"`. `create` and the marker variants
+    /// are intentionally not author-facing: `create` writes a config hash
+    /// label that the resource layer owns, and the marker variants are
+    /// internal-only.
+    fn parse_params(value: Spanned<Value>) -> Result<Self, Spanned<ParseError>> {
+        let mut fields = StructFields::new(value)?;
+        let action = fields.take_discriminator(
+            "action",
+            &[
+                "start",
+                "stop",
+                "remove",
+                "compose_up",
+                "compose_down",
+                "compose_pull",
+            ],
+        )?;
+        let out = match action {
+            "start" => PodmanOperation::Start {
+                name: fields.required_string("name")?,
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
+            },
+            "stop" => PodmanOperation::Stop {
+                name: fields.required_string("name")?,
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
+            },
+            "remove" => PodmanOperation::Remove {
+                name: fields.required_string("name")?,
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
+            },
+            "compose_up" => parse_compose_action(
+                &mut fields,
+                |project, files, working_dir, env_file, sudo| PodmanOperation::ComposeUp {
+                    project,
+                    files,
+                    working_dir,
+                    env_file,
+                    sudo,
+                },
+            )?,
+            "compose_down" => PodmanOperation::ComposeDown {
+                project: fields.required_string("project")?,
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
+            },
+            "compose_pull" => parse_compose_action(
+                &mut fields,
+                |project, files, working_dir, env_file, sudo| PodmanOperation::ComposePull {
+                    project,
+                    files,
+                    working_dir,
+                    env_file,
+                    sudo,
+                },
+            )?,
+            _ => unreachable!(),
+        };
+        fields.finish()?;
+        Ok(out)
+    }
+}
+
+/// Shared parsing logic for the compose actions that take the same shape
+/// (`compose_up`, `compose_pull`): project, files, optional working_dir,
+/// optional env_file, optional sudo. The closure picks which `PodmanOperation`
+/// variant to build with the parsed values.
+fn parse_compose_action<F>(
+    fields: &mut StructFields,
+    build: F,
+) -> Result<PodmanOperation, Spanned<ParseError>>
+where
+    F: FnOnce(String, Vec<FilePath>, FilePath, Option<FilePath>, bool) -> PodmanOperation,
+{
+    let project = fields.required_string("project")?;
+    let files_spanned = fields.required_host_path_spanned_list("files")?;
+    if files_spanned.is_empty() {
+        return Err(Spanned::new(
+            ParseError::InvalidValue {
+                reason: "compose `files:` must contain at least one entry",
+                got: Box::new(Value::List(vec![])),
+            },
+            // Note: span for the empty list itself is not separately tracked
+            // here; the diagnostic still points at the file-level location.
+            rimu::Span::new(rimu::SourceId::empty(), 0, 0),
+        ));
+    }
+    let files: Vec<FilePath> = files_spanned
+        .into_iter()
+        .map(|spanned| FilePath::new(spanned.into_inner().to_string_lossy().into_owned()))
+        .collect();
+    let working_dir = match fields.optional_host_path_spanned("working_dir")? {
+        Some(s) => FilePath::new(s.into_inner().to_string_lossy().into_owned()),
+        None => {
+            let first = files[0].as_path();
+            let parent = first.parent().unwrap_or_else(|| std::path::Path::new("."));
+            FilePath::new(parent.to_string_lossy().into_owned())
+        }
+    };
+    let env_file = fields
+        .optional_host_path_spanned("env_file")?
+        .map(|s| FilePath::new(s.into_inner().to_string_lossy().into_owned()));
+    let sudo = fields.optional_bool("sudo")?.unwrap_or(false);
+    Ok(build(project, files, working_dir, env_file, sudo))
+}
+
 #[cfg(test)]
 mod compose_builder_tests {
     use super::*;
@@ -697,5 +806,96 @@ mod compose_builder_tests {
         };
         let json = serde_json::to_string(&op).unwrap();
         assert!(json.contains(r#""sudo":true"#), "got: {json}");
+    }
+
+    // -- ParseParams ------------------------------------------------------
+
+    fn empty_span() -> rimu::Span {
+        rimu::Span::new(rimu::SourceId::empty(), 0, 0)
+    }
+
+    fn sv(value: Value) -> Spanned<Value> {
+        Spanned::new(value, empty_span())
+    }
+
+    fn obj(pairs: Vec<(&str, Value)>) -> Spanned<Value> {
+        use indexmap::IndexMap;
+        let mut map: IndexMap<String, Spanned<Value>> = IndexMap::new();
+        for (k, v) in pairs {
+            map.insert(k.to_string(), sv(v));
+        }
+        sv(Value::Object(map))
+    }
+
+    fn hp(p: &str) -> Value {
+        Value::HostPath(std::path::PathBuf::from(p))
+    }
+
+    #[test]
+    fn parse_start_action() {
+        let op = PodmanOperation::parse_params(obj(vec![
+            ("action", Value::String("start".into())),
+            ("name", Value::String("web".into())),
+        ]))
+        .expect("parse");
+        assert!(matches!(op, PodmanOperation::Start { .. }));
+    }
+
+    #[test]
+    fn parse_compose_up_with_files() {
+        let op = PodmanOperation::parse_params(obj(vec![
+            ("action", Value::String("compose_up".into())),
+            ("project", Value::String("app".into())),
+            ("files", Value::List(vec![sv(hp("/c/app.yaml"))])),
+        ]))
+        .expect("parse");
+        match op {
+            PodmanOperation::ComposeUp {
+                project,
+                files,
+                working_dir,
+                ..
+            } => {
+                assert_eq!(project, "app");
+                assert_eq!(files.len(), 1);
+                // Working dir defaulted to parent of first file.
+                assert_eq!(working_dir.as_path().to_str().unwrap(), "/c");
+            }
+            other => panic!("expected ComposeUp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_compose_down_action() {
+        let op = PodmanOperation::parse_params(obj(vec![
+            ("action", Value::String("compose_down".into())),
+            ("project", Value::String("app".into())),
+        ]))
+        .expect("parse");
+        assert!(matches!(op, PodmanOperation::ComposeDown { .. }));
+    }
+
+    #[test]
+    fn parse_rejects_unknown_action() {
+        let err = PodmanOperation::parse_params(obj(vec![(
+            "action",
+            Value::String("delete-all".into()),
+        )]))
+        .expect_err("should reject unknown action");
+        assert!(matches!(
+            err.inner(),
+            ParseError::UnknownDiscriminator { .. }
+        ));
+    }
+
+    #[test]
+    fn parse_rejects_empty_files_for_compose_up() {
+        let err = PodmanOperation::parse_params(obj(vec![
+            ("action", Value::String("compose_up".into())),
+            ("project", Value::String("app".into())),
+            ("files", Value::List(vec![])),
+        ]))
+        .expect_err("should reject empty files");
+        assert!(matches!(err.inner(), ParseError::InvalidValue { .. }));
     }
 }

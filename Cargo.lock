@@ -2730,6 +2730,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "displaydoc",
+ "indexmap",
  "lusid-cmd",
  "lusid-ctx",
  "lusid-fs",
