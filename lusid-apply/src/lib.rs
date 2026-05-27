@@ -18,7 +18,10 @@ use lusid_plan::{
     self, PlanError, PlanFlatTree, PlanFlatTreeNode, PlanId, PlanMeta, PlanNodeId, PlanTree,
     map_plan_subitems, plan,
 };
-use lusid_resource::{HostPathValidationError, Resource, ResourceChangeTrait, ResourceStateError};
+use lusid_resource::{
+    HostPathValidationError, Resource, ResourceChangeTrait, ResourcePrepareError,
+    ResourceStateError,
+};
 use lusid_secrets::{LoadError, Redactor, Secrets};
 use lusid_store::Store;
 use lusid_system::{GetSystemError, System};
@@ -111,6 +114,9 @@ pub enum ApplyError {
 
     #[error("host-path validation failed: {0}")]
     HostPathValidation(#[from] HostPathValidationError),
+
+    #[error("resource preparation failed: {0}")]
+    ResourcePrepare(#[from] ResourcePrepareError),
 
     /// Operator rejected the per-epoch confirm prompt (sent `{"action": "abort"}`),
     /// or stdin closed / produced a malformed ack. The producer treats any of
@@ -238,6 +244,19 @@ pub async fn apply(options: ApplyOptions) -> Result<(), ApplyError> {
         .leaves()
         .map(|params| params.validate_host_paths());
     futures_util::future::try_join_all(validations).await?;
+
+    // Post-validation preparation. Today only `@resource/podman` compose
+    // variants do work here (reading the compose files to compute the
+    // declared config hash). Other variants pass through. We thread this in
+    // owned-self form via `map_result_async` so the hash lands on the
+    // ResourceParams before `resources()` expansion sees them.
+    let resource_params_flat = resource_params_flat
+        .map_result_async(
+            |params| async move { params.prepare().await.map_err(ApplyError::ResourcePrepare) },
+            |_idx| async { Ok::<(), ApplyError>(()) },
+            |_idx, _node| async { Ok::<(), ApplyError>(()) },
+        )
+        .await?;
 
     // Expand each ResourceParams into a tree of Resource atoms. Hand the
     // resolved secrets dir down so file sources rooted under it are tagged

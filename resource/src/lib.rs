@@ -642,6 +642,18 @@ impl Resource {
 /// [`Span`] so diagnostics can point back at the offending `.lusid` line -
 /// see AGENTS.md "spans are load-bearing". The [`Self::Fs`] variant is a
 /// low-level filesystem failure with no plan attribution, so it has no span.
+/// Errors surfaced by [`ResourceParams::prepare`] - post-validation file I/O
+/// (e.g. reading compose files for hash computation). Validation already
+/// confirmed each path exists and has the expected type, so failures here
+/// are the rare "file deleted between validate and prepare" race, a
+/// permission problem, or a transient I/O issue. Span-attributable variants
+/// carry the source span for diagnostics.
+#[derive(Debug, Error)]
+pub enum ResourcePrepareError {
+    #[error(transparent)]
+    Podman(#[from] crate::resources::podman::PodmanPrepareError),
+}
+
 #[derive(Debug, Error)]
 pub enum HostPathValidationError {
     #[error("source host-path {path:?} for @resource/file resource was not found")]
@@ -753,6 +765,22 @@ impl ResourceParams {
                 Ok(())
             }
             _ => Ok(()),
+        }
+    }
+
+    /// Post-validation preparation: read host-side files referenced by params
+    /// (today only compose YAML) and bake the resulting hash into the params
+    /// for downstream change-time comparison.
+    ///
+    /// Called by the apply pipeline between [`Self::validate_host_paths`] and
+    /// [`Self::resources`]. For non-compose variants this is a pass-through.
+    /// Validation runs first so a `ReadFailed` here is the rare
+    /// "file deleted between validate and prepare" race or a permission
+    /// error - both worth their own span-attributable diagnostic.
+    pub async fn prepare(self) -> Result<Self, ResourcePrepareError> {
+        match self {
+            ResourceParams::Podman(podman) => Ok(ResourceParams::Podman(podman.prepare().await?)),
+            other => Ok(other),
         }
     }
 }
