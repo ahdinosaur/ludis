@@ -5,10 +5,10 @@ version: "0.1.0"
 # compose file contents; editing `compose.yaml` and re-applying will tear the
 # project down and bring it back up under the new spec.
 setup: (params, system) =>
-  - module: "@resource/podman"
+  - module: "@resource/podman-compose"
     id: "app-compose"
     params:
-      state: "compose_present"
+      state: "present"
       project: "lusid_demo"
       files:
         - "./compose.yaml"

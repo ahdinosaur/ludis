@@ -17,7 +17,8 @@ Available operation modules are listed in `plan/src/operation.rs::AVAILABLE_OPER
 
 - [`@operation/command`](#operationcommand) - shell out to an arbitrary command.
 - [`@operation/systemd`](#operationsystemd) - reload / restart / start / stop a unit.
-- [`@operation/podman`](#operationpodman) - container and compose actions.
+- [`@operation/podman`](#operationpodman) - container actions.
+- [`@operation/podman-compose`](#operationpodman-compose) - compose project actions.
 
 ## `@operation/command`
 
@@ -45,8 +46,6 @@ See the resource counterpart's docs for the shape; the operation form mirrors it
 
 Discriminator: `action`. Single source of truth for valid values is `operation/src/operations/podman.rs::PodmanOperation::parse_params`.
 
-### Container actions
-
 ```yaml
 - module: "@operation/podman"
   params:
@@ -63,12 +62,14 @@ Discriminator: `action`. Single source of truth for valid values is `operation/s
 
 `create` is intentionally not exposed: it writes a `lusid.config-hash` label that the resource layer owns. Use `@resource/podman state: "present"` for declarative container creation.
 
-### Compose actions
+## `@operation/podman-compose`
+
+Discriminator: `action`. Single source of truth is `operation/src/operations/podman_compose.rs::PodmanComposeOperation::parse_params`.
 
 ```yaml
-- module: "@operation/podman"
+- module: "@operation/podman-compose"
   params:
-    action: "compose_up"
+    action: "up"
     project: "my_app"
     files: ["./compose.yaml"]
     working_dir: "./services"     # optional; default = first file's parent
@@ -76,12 +77,12 @@ Discriminator: `action`. Single source of truth for valid values is `operation/s
     sudo: false
 ```
 
-| `action`         | Required fields              | Optional fields                            | What                                                            |
-| ---------------- | ---------------------------- | ------------------------------------------ | --------------------------------------------------------------- |
-| `compose_up`     | `project`, `files`           | `working_dir`, `env_file`, `sudo`          | `podman-compose -p <project> -f f1 ... up -d`.                  |
-| `compose_down`   | `project`                    | `sudo`                                     | Remove containers + networks bearing the project label.         |
-| `compose_pull`   | `project`, `files`           | `working_dir`, `env_file`, `sudo`          | Refresh images without recreating. Pair with `compose_up` to roll. |
+| `action` | Required fields              | Optional fields                            | What                                                       |
+| -------- | ---------------------------- | ------------------------------------------ | ---------------------------------------------------------- |
+| `up`     | `project`, `files`           | `working_dir`, `env_file`, `sudo`          | `podman-compose -p <project> -f f1 ... up -d`.             |
+| `down`   | `project`                    | `sudo`                                     | Remove containers + networks bearing the project label.    |
+| `pull`   | `project`, `files`           | `working_dir`, `env_file`, `sudo`          | Refresh images without recreating. Pair with `up` to roll. |
 
-The author-facing `compose_up` does **not** install the lusid marker network: hash-based drift detection is owned by `@resource/podman state: "compose_present"`. Operators reaching for the operation form are choosing imperative control; mixing the two interfaces for the same project will cause every apply to detect drift and recreate.
+The author-facing `up` does **not** install the lusid marker network: hash-based drift detection is owned by `@resource/podman-compose state: "present"`. Operators reaching for the operation form are choosing imperative control; mixing the two interfaces for the same project will cause every apply to detect drift and recreate.
 
 `project` is validated against `^[a-z0-9][a-z0-9_-]{0,62}$`.

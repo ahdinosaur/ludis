@@ -39,7 +39,8 @@ The five-step shape is uniform across every resource type. Different resources p
 | `@resource/git` | Clone / update a git working tree. |
 | `@resource/group` | Manage Unix groups. |
 | `@resource/pacman` | Install Arch Linux packages. |
-| `@resource/podman` | Manage podman containers or podman-compose projects. |
+| `@resource/podman` | Manage podman containers. |
+| `@resource/podman-compose` | Manage podman-compose projects. |
 | `@resource/secret` | Materialise an [age-encrypted secret](../guides/secrets.md) as a file. |
 | `@resource/systemd` | Enable / start / stop systemd units. |
 | `@resource/user` | Manage Unix users. |
