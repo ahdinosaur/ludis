@@ -1,0 +1,9 @@
+log = "info"
+
+# A single local-apply target: bring up a two-service compose project
+# (nginx + redis) on the machine running `lusid local apply`.
+[machines.demo]
+hostname = "demo"
+arch = "x86-64"
+os = { type = "linux", linux = "debian", debian = 13 }
+plan = "./app.lusid"
