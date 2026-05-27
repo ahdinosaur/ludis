@@ -10,8 +10,8 @@ use lusid_operation::{
         apt::AptOperation, apt_repo::AptRepoOperation, aur::AurOperation,
         command::CommandOperation, directory::DirectoryOperation, file::FileOperation,
         flatpak::FlatpakOperation, git::GitOperation, group::GroupOperation,
-        pacman::PacmanOperation, podman::PodmanOperation, systemd::SystemdOperation,
-        user::UserOperation,
+        pacman::PacmanOperation, podman::PodmanOperation, podman_compose::PodmanComposeOperation,
+        systemd::SystemdOperation, user::UserOperation,
     },
 };
 
@@ -26,6 +26,7 @@ display_render!(GitOperation);
 display_render!(GroupOperation);
 display_render!(PacmanOperation);
 display_render!(PodmanOperation);
+display_render!(PodmanComposeOperation);
 display_render!(SystemdOperation);
 display_render!(UserOperation);
 

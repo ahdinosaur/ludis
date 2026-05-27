@@ -21,6 +21,9 @@ use lusid_resource::{
     group::{GroupChange, GroupParams, GroupResource, GroupState},
     pacman::{PacmanChange, PacmanParams, PacmanResource, PacmanState},
     podman::{PodmanChange, PodmanParams, PodmanResource, PodmanState},
+    podman_compose::{
+        PodmanComposeChange, PodmanComposeParams, PodmanComposeResource, PodmanComposeState,
+    },
     secret::SecretParams,
     systemd::{SystemdChange, SystemdParams, SystemdResource, SystemdState},
     user::{UserChange, UserParams, UserResource, UserState},
@@ -85,6 +88,11 @@ display_render!(PodmanParams);
 display_render!(PodmanResource);
 display_render!(PodmanState);
 display_render!(PodmanChange);
+
+display_render!(PodmanComposeParams);
+display_render!(PodmanComposeResource);
+display_render!(PodmanComposeState);
+display_render!(PodmanComposeChange);
 
 display_render!(SecretParams);
 

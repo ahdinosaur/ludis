@@ -42,6 +42,10 @@ use crate::resources::git::{Git, GitChange, GitParams, GitResource, GitState};
 use crate::resources::group::{Group, GroupChange, GroupParams, GroupResource, GroupState};
 use crate::resources::pacman::{Pacman, PacmanChange, PacmanParams, PacmanResource, PacmanState};
 use crate::resources::podman::{Podman, PodmanChange, PodmanParams, PodmanResource, PodmanState};
+use crate::resources::podman_compose::{
+    PodmanCompose, PodmanComposeChange, PodmanComposeParams, PodmanComposeResource,
+    PodmanComposeState,
+};
 use crate::resources::secret::{Secret, SecretParams};
 use crate::resources::systemd::{
     Systemd, SystemdChange, SystemdParams, SystemdResource, SystemdState,
@@ -145,6 +149,7 @@ pub enum ResourceParams {
     FlatpakRemote(FlatpakRemoteParams),
     Pacman(PacmanParams),
     Podman(PodmanParams),
+    PodmanCompose(PodmanComposeParams),
     Command(CommandParams),
     Git(GitParams),
     Secret(SecretParams),
@@ -166,6 +171,7 @@ impl Display for ResourceParams {
             FlatpakRemote(params) => params.fmt(f),
             Pacman(params) => params.fmt(f),
             Podman(params) => params.fmt(f),
+            PodmanCompose(params) => params.fmt(f),
             Command(params) => params.fmt(f),
             Git(params) => params.fmt(f),
             Secret(params) => params.fmt(f),
@@ -187,6 +193,7 @@ pub enum Resource {
     FlatpakRemote(FlatpakRemoteResource),
     Pacman(PacmanResource),
     Podman(PodmanResource),
+    PodmanCompose(PodmanComposeResource),
     Command(CommandResource),
     Git(GitResource),
     Systemd(SystemdResource),
@@ -207,6 +214,7 @@ impl Display for Resource {
             FlatpakRemote(flatpak_remote) => flatpak_remote.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
             Podman(podman) => podman.fmt(f),
+            PodmanCompose(podman_compose) => podman_compose.fmt(f),
             Command(command) => command.fmt(f),
             Git(git) => git.fmt(f),
             Systemd(systemd) => systemd.fmt(f),
@@ -231,6 +239,7 @@ pub enum ResourceState {
     FlatpakRemote(FlatpakRemoteState),
     Pacman(PacmanState),
     Podman(PodmanState),
+    PodmanCompose(PodmanComposeState),
     Command(CommandState),
     Git(GitState),
     Systemd(SystemdState),
@@ -251,6 +260,7 @@ impl Display for ResourceState {
             FlatpakRemote(flatpak_remote) => flatpak_remote.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
             Podman(podman) => podman.fmt(f),
+            PodmanCompose(podman_compose) => podman_compose.fmt(f),
             Command(command) => command.fmt(f),
             Git(git) => git.fmt(f),
             Systemd(systemd) => systemd.fmt(f),
@@ -291,6 +301,9 @@ pub enum ResourceStateError {
     #[error("podman state error: {0}")]
     Podman(#[from] <Podman as ResourceType>::StateError),
 
+    #[error("podman-compose state error: {0}")]
+    PodmanCompose(#[from] <PodmanCompose as ResourceType>::StateError),
+
     #[error("command state error: {0}")]
     Command(#[from] <Command as ResourceType>::StateError),
 
@@ -318,6 +331,7 @@ pub enum ResourceChange {
     FlatpakRemote(FlatpakRemoteChange),
     Pacman(PacmanChange),
     Podman(PodmanChange),
+    PodmanCompose(PodmanComposeChange),
     Command(CommandChange),
     Git(GitChange),
     Systemd(SystemdChange),
@@ -338,6 +352,7 @@ impl Display for ResourceChange {
             FlatpakRemote(flatpak_remote) => flatpak_remote.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
             Podman(podman) => podman.fmt(f),
+            PodmanCompose(podman_compose) => podman_compose.fmt(f),
             Command(command) => command.fmt(f),
             Git(git) => git.fmt(f),
             Systemd(systemd) => systemd.fmt(f),
@@ -360,6 +375,7 @@ impl ResourceChangeTrait for ResourceChange {
             FlatpakRemote(c) => c.kind(),
             Pacman(c) => c.kind(),
             Podman(c) => c.kind(),
+            PodmanCompose(c) => c.kind(),
             Command(c) => c.kind(),
             Git(c) => c.kind(),
             Systemd(c) => c.kind(),
@@ -403,6 +419,9 @@ impl ResourceParams {
             }
             ResourceParams::Pacman(params) => typed::<Pacman>(params, Resource::Pacman),
             ResourceParams::Podman(params) => typed::<Podman>(params, Resource::Podman),
+            ResourceParams::PodmanCompose(params) => {
+                typed::<PodmanCompose>(params, Resource::PodmanCompose)
+            }
             ResourceParams::Command(params) => typed::<Command>(params, Resource::Command),
             ResourceParams::Git(params) => typed::<Git>(params, Resource::Git),
             // `@resource/secret` lowers to `FileResource::Secret`, which is
@@ -512,6 +531,15 @@ impl Resource {
                 )
                 .await
             }
+            Resource::PodmanCompose(resource) => {
+                typed::<PodmanCompose>(
+                    ctx,
+                    resource,
+                    ResourceState::PodmanCompose,
+                    ResourceStateError::PodmanCompose,
+                )
+                .await
+            }
             Resource::Command(resource) => {
                 typed::<Command>(
                     ctx,
@@ -589,6 +617,9 @@ impl Resource {
             (Resource::Podman(resource), ResourceState::Podman(state)) => {
                 typed::<Podman>(resource, state, ResourceChange::Podman)
             }
+            (Resource::PodmanCompose(resource), ResourceState::PodmanCompose(state)) => {
+                typed::<PodmanCompose>(resource, state, ResourceChange::PodmanCompose)
+            }
             (Resource::Command(resource), ResourceState::Command(state)) => {
                 typed::<Command>(resource, state, ResourceChange::Command)
             }
@@ -622,6 +653,7 @@ impl Resource {
             Resource::FlatpakRemote(_) => "flatpak_remote",
             Resource::Pacman(_) => "pacman",
             Resource::Podman(_) => "podman",
+            Resource::PodmanCompose(_) => "podman_compose",
             Resource::Command(_) => "command",
             Resource::Git(_) => "git",
             Resource::Systemd(_) => "systemd",
@@ -651,7 +683,7 @@ impl Resource {
 #[derive(Debug, Error)]
 pub enum ResourcePrepareError {
     #[error(transparent)]
-    Podman(#[from] crate::resources::podman::PodmanPrepareError),
+    PodmanCompose(#[from] crate::resources::podman_compose::PodmanComposePrepareError),
 }
 
 #[derive(Debug, Error)]
@@ -743,7 +775,7 @@ impl ResourceParams {
                 source_span,
                 ..
             }) => check_source_is_directory(source, source_span).await,
-            ResourceParams::Podman(PodmanParams::ComposePresent {
+            ResourceParams::PodmanCompose(PodmanComposeParams::Present {
                 files,
                 files_spans,
                 working_dir,
@@ -779,7 +811,9 @@ impl ResourceParams {
     /// error - both worth their own span-attributable diagnostic.
     pub async fn prepare(self) -> Result<Self, ResourcePrepareError> {
         match self {
-            ResourceParams::Podman(podman) => Ok(ResourceParams::Podman(podman.prepare().await?)),
+            ResourceParams::PodmanCompose(p) => {
+                Ok(ResourceParams::PodmanCompose(p.prepare().await?))
+            }
             other => Ok(other),
         }
     }
@@ -935,6 +969,7 @@ impl ResourceChange {
             ResourceChange::FlatpakRemote(change) => FlatpakRemote::operations(change),
             ResourceChange::Pacman(change) => Pacman::operations(change),
             ResourceChange::Podman(change) => Podman::operations(change),
+            ResourceChange::PodmanCompose(change) => PodmanCompose::operations(change),
             ResourceChange::Command(change) => Command::operations(change),
             ResourceChange::Git(change) => Git::operations(change),
             ResourceChange::Systemd(change) => Systemd::operations(change),
@@ -1253,8 +1288,8 @@ mod tests {
         env_file: Option<FilePath>,
         env_file_span: Option<Span>,
     ) -> ResourceParams {
-        use crate::resources::podman::PodmanParams;
-        ResourceParams::Podman(PodmanParams::ComposePresent {
+        use crate::resources::podman_compose::PodmanComposeParams;
+        ResourceParams::PodmanCompose(PodmanComposeParams::Present {
             project: "app".into(),
             project_span: empty_span(),
             files,
@@ -1459,6 +1494,7 @@ mod dispatch_tests {
             group::GroupResource,
             pacman::PacmanResource,
             podman::PodmanResource,
+            podman_compose::PodmanComposeResource,
             systemd::SystemdResource,
             user::UserResource,
         };
@@ -1528,6 +1564,13 @@ mod dispatch_tests {
                     sudo: false,
                 }),
                 "podman",
+            ),
+            (
+                Resource::PodmanCompose(PodmanComposeResource::Absent {
+                    project: "app".into(),
+                    sudo: false,
+                }),
+                "podman_compose",
             ),
             (
                 Resource::Command(CommandResource {
