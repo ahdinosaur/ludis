@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::{fmt::Display, pin::Pin};
 use thiserror::Error;
 use tokio::process::{ChildStderr, ChildStdout};
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::OperationType;
 use crate::operations::file::FilePath;
@@ -293,7 +293,6 @@ fn build_down(project: &str) -> Command {
          [ -n \"$networks\" ] && podman network rm $networks\n\
          true\n"
     );
-    debug!(project = %project, script = %script, "[podman-compose] down script");
     Command::new_sh(&script)
 }
 
