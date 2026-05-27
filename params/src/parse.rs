@@ -88,6 +88,12 @@ pub enum ParseError {
         got: Box<Value>,
         expected: Vec<&'static str>,
     },
+
+    /// Value {got:?} is invalid: {reason}
+    InvalidValue {
+        reason: &'static str,
+        got: Box<Value>,
+    },
 }
 
 /// Parse a typed Rust value from a Rimu [`Spanned<Value>`].
