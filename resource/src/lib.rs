@@ -656,6 +656,36 @@ pub enum HostPathValidationError {
     #[error("source host-path {path:?} for @resource/directory resource is not a directory")]
     DirectorySourceNotDirectory { path: PathBuf, span: Span },
 
+    #[error(
+        "compose file {path:?} (entry {index} of `files:`) for @resource/podman compose was not found"
+    )]
+    ComposeFileMissing {
+        path: PathBuf,
+        span: Span,
+        index: usize,
+    },
+
+    #[error(
+        "compose file {path:?} (entry {index} of `files:`) for @resource/podman compose is not a regular file"
+    )]
+    ComposeFileNotFile {
+        path: PathBuf,
+        span: Span,
+        index: usize,
+    },
+
+    #[error("compose env_file {path:?} for @resource/podman compose was not found")]
+    ComposeEnvFileMissing { path: PathBuf, span: Span },
+
+    #[error("compose env_file {path:?} for @resource/podman compose is not a regular file")]
+    ComposeEnvFileNotFile { path: PathBuf, span: Span },
+
+    #[error("compose working_dir {path:?} for @resource/podman compose was not found")]
+    ComposeWorkingDirMissing { path: PathBuf, span: Span },
+
+    #[error("compose working_dir {path:?} for @resource/podman compose is not a directory")]
+    ComposeWorkingDirNotDirectory { path: PathBuf, span: Span },
+
     #[error(transparent)]
     Fs(#[from] FsError),
 }
