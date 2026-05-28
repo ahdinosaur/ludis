@@ -28,8 +28,14 @@ pub enum LoadError {
     PlanFromRimu(Box<Spanned<PlanFromRimuError>>),
 }
 
-/// Parse Rimu source, evaluate it against an empty environment, and project the
-/// resulting value into a [`Plan`] (name, version, params schema, setup function).
+/// Parse Rimu source, evaluate it against an environment seeded with the Rimu stdlib,
+/// and project the resulting value into a [`Plan`] (name, version, params schema, setup
+/// function).
+///
+/// The stdlib is in scope at both top-level evaluation and inside the `setup` closure
+/// it returns (the closure captures this environment), so plan authors can call
+/// `to_string`, `length`, `map`, `range`, `host_path`, `target_path` from any plan
+/// expression.
 ///
 /// `plan_id` becomes the Rimu `SourceId` so downstream span-aware errors can point back
 /// at the real file.
@@ -43,9 +49,30 @@ pub fn load(code: &str, plan_id: &PlanId) -> Result<Spanned<Plan>, LoadError> {
         return Err(LoadError::NoCode);
     };
 
-    let env = Rc::new(RefCell::new(rimu::Environment::new()));
+    let mut env = rimu::Environment::new();
+    for (key, value) in rimu::create_stdlib() {
+        env.insert(key, value);
+    }
+    let env = Rc::new(RefCell::new(env));
     let value = rimu::evaluate(&ast, env).map_err(Box::new)?;
     let plan =
         Plan::from_rimu_spanned(value).map_err(|error| LoadError::PlanFromRimu(Box::new(error)))?;
     Ok(plan)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdlib_in_scope_at_top_level() {
+        let code = r#"
+name: "test"
+version: to_string(0) + ".1.0"
+
+setup: (params, ctx) => []
+"#;
+        let plan_id = PlanId::Path("/tmp/test.lusid".into());
+        load(code, &plan_id).expect("load should see to_string in scope");
+    }
 }
