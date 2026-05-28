@@ -128,7 +128,8 @@ fn exit_code(error: &ApplyError) -> i32 {
         | ApplyError::ResourceState(_)
         | ApplyError::OperationApply(_)
         | ApplyError::Secrets(_)
-        | ApplyError::HostPathValidation(_) => 1,
+        | ApplyError::HostPathValidation(_)
+        | ApplyError::ResourcePrepare(_) => 1,
 
         ApplyError::AbortedByUser { .. } => 130,
     }

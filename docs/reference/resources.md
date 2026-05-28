@@ -302,8 +302,48 @@ Manage a podman container.
 
 | State | Fields |
 | --- | --- |
-| `"present"` | `name` (required), `image` (required), `command` (list, optional), `env` (list, optional), `ports` (list, optional), `volumes` (list, optional), `restart_policy` (string, optional), `running` (bool, optional). |
-| `"absent"` | `name` (required). |
+| `"present"` | `name` (required), `image` (required), `command` (list, optional), `env` (list, optional), `ports` (list, optional), `volumes` (list, optional), `restart_policy` (string, optional), `network` (string, optional), `running` (bool, optional), `sudo` (bool, optional). |
+| `"absent"` | `name` (required), `sudo` (bool, optional). |
+
+For compose projects, use the separate [`@resource/podman-compose`](#resourcepodman-compose) resource.
+
+---
+
+## `@resource/podman-compose`
+
+Manage a podman-compose project.
+
+```yaml
+- module: "@resource/podman-compose"
+  params:
+    state: "present"
+    project: "my_app"
+    files:
+      - "./compose.yaml"
+      - "./compose.override.yaml"
+    working_dir: "./services"
+    env_file: "./.env"
+    sudo: false
+```
+
+Lusid invokes `podman-compose -p <project> -f <files...> up -d` to bring the project up, and tears it down with raw `podman` calls filtered on the `com.docker.compose.project=<project>` label so the compose files are not needed at teardown time.
+
+| State | Fields |
+| --- | --- |
+| `"present"` | `project` (required), `files` (list of host-path, required, ≥1), `working_dir` (host-path, optional; defaults to the parent directory of the first file), `env_file` (host-path, optional), `sudo` (bool, optional). |
+| `"absent"` | `project` (required), `sudo` (bool, optional). |
+
+**Project name** must match `^[a-z0-9][a-z0-9_-]{0,62}$`. Uppercase letters, leading hyphens, and other special characters are rejected at parse-time with a span pointing at the offending value.
+
+**Drift detection**: lusid creates a small marker network named `lusid-compose-marker-<project>` alongside the project, carrying a `lusid.compose_config_hash=<sha256>` label computed from the project name, the byte contents of every compose file (in declared order), the byte contents of the env file (if any), the `sudo` flag, and a `v1` wire-version prefix. Editing any of those inputs changes the hash and triggers a `down`-then-`up` cycle on the next apply. The hash is bytes-exact: whitespace-only edits to a compose file also count as drift. The marker network name `lusid-compose-marker-<project>` is reserved; do not declare a compose network under that name.
+
+**Volume preservation**: `state: "absent"` removes containers and networks bearing the project label, but **named volumes are preserved** (matches `podman-compose down` default; avoids data loss on a typo). Wipe them manually with `podman volume rm <name>` if intended.
+
+**Sudo / rootless vs rootful**: `sudo: true` selects the rootful podman runtime - entirely separate from the rootless one. Switching the flag on an already-up project busts the hash (the flag is part of the hash inputs) so the next apply re-creates the project under the new runtime.
+
+**Recovery from a half-up failure**: if `compose up` fails partway through, the marker is not installed (lusid creates it only after a successful up). The next apply sees no marker and re-runs up; `podman-compose up -d` is mostly idempotent on a healthy project. If you need to force a clean rebuild, briefly flip to `state: "absent"`, re-apply, then flip back.
+
+**`podman-compose` is a runtime dependency**: the operator's machine must have it installed. Applies that target this resource fail at exec time if it is missing.
 
 ---
 

@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use lusid_cmd::{Command, CommandError};
 use lusid_ctx::Context;
+use lusid_params::{ParseError, ParseParams, StructFields};
+use rimu::{Spanned, Value};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Display, pin::Pin};
 use thiserror::Error;
@@ -86,6 +88,37 @@ impl Display for PodmanOperation {
                 write!(f, "{}Podman::Remove({name})", prefix(*sudo))
             }
         }
+    }
+}
+
+impl ParseParams for PodmanOperation {
+    /// Parse an `@operation/podman` author-facing params object. Discriminator:
+    /// `action: "start" | "stop" | "remove"`. `create` is *not* exposed: it
+    /// writes a `lusid.config-hash` label that the resource layer owns, and
+    /// hand-crafting that hash from author input would let plan authors
+    /// fight the drift detector. Use `@resource/podman state: "present"` for
+    /// declarative container creation. Compose actions live in
+    /// `@operation/podman-compose`.
+    fn parse_params(value: Spanned<Value>) -> Result<Self, Spanned<ParseError>> {
+        let mut fields = StructFields::new(value)?;
+        let action = fields.take_discriminator("action", &["start", "stop", "remove"])?;
+        let out = match action {
+            "start" => PodmanOperation::Start {
+                name: fields.required_string("name")?,
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
+            },
+            "stop" => PodmanOperation::Stop {
+                name: fields.required_string("name")?,
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
+            },
+            "remove" => PodmanOperation::Remove {
+                name: fields.required_string("name")?,
+                sudo: fields.optional_bool("sudo")?.unwrap_or(false),
+            },
+            _ => unreachable!(),
+        };
+        fields.finish()?;
+        Ok(out)
     }
 }
 
@@ -217,5 +250,44 @@ impl OperationType for Podman {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indexmap::IndexMap;
+
+    fn empty_span() -> rimu::Span {
+        rimu::Span::new(rimu::SourceId::empty(), 0, 0)
+    }
+
+    fn obj(pairs: Vec<(&str, Value)>) -> Spanned<Value> {
+        let mut map: IndexMap<String, Spanned<Value>> = IndexMap::new();
+        for (k, v) in pairs {
+            map.insert(k.to_string(), Spanned::new(v, empty_span()));
+        }
+        Spanned::new(Value::Object(map), empty_span())
+    }
+
+    #[test]
+    fn parse_start_action() {
+        let op = PodmanOperation::parse_params(obj(vec![
+            ("action", Value::String("start".into())),
+            ("name", Value::String("web".into())),
+        ]))
+        .expect("parse");
+        assert!(matches!(op, PodmanOperation::Start { .. }));
+    }
+
+    #[test]
+    fn parse_rejects_unknown_action() {
+        let err =
+            PodmanOperation::parse_params(obj(vec![("action", Value::String("create".into()))]))
+                .expect_err("create is intentionally not author-facing");
+        assert!(matches!(
+            err.inner(),
+            ParseError::UnknownDiscriminator { .. }
+        ));
     }
 }

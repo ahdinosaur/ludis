@@ -6,7 +6,8 @@ use lusid_params::ParseParams;
 use lusid_resource::{
     ResourceParams, ResourceType, apt::Apt, apt_repo::AptRepo, aur::Aur, command::Command,
     directory::Directory, file::File, flatpak::Flatpak, flatpak_remote::FlatpakRemote, git::Git,
-    group::Group, pacman::Pacman, podman::Podman, secret::Secret, systemd::Systemd, user::User,
+    group::Group, pacman::Pacman, podman::Podman, podman_compose::PodmanCompose, secret::Secret,
+    systemd::Systemd, user::User,
 };
 use rimu::{Spanned, Value};
 
@@ -37,6 +38,9 @@ pub fn resource_module(
         }
         Pacman::ID => resource_module_for_resource::<Pacman>(params).map(ResourceParams::Pacman),
         Podman::ID => resource_module_for_resource::<Podman>(params).map(ResourceParams::Podman),
+        PodmanCompose::ID => {
+            resource_module_for_resource::<PodmanCompose>(params).map(ResourceParams::PodmanCompose)
+        }
         Command::ID => resource_module_for_resource::<Command>(params).map(ResourceParams::Command),
         Git::ID => resource_module_for_resource::<Git>(params).map(ResourceParams::Git),
         Secret::ID => resource_module_for_resource::<Secret>(params).map(ResourceParams::Secret),

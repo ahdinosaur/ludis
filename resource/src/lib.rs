@@ -42,6 +42,10 @@ use crate::resources::git::{Git, GitChange, GitParams, GitResource, GitState};
 use crate::resources::group::{Group, GroupChange, GroupParams, GroupResource, GroupState};
 use crate::resources::pacman::{Pacman, PacmanChange, PacmanParams, PacmanResource, PacmanState};
 use crate::resources::podman::{Podman, PodmanChange, PodmanParams, PodmanResource, PodmanState};
+use crate::resources::podman_compose::{
+    PodmanCompose, PodmanComposeChange, PodmanComposeParams, PodmanComposeResource,
+    PodmanComposeState,
+};
 use crate::resources::secret::{Secret, SecretParams};
 use crate::resources::systemd::{
     Systemd, SystemdChange, SystemdParams, SystemdResource, SystemdState,
@@ -145,6 +149,7 @@ pub enum ResourceParams {
     FlatpakRemote(FlatpakRemoteParams),
     Pacman(PacmanParams),
     Podman(PodmanParams),
+    PodmanCompose(PodmanComposeParams),
     Command(CommandParams),
     Git(GitParams),
     Secret(SecretParams),
@@ -166,6 +171,7 @@ impl Display for ResourceParams {
             FlatpakRemote(params) => params.fmt(f),
             Pacman(params) => params.fmt(f),
             Podman(params) => params.fmt(f),
+            PodmanCompose(params) => params.fmt(f),
             Command(params) => params.fmt(f),
             Git(params) => params.fmt(f),
             Secret(params) => params.fmt(f),
@@ -187,6 +193,7 @@ pub enum Resource {
     FlatpakRemote(FlatpakRemoteResource),
     Pacman(PacmanResource),
     Podman(PodmanResource),
+    PodmanCompose(PodmanComposeResource),
     Command(CommandResource),
     Git(GitResource),
     Systemd(SystemdResource),
@@ -207,6 +214,7 @@ impl Display for Resource {
             FlatpakRemote(flatpak_remote) => flatpak_remote.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
             Podman(podman) => podman.fmt(f),
+            PodmanCompose(podman_compose) => podman_compose.fmt(f),
             Command(command) => command.fmt(f),
             Git(git) => git.fmt(f),
             Systemd(systemd) => systemd.fmt(f),
@@ -231,6 +239,7 @@ pub enum ResourceState {
     FlatpakRemote(FlatpakRemoteState),
     Pacman(PacmanState),
     Podman(PodmanState),
+    PodmanCompose(PodmanComposeState),
     Command(CommandState),
     Git(GitState),
     Systemd(SystemdState),
@@ -251,6 +260,7 @@ impl Display for ResourceState {
             FlatpakRemote(flatpak_remote) => flatpak_remote.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
             Podman(podman) => podman.fmt(f),
+            PodmanCompose(podman_compose) => podman_compose.fmt(f),
             Command(command) => command.fmt(f),
             Git(git) => git.fmt(f),
             Systemd(systemd) => systemd.fmt(f),
@@ -291,6 +301,9 @@ pub enum ResourceStateError {
     #[error("podman state error: {0}")]
     Podman(#[from] <Podman as ResourceType>::StateError),
 
+    #[error("podman-compose state error: {0}")]
+    PodmanCompose(#[from] <PodmanCompose as ResourceType>::StateError),
+
     #[error("command state error: {0}")]
     Command(#[from] <Command as ResourceType>::StateError),
 
@@ -318,6 +331,7 @@ pub enum ResourceChange {
     FlatpakRemote(FlatpakRemoteChange),
     Pacman(PacmanChange),
     Podman(PodmanChange),
+    PodmanCompose(PodmanComposeChange),
     Command(CommandChange),
     Git(GitChange),
     Systemd(SystemdChange),
@@ -338,6 +352,7 @@ impl Display for ResourceChange {
             FlatpakRemote(flatpak_remote) => flatpak_remote.fmt(f),
             Pacman(pacman) => pacman.fmt(f),
             Podman(podman) => podman.fmt(f),
+            PodmanCompose(podman_compose) => podman_compose.fmt(f),
             Command(command) => command.fmt(f),
             Git(git) => git.fmt(f),
             Systemd(systemd) => systemd.fmt(f),
@@ -360,6 +375,7 @@ impl ResourceChangeTrait for ResourceChange {
             FlatpakRemote(c) => c.kind(),
             Pacman(c) => c.kind(),
             Podman(c) => c.kind(),
+            PodmanCompose(c) => c.kind(),
             Command(c) => c.kind(),
             Git(c) => c.kind(),
             Systemd(c) => c.kind(),
@@ -403,6 +419,9 @@ impl ResourceParams {
             }
             ResourceParams::Pacman(params) => typed::<Pacman>(params, Resource::Pacman),
             ResourceParams::Podman(params) => typed::<Podman>(params, Resource::Podman),
+            ResourceParams::PodmanCompose(params) => {
+                typed::<PodmanCompose>(params, Resource::PodmanCompose)
+            }
             ResourceParams::Command(params) => typed::<Command>(params, Resource::Command),
             ResourceParams::Git(params) => typed::<Git>(params, Resource::Git),
             // `@resource/secret` lowers to `FileResource::Secret`, which is
@@ -512,6 +531,15 @@ impl Resource {
                 )
                 .await
             }
+            Resource::PodmanCompose(resource) => {
+                typed::<PodmanCompose>(
+                    ctx,
+                    resource,
+                    ResourceState::PodmanCompose,
+                    ResourceStateError::PodmanCompose,
+                )
+                .await
+            }
             Resource::Command(resource) => {
                 typed::<Command>(
                     ctx,
@@ -589,6 +617,9 @@ impl Resource {
             (Resource::Podman(resource), ResourceState::Podman(state)) => {
                 typed::<Podman>(resource, state, ResourceChange::Podman)
             }
+            (Resource::PodmanCompose(resource), ResourceState::PodmanCompose(state)) => {
+                typed::<PodmanCompose>(resource, state, ResourceChange::PodmanCompose)
+            }
             (Resource::Command(resource), ResourceState::Command(state)) => {
                 typed::<Command>(resource, state, ResourceChange::Command)
             }
@@ -622,6 +653,7 @@ impl Resource {
             Resource::FlatpakRemote(_) => "flatpak_remote",
             Resource::Pacman(_) => "pacman",
             Resource::Podman(_) => "podman",
+            Resource::PodmanCompose(_) => "podman_compose",
             Resource::Command(_) => "command",
             Resource::Git(_) => "git",
             Resource::Systemd(_) => "systemd",
@@ -642,6 +674,18 @@ impl Resource {
 /// [`Span`] so diagnostics can point back at the offending `.lusid` line -
 /// see AGENTS.md "spans are load-bearing". The [`Self::Fs`] variant is a
 /// low-level filesystem failure with no plan attribution, so it has no span.
+/// Errors surfaced by [`ResourceParams::prepare`] - post-validation file I/O
+/// (e.g. reading compose files for hash computation). Validation already
+/// confirmed each path exists and has the expected type, so failures here
+/// are the rare "file deleted between validate and prepare" race, a
+/// permission problem, or a transient I/O issue. Span-attributable variants
+/// carry the source span for diagnostics.
+#[derive(Debug, Error)]
+pub enum ResourcePrepareError {
+    #[error(transparent)]
+    PodmanCompose(#[from] crate::resources::podman_compose::PodmanComposePrepareError),
+}
+
 #[derive(Debug, Error)]
 pub enum HostPathValidationError {
     #[error("source host-path {path:?} for @resource/file resource was not found")]
@@ -655,6 +699,36 @@ pub enum HostPathValidationError {
 
     #[error("source host-path {path:?} for @resource/directory resource is not a directory")]
     DirectorySourceNotDirectory { path: PathBuf, span: Span },
+
+    #[error(
+        "compose file {path:?} (entry {index} of `files:`) for @resource/podman compose was not found"
+    )]
+    ComposeFileMissing {
+        path: PathBuf,
+        span: Span,
+        index: usize,
+    },
+
+    #[error(
+        "compose file {path:?} (entry {index} of `files:`) for @resource/podman compose is not a regular file"
+    )]
+    ComposeFileNotFile {
+        path: PathBuf,
+        span: Span,
+        index: usize,
+    },
+
+    #[error("compose env_file {path:?} for @resource/podman compose was not found")]
+    ComposeEnvFileMissing { path: PathBuf, span: Span },
+
+    #[error("compose env_file {path:?} for @resource/podman compose is not a regular file")]
+    ComposeEnvFileNotFile { path: PathBuf, span: Span },
+
+    #[error("compose working_dir {path:?} for @resource/podman compose was not found")]
+    ComposeWorkingDirMissing { path: PathBuf, span: Span },
+
+    #[error("compose working_dir {path:?} for @resource/podman compose is not a directory")]
+    ComposeWorkingDirNotDirectory { path: PathBuf, span: Span },
 
     #[error(transparent)]
     Fs(#[from] FsError),
@@ -701,7 +775,46 @@ impl ResourceParams {
                 source_span,
                 ..
             }) => check_source_is_directory(source, source_span).await,
+            ResourceParams::PodmanCompose(PodmanComposeParams::Present {
+                files,
+                files_spans,
+                working_dir,
+                working_dir_span,
+                env_file,
+                env_file_span,
+                ..
+            }) => {
+                // Per-element index-aware diagnostics for `files: [...]` so an
+                // "entry 2 of `files:` is missing" error points at the right
+                // list element rather than the list as a whole.
+                for (index, file) in files.iter().enumerate() {
+                    check_compose_file(file, &files_spans[index], index).await?;
+                }
+                check_compose_working_dir(working_dir, working_dir_span).await?;
+                if let (Some(ef), Some(span)) = (env_file.as_ref(), env_file_span.as_ref()) {
+                    check_compose_env_file(ef, span).await?;
+                }
+                Ok(())
+            }
             _ => Ok(()),
+        }
+    }
+
+    /// Post-validation preparation: read host-side files referenced by params
+    /// (today only compose YAML) and bake the resulting hash into the params
+    /// for downstream change-time comparison.
+    ///
+    /// Called by the apply pipeline between [`Self::validate_host_paths`] and
+    /// [`Self::resources`]. For non-compose variants this is a pass-through.
+    /// Validation runs first so a `ReadFailed` here is the rare
+    /// "file deleted between validate and prepare" race or a permission
+    /// error - both worth their own span-attributable diagnostic.
+    pub async fn prepare(self) -> Result<Self, ResourcePrepareError> {
+        match self {
+            ResourceParams::PodmanCompose(p) => {
+                Ok(ResourceParams::PodmanCompose(p.prepare().await?))
+            }
+            other => Ok(other),
         }
     }
 }
@@ -759,6 +872,69 @@ async fn check_source_is_file(
     Ok(())
 }
 
+async fn check_compose_file(
+    source: &FilePath,
+    span: &Span,
+    index: usize,
+) -> Result<(), HostPathValidationError> {
+    let path = source.as_path();
+    let Some(metadata) = resolved_metadata(path).await? else {
+        return Err(HostPathValidationError::ComposeFileMissing {
+            path: path.to_path_buf(),
+            span: span.clone(),
+            index,
+        });
+    };
+    if !metadata.is_file() {
+        return Err(HostPathValidationError::ComposeFileNotFile {
+            path: path.to_path_buf(),
+            span: span.clone(),
+            index,
+        });
+    }
+    Ok(())
+}
+
+async fn check_compose_env_file(
+    source: &FilePath,
+    span: &Span,
+) -> Result<(), HostPathValidationError> {
+    let path = source.as_path();
+    let Some(metadata) = resolved_metadata(path).await? else {
+        return Err(HostPathValidationError::ComposeEnvFileMissing {
+            path: path.to_path_buf(),
+            span: span.clone(),
+        });
+    };
+    if !metadata.is_file() {
+        return Err(HostPathValidationError::ComposeEnvFileNotFile {
+            path: path.to_path_buf(),
+            span: span.clone(),
+        });
+    }
+    Ok(())
+}
+
+async fn check_compose_working_dir(
+    source: &FilePath,
+    span: &Span,
+) -> Result<(), HostPathValidationError> {
+    let path = source.as_path();
+    let Some(metadata) = resolved_metadata(path).await? else {
+        return Err(HostPathValidationError::ComposeWorkingDirMissing {
+            path: path.to_path_buf(),
+            span: span.clone(),
+        });
+    };
+    if !metadata.is_dir() {
+        return Err(HostPathValidationError::ComposeWorkingDirNotDirectory {
+            path: path.to_path_buf(),
+            span: span.clone(),
+        });
+    }
+    Ok(())
+}
+
 async fn check_source_is_directory(
     source: &FilePath,
     span: &Span,
@@ -793,6 +969,7 @@ impl ResourceChange {
             ResourceChange::FlatpakRemote(change) => FlatpakRemote::operations(change),
             ResourceChange::Pacman(change) => Pacman::operations(change),
             ResourceChange::Podman(change) => Podman::operations(change),
+            ResourceChange::PodmanCompose(change) => PodmanCompose::operations(change),
             ResourceChange::Command(change) => Command::operations(change),
             ResourceChange::Git(change) => Git::operations(change),
             ResourceChange::Systemd(change) => Systemd::operations(change),
@@ -1101,6 +1278,136 @@ mod tests {
             HostPathValidationError::DirectorySourceMissing { .. }
         ));
     }
+
+    // -- compose --------------------------------------------------------
+
+    fn compose_params(
+        files: Vec<FilePath>,
+        files_spans: Vec<Span>,
+        working_dir: FilePath,
+        env_file: Option<FilePath>,
+        env_file_span: Option<Span>,
+    ) -> ResourceParams {
+        use crate::resources::podman_compose::PodmanComposeParams;
+        ResourceParams::PodmanCompose(PodmanComposeParams::Present {
+            project: "app".into(),
+            project_span: empty_span(),
+            files,
+            files_spans,
+            working_dir,
+            working_dir_span: empty_span(),
+            env_file,
+            env_file_span,
+            config_hash: None,
+            sudo: false,
+        })
+    }
+
+    #[tokio::test]
+    async fn compose_validates_existing_files() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("compose.yaml");
+        tokio::fs::write(&file, b"services: {}\n").await.unwrap();
+        compose_params(
+            vec![file_path(&file)],
+            vec![empty_span()],
+            file_path(dir.path()),
+            None,
+            None,
+        )
+        .validate_host_paths()
+        .await
+        .expect("should validate");
+    }
+
+    #[tokio::test]
+    async fn compose_reports_missing_file_with_index() {
+        let dir = tempdir().unwrap();
+        let real = dir.path().join("real.yaml");
+        tokio::fs::write(&real, b"x").await.unwrap();
+        let missing = dir.path().join("missing.yaml");
+        let err = compose_params(
+            vec![file_path(&real), file_path(&missing)],
+            vec![empty_span(), empty_span()],
+            file_path(dir.path()),
+            None,
+            None,
+        )
+        .validate_host_paths()
+        .await
+        .unwrap_err();
+        match err {
+            HostPathValidationError::ComposeFileMissing { index, .. } => {
+                assert_eq!(index, 1, "should report the second (missing) entry");
+            }
+            other => panic!("expected ComposeFileMissing, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn compose_reports_directory_as_not_file() {
+        let dir = tempdir().unwrap();
+        let subdir = dir.path().join("subdir");
+        tokio::fs::create_dir(&subdir).await.unwrap();
+        let err = compose_params(
+            vec![file_path(&subdir)],
+            vec![empty_span()],
+            file_path(dir.path()),
+            None,
+            None,
+        )
+        .validate_host_paths()
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            HostPathValidationError::ComposeFileNotFile { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn compose_reports_missing_env_file() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("compose.yaml");
+        tokio::fs::write(&file, b"x").await.unwrap();
+        let missing_env = dir.path().join("missing.env");
+        let err = compose_params(
+            vec![file_path(&file)],
+            vec![empty_span()],
+            file_path(dir.path()),
+            Some(file_path(&missing_env)),
+            Some(empty_span()),
+        )
+        .validate_host_paths()
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            HostPathValidationError::ComposeEnvFileMissing { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn compose_reports_working_dir_not_directory() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("compose.yaml");
+        tokio::fs::write(&file, b"x").await.unwrap();
+        // working_dir points at a regular file, not a directory.
+        let err = compose_params(
+            vec![file_path(&file)],
+            vec![empty_span()],
+            file_path(&file),
+            None,
+            None,
+        )
+        .validate_host_paths()
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            HostPathValidationError::ComposeWorkingDirNotDirectory { .. }
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -1187,6 +1494,7 @@ mod dispatch_tests {
             group::GroupResource,
             pacman::PacmanResource,
             podman::PodmanResource,
+            podman_compose::PodmanComposeResource,
             systemd::SystemdResource,
             user::UserResource,
         };
@@ -1256,6 +1564,13 @@ mod dispatch_tests {
                     sudo: false,
                 }),
                 "podman",
+            ),
+            (
+                Resource::PodmanCompose(PodmanComposeResource::Absent {
+                    project: "app".into(),
+                    sudo: false,
+                }),
+                "podman_compose",
             ),
             (
                 Resource::Command(CommandResource {

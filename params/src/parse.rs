@@ -88,6 +88,12 @@ pub enum ParseError {
         got: Box<Value>,
         expected: Vec<&'static str>,
     },
+
+    /// Value {got:?} is invalid: {reason}
+    InvalidValue {
+        reason: &'static str,
+        got: Box<Value>,
+    },
 }
 
 /// Parse a typed Rust value from a Rimu [`Spanned<Value>`].
@@ -236,6 +242,20 @@ impl StructFields {
         self.optional(key, parse_string)
     }
 
+    /// Same as [`required_string`](Self::required_string) but also returns
+    /// the [`Span`] of the source value, for downstream validation failures
+    /// (e.g. "project name does not match the compose regex") that need to
+    /// point at the offending `.lusid` line.
+    pub fn required_string_spanned(
+        &mut self,
+        key: &str,
+    ) -> Result<Spanned<String>, Spanned<ParseError>> {
+        self.required(key, |value| {
+            let span = value.span();
+            parse_string(value).map(|s| Spanned::new(s, span))
+        })
+    }
+
     /// Convenience: read a required boolean field.
     pub fn required_bool(&mut self, key: &str) -> Result<bool, Spanned<ParseError>> {
         self.required(key, parse_bool)
@@ -276,6 +296,17 @@ impl StructFields {
         })
     }
 
+    /// Optional analogue of [`required_host_path_spanned`](Self::required_host_path_spanned).
+    pub fn optional_host_path_spanned(
+        &mut self,
+        key: &str,
+    ) -> Result<Option<Spanned<PathBuf>>, Spanned<ParseError>> {
+        self.optional(key, |value| {
+            let span = value.span();
+            parse_host_path(value).map(|path| Spanned::new(path, span))
+        })
+    }
+
     /// Convenience: read a required target-path field, returning the absolute
     /// path string verbatim.
     pub fn required_target_path(&mut self, key: &str) -> Result<String, Spanned<ParseError>> {
@@ -301,6 +332,22 @@ impl StructFields {
         key: &str,
     ) -> Result<Option<Vec<String>>, Spanned<ParseError>> {
         self.optional(key, |value| parse_list(value, parse_string))
+    }
+
+    /// Read a required list of host-path fields, returning each as a
+    /// [`Spanned<PathBuf>`] so per-element diagnostics (e.g. "this file is
+    /// missing on disk") can point at the offending list entry rather than
+    /// the list as a whole.
+    pub fn required_host_path_spanned_list(
+        &mut self,
+        key: &str,
+    ) -> Result<Vec<Spanned<PathBuf>>, Spanned<ParseError>> {
+        self.required(key, |value| {
+            parse_list(value, |item| {
+                let span = item.span();
+                parse_host_path(item).map(|path| Spanned::new(path, span))
+            })
+        })
     }
 
     /// Assert no unknown fields remain. Call once after consuming every
@@ -571,5 +618,25 @@ mod tests {
             err.inner(),
             ParseError::TargetPathNotAbsolute { .. }
         ));
+    }
+
+    #[test]
+    fn parse_list_of_host_paths_preserves_per_element_spans() {
+        let span_a = span("/plans/a.lusid");
+        let span_b = span("/plans/b.lusid");
+        let items = Value::List(vec![
+            Spanned::new(Value::HostPath(PathBuf::from("/host/a")), span_a.clone()),
+            Spanned::new(Value::HostPath(PathBuf::from("/host/b")), span_b.clone()),
+        ]);
+        let parsed = parse_list(Spanned::new(items, empty_span()), |item| {
+            let span = item.span();
+            parse_host_path(item).map(|path| Spanned::new(path, span))
+        })
+        .expect("ok");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].inner(), &PathBuf::from("/host/a"));
+        assert_eq!(parsed[0].span().source().as_str(), "/plans/a.lusid");
+        assert_eq!(parsed[1].inner(), &PathBuf::from("/host/b"));
+        assert_eq!(parsed[1].span().source().as_str(), "/plans/b.lusid");
     }
 }

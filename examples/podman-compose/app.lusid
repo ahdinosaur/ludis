@@ -1,0 +1,17 @@
+name: "podman-compose"
+version: "0.1.0"
+
+# This plan declares a podman-compose project. Drift is detected by hashing the
+# compose file contents; editing `compose.yaml` and re-applying will tear the
+# project down and bring it back up under the new spec.
+setup: (params, system) =>
+  - module: "@resource/podman-compose"
+    id: "app-compose"
+    params:
+      state: "present"
+      project: "lusid_demo"
+      files:
+        - "./compose.yaml"
+      # working_dir defaults to the parent of the first compose file, so it
+      # is omitted here. env_file is also optional.
+      sudo: false

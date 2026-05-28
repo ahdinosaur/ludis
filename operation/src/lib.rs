@@ -31,6 +31,7 @@ use crate::operations::{
     group::{Group, GroupOperation},
     pacman::{Pacman, PacmanOperation},
     podman::{Podman, PodmanOperation},
+    podman_compose::{PodmanCompose, PodmanComposeOperation},
     systemd::{Systemd, SystemdOperation},
     user::{User, UserOperation},
 };
@@ -78,6 +79,7 @@ pub enum Operation {
     Aur(AurOperation),
     Pacman(PacmanOperation),
     Podman(PodmanOperation),
+    PodmanCompose(PodmanComposeOperation),
     Flatpak(FlatpakOperation),
     File(FileOperation),
     Directory(DirectoryOperation),
@@ -101,6 +103,7 @@ impl Operation {
             aur,
             pacman,
             podman,
+            podman_compose,
             flatpak,
             file,
             directory,
@@ -117,6 +120,11 @@ impl Operation {
             .chain(Aur::merge(aur).into_iter().map(Operation::Aur))
             .chain(Pacman::merge(pacman).into_iter().map(Operation::Pacman))
             .chain(Podman::merge(podman).into_iter().map(Operation::Podman))
+            .chain(
+                PodmanCompose::merge(podman_compose)
+                    .into_iter()
+                    .map(Operation::PodmanCompose),
+            )
             .chain(Flatpak::merge(flatpak).into_iter().map(Operation::Flatpak))
             .chain(File::merge(file).into_iter().map(Operation::File))
             .chain(
@@ -150,6 +158,9 @@ pub enum OperationApplyError {
 
     #[error("podman operation failed: {0:?}")]
     Podman(<Podman as OperationType>::ApplyError),
+
+    #[error("podman-compose operation failed: {0:?}")]
+    PodmanCompose(<PodmanCompose as OperationType>::ApplyError),
 
     #[error("flatpak operation failed: {0:?}")]
     Flatpak(<Flatpak as OperationType>::ApplyError),
@@ -185,6 +196,7 @@ pub enum OperationApplyOutput {
     Aur(#[pin] <Aur as OperationType>::ApplyOutput),
     Pacman(#[pin] <Pacman as OperationType>::ApplyOutput),
     Podman(#[pin] <Podman as OperationType>::ApplyOutput),
+    PodmanCompose(#[pin] <PodmanCompose as OperationType>::ApplyOutput),
     Flatpak(#[pin] <Flatpak as OperationType>::ApplyOutput),
     File(#[pin] <File as OperationType>::ApplyOutput),
     Directory(#[pin] <Directory as OperationType>::ApplyOutput),
@@ -206,6 +218,7 @@ impl Future for OperationApplyOutput {
             Aur(fut) => fut.poll(cx).map_err(OperationApplyError::Aur),
             Pacman(fut) => fut.poll(cx).map_err(OperationApplyError::Pacman),
             Podman(fut) => fut.poll(cx).map_err(OperationApplyError::Podman),
+            PodmanCompose(fut) => fut.poll(cx).map_err(OperationApplyError::PodmanCompose),
             Flatpak(fut) => fut.poll(cx).map_err(OperationApplyError::Flatpak),
             File(fut) => fut.poll(cx).map_err(OperationApplyError::File),
             Directory(fut) => fut.poll(cx).map_err(OperationApplyError::Directory),
@@ -227,6 +240,7 @@ pub enum OperationApplyStdout {
     Aur(#[pin] <Aur as OperationType>::ApplyStdout),
     Pacman(#[pin] <Pacman as OperationType>::ApplyStdout),
     Podman(#[pin] <Podman as OperationType>::ApplyStdout),
+    PodmanCompose(#[pin] <PodmanCompose as OperationType>::ApplyStdout),
     Flatpak(#[pin] <Flatpak as OperationType>::ApplyStdout),
     File(#[pin] <File as OperationType>::ApplyStdout),
     Directory(#[pin] <Directory as OperationType>::ApplyStdout),
@@ -250,6 +264,7 @@ impl AsyncRead for OperationApplyStdout {
             Aur(stream) => stream.poll_read(cx, buf),
             Pacman(stream) => stream.poll_read(cx, buf),
             Podman(stream) => stream.poll_read(cx, buf),
+            PodmanCompose(stream) => stream.poll_read(cx, buf),
             Flatpak(stream) => stream.poll_read(cx, buf),
             File(stream) => stream.poll_read(cx, buf),
             Directory(stream) => stream.poll_read(cx, buf),
@@ -271,6 +286,7 @@ pub enum OperationApplyStderr {
     Aur(#[pin] <Aur as OperationType>::ApplyStderr),
     Pacman(#[pin] <Pacman as OperationType>::ApplyStderr),
     Podman(#[pin] <Podman as OperationType>::ApplyStderr),
+    PodmanCompose(#[pin] <PodmanCompose as OperationType>::ApplyStderr),
     Flatpak(#[pin] <Flatpak as OperationType>::ApplyStderr),
     File(#[pin] <File as OperationType>::ApplyStderr),
     Directory(#[pin] <Directory as OperationType>::ApplyStderr),
@@ -294,6 +310,7 @@ impl AsyncRead for OperationApplyStderr {
             Aur(stream) => stream.poll_read(cx, buf),
             Pacman(stream) => stream.poll_read(cx, buf),
             Podman(stream) => stream.poll_read(cx, buf),
+            PodmanCompose(stream) => stream.poll_read(cx, buf),
             Flatpak(stream) => stream.poll_read(cx, buf),
             File(stream) => stream.poll_read(cx, buf),
             Directory(stream) => stream.poll_read(cx, buf),
@@ -370,6 +387,16 @@ impl Operation {
                     OperationApplyOutput::Podman(output),
                     OperationApplyStdout::Podman(stdout),
                     OperationApplyStderr::Podman(stderr),
+                ))
+            }
+            Operation::PodmanCompose(op) => {
+                let (output, stdout, stderr) = PodmanCompose::apply(ctx, op)
+                    .await
+                    .map_err(OperationApplyError::PodmanCompose)?;
+                Ok((
+                    OperationApplyOutput::PodmanCompose(output),
+                    OperationApplyStdout::PodmanCompose(stdout),
+                    OperationApplyStderr::PodmanCompose(stderr),
                 ))
             }
             Operation::Flatpak(op) => {
@@ -465,6 +492,7 @@ impl Display for Operation {
             Aur(op) => Display::fmt(op, f),
             Pacman(op) => Display::fmt(op, f),
             Podman(op) => Display::fmt(op, f),
+            PodmanCompose(op) => Display::fmt(op, f),
             Flatpak(op) => Display::fmt(op, f),
             File(op) => Display::fmt(op, f),
             Directory(op) => Display::fmt(op, f),
@@ -485,6 +513,7 @@ pub struct OperationsByType {
     aur: Vec<AurOperation>,
     pacman: Vec<PacmanOperation>,
     podman: Vec<PodmanOperation>,
+    podman_compose: Vec<PodmanComposeOperation>,
     flatpak: Vec<FlatpakOperation>,
     file: Vec<FileOperation>,
     directory: Vec<DirectoryOperation>,
@@ -502,6 +531,7 @@ fn partition_by_type(operations: impl IntoIterator<Item = Operation>) -> Operati
     let mut aur: Vec<AurOperation> = Vec::new();
     let mut pacman: Vec<PacmanOperation> = Vec::new();
     let mut podman: Vec<PodmanOperation> = Vec::new();
+    let mut podman_compose: Vec<PodmanComposeOperation> = Vec::new();
     let mut flatpak: Vec<FlatpakOperation> = Vec::new();
     let mut file: Vec<FileOperation> = Vec::new();
     let mut directory: Vec<DirectoryOperation> = Vec::new();
@@ -517,6 +547,7 @@ fn partition_by_type(operations: impl IntoIterator<Item = Operation>) -> Operati
             Operation::Aur(op) => aur.push(op),
             Operation::Pacman(op) => pacman.push(op),
             Operation::Podman(op) => podman.push(op),
+            Operation::PodmanCompose(op) => podman_compose.push(op),
             Operation::Flatpak(op) => flatpak.push(op),
             Operation::File(op) => file.push(op),
             Operation::Directory(op) => directory.push(op),
@@ -533,6 +564,7 @@ fn partition_by_type(operations: impl IntoIterator<Item = Operation>) -> Operati
         aur,
         pacman,
         podman,
+        podman_compose,
         flatpak,
         file,
         directory,

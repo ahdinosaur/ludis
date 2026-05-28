@@ -21,6 +21,7 @@ Only Rust is required for `lusid local apply` on a real machine.
 | [`nginx-cluster/`](./nginx-cluster/) | Two Debian servers, each running nginx with a per-machine greeting page. Shows multi-machine configs, per-machine `params`, and dependency ordering. | Debian 13 |
 | [`arch-desktop/`](./arch-desktop/) | One Arch Linux machine running a minimal XFCE desktop with LightDM. Shows installing a group of packages and enabling a display-manager service. | Arch Linux |
 | [`dotfiles/`](./dotfiles/) | Symlinks a config file and a config directory into `$HOME` via `state: "linked"`. Demonstrates `sourced` (copy) vs `linked` (symlink) for `@resource/file` and `@resource/directory`. | any Linux |
+| [`podman-compose/`](./podman-compose/) | A two-service podman-compose project (nginx + redis) managed via `@resource/podman-compose`. Shows compose lifecycle and hash-based drift detection. | any Linux with `podman-compose` |
 
 Each example follows the same shape:
 

@@ -10,6 +10,7 @@ pub mod git;
 pub mod group;
 pub mod pacman;
 pub mod podman;
+pub mod podman_compose;
 pub mod secret;
 pub mod systemd;
 pub mod user;
