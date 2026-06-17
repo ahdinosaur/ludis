@@ -152,6 +152,7 @@ impl Config {
                 os,
                 vm: _,
                 remote,
+                user: _,
             } = machine;
             let remote_cell = match remote {
                 Some(r) => format!("{}@{}:{}", r.user(), r.host, r.port()),

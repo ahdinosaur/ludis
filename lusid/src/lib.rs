@@ -8,6 +8,7 @@
 mod config;
 mod embedded;
 mod tui;
+mod upload_set;
 
 use std::{
     borrow::Cow,
@@ -38,6 +39,17 @@ use tokio::io::AsyncReadExt;
 use crate::config::{Config, ConfigError, MachineConfig};
 use crate::embedded::EmbeddedError;
 use crate::tui::{TuiError, is_tty_stdout, plain, tui};
+use crate::upload_set::UploadSetError;
+
+use std::collections::BTreeSet;
+
+use lusid_ctx::ContextError;
+use lusid_machine::Machine;
+use lusid_params::ParamsContext;
+use lusid_plan::{PlanError, PlanId};
+use lusid_store::Store;
+use rimu::SourceId;
+use rimu_interop::{ToRimuError, to_rimu};
 
 /// Parsed CLI. The `lusid-apply` worker is baked into this binary at build
 /// time for each supported target arch (see [`crate::embedded`] /
@@ -256,6 +268,32 @@ pub enum AppError {
 
     #[error("failed to install lusid-apply on target (sudo -n exit {exit:?}): {stderr}")]
     InstallApplyBinary { exit: Option<u32>, stderr: String },
+
+    #[error("failed to set up planning context for upload discovery: {0}")]
+    DiscoveryContext(#[from] ContextError),
+
+    #[error(
+        "operator-side plan discovery failed for {machine_id:?}; fix the plan and \
+         re-run before any network work happens. Source: {source}"
+    )]
+    DiscoveryPlan {
+        machine_id: String,
+        #[source]
+        source: PlanError,
+    },
+
+    #[error("failed to convert per-machine params to Rimu value: {0}")]
+    DiscoveryParams(#[from] ToRimuError),
+
+    #[error(transparent)]
+    UploadSet(#[from] UploadSetError),
+
+    #[error("failed to stat upload manifest entry {path}: {source}", path = path.display())]
+    UploadManifestStat {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error(
         "interactive confirmation requires a TTY; pass --yes / -y to auto-accept \
@@ -529,16 +567,32 @@ async fn cmd_remote_apply(
         })?;
     validate_ssh_user(remote.user())?;
 
+    let project_root = config.root().to_path_buf();
+    // Discover the upload manifest before any network work: plan failures
+    // surface as plain errors, not opaque SFTP misses partway through an apply.
+    let DiscoveryOutcome { manifest, plan_rel } = discover_upload_manifest(
+        &project_root,
+        &plan,
+        params.as_ref(),
+        &machine,
+        remote.user(),
+        &machine_id,
+    )
+    .await?;
+
     let mut ssh = connect_remote(remote).await?;
 
     let guest_secrets_dir = format!("{REMOTE_ROOT}/secrets");
-    let guest_plan_dir = format!("{REMOTE_ROOT}/plan");
+    let guest_project_dir = format!("{REMOTE_ROOT}/project");
     let guest_apply_path = format!("{REMOTE_ROOT}/lusid-apply");
 
     // 1. Bootstrap (non-root only): create dirs and chown them so SFTP can write.
     if !remote.is_root() {
         bootstrap_remote_dirs(&mut ssh, remote.user(), REMOTE_ROOT).await?;
     }
+    // Sweep the legacy `<root>/plan` mirror so it doesn't linger as dead state
+    // after this apply switches to `<root>/project`.
+    clear_legacy_plan_dir(&mut ssh, REMOTE_ROOT, remote.is_root()).await;
 
     // 2. Pre-cleanup: drop any leftover ciphertexts from a previous run.
     //    Best-effort - never fail the apply over this. We log either way so a
@@ -593,14 +647,8 @@ async fn cmd_remote_apply(
         false
     };
 
-    // 4. Upload plan dir.
-    let plan_local_dir = plan.parent().unwrap();
-    let plan_filename = plan.file_name().unwrap().to_string_lossy().to_string();
-    ssh.sync(SshVolume::DirPath {
-        local: plan_local_dir.to_path_buf(),
-        remote: guest_plan_dir.clone(),
-    })
-    .await?;
+    // 4. Mirror the discovered upload manifest under <root>/project/.
+    upload_manifest(&mut ssh, &project_root, &manifest, &guest_project_dir).await?;
 
     // 5. Upload binary. For non-root, install root-owned via sudo to defend
     //    against between-SFTP-and-exec swaps. The embedded bytes are a
@@ -633,20 +681,16 @@ async fn cmd_remote_apply(
         }
     }
 
-    // 6. Build the apply command.
-    //
-    // TODO(cc): audit `--root` semantics for remote/dev apply. We pass the
-    // operator's local path, but `lusid-apply` uses it on the guest to
-    // anchor relative `host-path` resolution and the cache dir - and plans
-    // typically anchor host-paths on the source span (the uploaded plan
-    // file's location), making the operator-side path largely ineffective.
+    // 6. Build the apply command. `--root` now points at the project mirror
+    // on the target (was previously the operator's local path, which the
+    // guest never had access to). `--plan` is the mirrored plan file location.
+    let guest_plan_path = format!("{guest_project_dir}/{}", plan_rel.to_string_lossy());
     let log = &config.log;
     let mut command = format!(
-        "{} --root {} --plan {}/{} --log {}",
+        "{} --root {} --plan {} --log {}",
         shell_words::quote(&guest_apply_path),
-        shell_words::quote(&config.root().to_string_lossy()),
-        shell_words::quote(&guest_plan_dir),
-        shell_words::quote(&plan_filename),
+        shell_words::quote(&guest_project_dir),
+        shell_words::quote(&guest_plan_path),
         shell_words::quote(log),
     );
     if forward_secrets {
@@ -926,7 +970,7 @@ async fn wait_for_vm_ready(ssh: &mut Ssh, ready_check: Option<&str>) -> Result<(
     Ok(())
 }
 
-/// Create `/var/lib/lusid` and its `plan` / `secrets` subdirs on the target
+/// Create `/var/lib/lusid` and its `project` / `secrets` subdirs on the target
 /// and chown them to the SSH user. Idempotent. Only called when `user` is
 /// non-root; root SFTP can mkdir directly via `sftp_mkdirs`.
 ///
@@ -935,14 +979,145 @@ async fn wait_for_vm_ready(ssh: &mut Ssh, ready_check: Option<&str>) -> Result<(
 /// if the validator is ever relaxed.
 async fn bootstrap_remote_dirs(ssh: &mut Ssh, user: &str, root: &str) -> Result<(), AppError> {
     let cmd = format!(
-        "sudo -n mkdir -p {root} {root}/plan {root}/secrets \
-         && sudo -n chown {user} {root} {root}/plan {root}/secrets",
+        "sudo -n mkdir -p {root} {root}/project {root}/secrets \
+         && sudo -n chown {user} {root} {root}/project {root}/secrets",
         root = shell_words::quote(root),
         user = shell_words::quote(user),
     );
     let (exit, _stdout, stderr) = ssh_run(ssh, &cmd).await?;
     if exit != Some(0) {
         return Err(AppError::BootstrapRemoteDir { exit, stderr });
+    }
+    Ok(())
+}
+
+/// Best-effort removal of the legacy `<root>/plan` directory left by pre-
+/// `0.2.x` apply binaries. Failures are logged but never propagate - if the
+/// dir is already gone, never existed, or sudo is unavailable, the apply
+/// continues as if nothing happened. The leading `test -d` keeps `sudo` out
+/// of the audit log on the common case where the legacy dir was already
+/// cleaned up or never existed.
+async fn clear_legacy_plan_dir(ssh: &mut Ssh, root: &str, is_root: bool) {
+    let path = format!("{root}/plan");
+    let path_q = shell_words::quote(&path);
+    let cmd = if is_root {
+        format!("[ -d {path_q} ] && rm -rf {path_q} || true")
+    } else {
+        format!("[ -d {path_q} ] && sudo -n rm -rf {path_q} || true")
+    };
+    if let Err(err) = ssh_run(ssh, &cmd).await {
+        tracing::debug!(?err, %path, "legacy plan dir cleanup failed");
+    }
+}
+
+/// Run the planner offline (with a synthesised [`System`] derived from the
+/// machine config) to discover which files the plan references, then build a
+/// manifest of paths relative to the project root. Fails loudly before any
+/// network/SSH work so a missing source surfaces with a real error, not a
+/// remote SFTP failure.
+/// Output of [`discover_upload_manifest`]. `plan_rel` is computed with the
+/// same lexical normalisation as `manifest` so the caller can hand it to the
+/// guest as a project-relative `--plan` argument without risking divergence
+/// from how the manifest was rebased.
+struct DiscoveryOutcome {
+    manifest: BTreeSet<PathBuf>,
+    plan_rel: PathBuf,
+}
+
+async fn discover_upload_manifest(
+    project_root: &Path,
+    plan_path: &Path,
+    params: Option<&toml::Value>,
+    machine: &Machine,
+    default_user: &str,
+    machine_id: &str,
+) -> Result<DiscoveryOutcome, AppError> {
+    // The synthesised `System` is operator-side only - just to drive the
+    // planner deterministically for file discovery. The guest re-plans
+    // against its own `System::get()` at apply time, so any drift between
+    // synth and reality lives there.
+    let system = upload_set::synthesize_system(machine, default_user);
+
+    let params_value = match params {
+        None => None,
+        Some(toml_val) => {
+            let json_val: serde_json::Value = serde_json::to_value(toml_val)?;
+            Some(to_rimu(json_val, SourceId::empty())?)
+        }
+    };
+
+    // Mirror `lusid-apply`'s guest-mode `ParamsContext`: relative `host-path`
+    // strings in CLI params have no source span to anchor against, so reject
+    // them here to keep the operator-side discovery diagnostics aligned with
+    // what the target would emit at apply time.
+    let params_ctx =
+        ParamsContext::new(project_root.to_path_buf()).forbid_cli_relative_host_paths();
+
+    let ctx = Context::create(project_root)?;
+    let mut store = Store::new(ctx.paths().cache_dir());
+    let plan_id = PlanId::Path(plan_path.to_path_buf());
+
+    let plan_tree = lusid_plan::plan(plan_id, params_value, &params_ctx, &mut store, &system)
+        .await
+        .map_err(|source| AppError::DiscoveryPlan {
+            machine_id: machine_id.to_string(),
+            source,
+        })?;
+
+    let host_paths = upload_set::collect_host_paths(&plan_tree);
+    let manifest = upload_set::build_manifest(project_root, store.reads(), &host_paths)?;
+    let plan_rel = upload_set::relativize(project_root, plan_path)?;
+    Ok(DiscoveryOutcome { manifest, plan_rel })
+}
+
+/// Default username for the dev VM's cloud-init user, used at plan-discovery
+/// time before the VM has booted. Mirrors `vm/images.toml` per distro; an
+/// override on `[machines.<id>.user.name]` takes precedence inside
+/// [`upload_set::synthesize_system`]. The wildcard arm is a safety net for
+/// future `Linux` / `Os` variants - the user override should be set
+/// explicitly until images.toml learns about the new distro.
+fn dev_cloud_init_user(machine: &Machine) -> &'static str {
+    use lusid_system::{Linux, Os};
+    match &machine.os {
+        Os::Linux(Linux::Debian { .. }) => "debian",
+        Os::Linux(Linux::Ubuntu { .. }) => "ubuntu",
+        Os::Linux(Linux::Arch) => "arch",
+        other => {
+            tracing::warn!(
+                ?other,
+                "unknown distro for dev planning default user; falling back to root \
+                 (set `[machines.<id>.user.name]` in lusid.toml to override)"
+            );
+            "root"
+        }
+    }
+}
+
+/// Mirror each manifest entry under `guest_dir`, preserving relative layout.
+/// Stats each local path to pick between `SshVolume::DirPath` (recurses) and
+/// `SshVolume::FilePath` (single file).
+async fn upload_manifest(
+    ssh: &mut Ssh,
+    project_root: &Path,
+    manifest: &BTreeSet<PathBuf>,
+    guest_dir: &str,
+) -> Result<(), AppError> {
+    for rel in manifest {
+        let local = project_root.join(rel);
+        let metadata =
+            tokio::fs::metadata(&local)
+                .await
+                .map_err(|source| AppError::UploadManifestStat {
+                    path: local.clone(),
+                    source,
+                })?;
+        let remote = format!("{guest_dir}/{}", rel.to_string_lossy());
+        let volume = if metadata.is_dir() {
+            SshVolume::DirPath { local, remote }
+        } else {
+            SshVolume::FilePath { local, remote }
+        };
+        ssh.sync(volume).await?;
     }
     Ok(())
 }
@@ -993,8 +1168,24 @@ async fn cmd_dev_apply(
         params,
     } = config.get_machine(&machine_id)?;
 
-    let root = config.root();
-    let mut ctx = Context::create(root).unwrap();
+    let project_root = config.root().to_path_buf();
+    // Run discovery before booting the VM: a plan error here costs nothing,
+    // a plan error after `Vm::run` costs ~30s and a half-launched VM. The
+    // default planning user matches what cloud-init creates from
+    // `vm/images.toml` for the machine's distro; the synthesised
+    // [`System::user`] is otherwise the Debian-convention default.
+    let dev_default_user = dev_cloud_init_user(&machine);
+    let DiscoveryOutcome { manifest, plan_rel } = discover_upload_manifest(
+        &project_root,
+        &plan,
+        params.as_ref(),
+        &machine,
+        dev_default_user,
+        &machine_id,
+    )
+    .await?;
+
+    let mut ctx = Context::create(&project_root).unwrap();
 
     let instance_id = &machine_id;
     let ports = vec![];
@@ -1021,20 +1212,13 @@ async fn cmd_dev_apply(
     wait_for_vm_ready(&mut ssh, vm.ready_check.as_deref()).await?;
 
     let dev_dir = format!("/home/{}", vm.user);
-    let plan_dir = plan.parent().unwrap();
-    let plan_filename = plan.file_name().unwrap().to_string_lossy();
+    let guest_project_dir = format!("{dev_dir}/project");
 
-    let mut volumes = vec![
-        SshVolume::FileBytes {
-            local: Cow::Borrowed(embedded::embedded_lusid_apply(machine.arch)?),
-            permissions: Some(0o755),
-            remote: format!("{dev_dir}/lusid-apply"),
-        },
-        SshVolume::DirPath {
-            local: plan_dir.to_path_buf(),
-            remote: format!("{dev_dir}/plan"),
-        },
-    ];
+    let mut volumes = vec![SshVolume::FileBytes {
+        local: Cow::Borrowed(embedded::embedded_lusid_apply(machine.arch)?),
+        permissions: Some(0o755),
+        remote: format!("{dev_dir}/lusid-apply"),
+    }];
 
     // Secrets forwarding. The dev VM SHADOWS the production target named
     // by `--machine`: it should see exactly the [files]-scoped subset
@@ -1092,10 +1276,13 @@ async fn cmd_dev_apply(
         false
     };
 
+    let guest_plan_path = format!("{guest_project_dir}/{}", plan_rel.to_string_lossy());
     let log = &config.log;
     let mut command = format!(
-        "{dev_dir}/lusid-apply --root {} --plan {dev_dir}/plan/{plan_filename} --log {log}",
-        root.display()
+        "{}/lusid-apply --root {} --plan {} --log {log}",
+        dev_dir,
+        shell_words::quote(&guest_project_dir),
+        shell_words::quote(&guest_plan_path),
     );
     if forward_secrets {
         command.push_str(&format!(
@@ -1115,9 +1302,20 @@ async fn cmd_dev_apply(
         command.push_str(&format!(" --params {}", shell_words::quote(&params_json)));
     }
 
+    // Best-effort: clean up the legacy `{dev_dir}/plan` mirror left by
+    // pre-0.2.x dev apply. Failures don't propagate; the VM user owns
+    // `dev_dir` so `rm -rf` doesn't need sudo.
+    let legacy_plan = format!("{dev_dir}/plan");
+    let legacy_plan_q = shell_words::quote(&legacy_plan);
+    let cleanup_cmd = format!("[ -d {legacy_plan_q} ] && rm -rf {legacy_plan_q} || true");
+    if let Err(err) = ssh_run(&mut ssh, &cleanup_cmd).await {
+        tracing::debug!(?err, %legacy_plan, "legacy plan dir cleanup failed");
+    }
+
     for volume in volumes {
         ssh.sync(volume).await?;
     }
+    upload_manifest(&mut ssh, &project_root, &manifest, &guest_project_dir).await?;
 
     let mut handle = ssh.command(&command).await?;
     let stdin = Box::pin(handle.channel.stdin());

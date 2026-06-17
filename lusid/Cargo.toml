@@ -11,6 +11,7 @@ lusid-machine = { path = "../machine", version = "0.2" }
 lusid-params = { path = "../params", version = "0.2" }
 lusid-plan = { path = "../plan", version = "0.2" }
 lusid-render = { path = "../render", version = "0.2" }
+lusid-resource = { path = "../resource", version = "0.2" }
 lusid-tree = { path = "../tree", version = "0.2" }
 lusid-secrets = { path = "../secrets", version = "0.2" }
 lusid-ssh = { path = "../ssh", version = "0.2" }
@@ -21,6 +22,7 @@ comfy-table = "7.2.2"
 clap.workspace = true
 crossterm = "0.29"
 displaydoc.workspace = true
+path-clean = "1.0"
 ratatui = "0.30"
 rimu.workspace = true
 rimu-interop = { path = "../rimu-interop", version = "0.2" }
@@ -37,4 +39,3 @@ vt100.workspace = true
 
 [dev-dependencies]
 lusid-operation = { path = "../operation", version = "0.2" }
-lusid-resource = { path = "../resource", version = "0.2" }
