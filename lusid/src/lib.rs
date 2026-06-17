@@ -257,6 +257,9 @@ pub enum AppError {
     #[error("failed to install lusid-apply on target (sudo -n exit {exit:?}): {stderr}")]
     InstallApplyBinary { exit: Option<u32>, stderr: String },
 
+    #[error("failed to stage SSH host key for non-root apply (sudo -n exit {exit:?}): {stderr}")]
+    StageGuestIdentity { exit: Option<u32>, stderr: String },
+
     #[error(
         "interactive confirmation requires a TTY; pass --yes / -y to auto-accept \
          every epoch, or run from a terminal without --no-tui"
@@ -534,6 +537,7 @@ async fn cmd_remote_apply(
     let guest_secrets_dir = format!("{REMOTE_ROOT}/secrets");
     let guest_plan_dir = format!("{REMOTE_ROOT}/plan");
     let guest_apply_path = format!("{REMOTE_ROOT}/lusid-apply");
+    let guest_identity_path = format!("{REMOTE_ROOT}/identity");
 
     // 1. Bootstrap (non-root only): create dirs and chown them so SFTP can write.
     if !remote.is_root() {
@@ -633,6 +637,32 @@ async fn cmd_remote_apply(
         }
     }
 
+    // 5b. Stage the SSH host private key as a user-readable copy when we'll
+    //     hand it to a non-root lusid-apply via `--identity`. `/etc/ssh/
+    //     ssh_host_ed25519_key` is `0600 root:root`; the apply process runs
+    //     as the SSH user, so without staging it can't open the file. The
+    //     copy lives at $REMOTE_ROOT/identity, mode 0600, owned by the SSH
+    //     user, and is best-effort removed in step 8. Equivalent privilege
+    //     to the SSH user's existing NOPASSWD sudo - they could `sudo cat`
+    //     the key directly - so this is convenience, not new exposure.
+    //
+    // TODO(cc): stopgap. The cleaner move is to teach `lusid_secrets` to
+    // load the identity via `sudo -n cat` (one brief elevation at apply
+    // start) instead of `fs::read`. That keeps the host key root-only at
+    // rest with no on-disk copy anywhere - no staging step, no post-cleanup
+    // race, no `$REMOTE_ROOT/identity` to babysit.
+    if forward_secrets && !remote.is_root() {
+        let stage_cmd = format!(
+            "sudo -n install -m 0600 -o {user} /etc/ssh/ssh_host_ed25519_key {dest}",
+            user = shell_words::quote(remote.user()),
+            dest = shell_words::quote(&guest_identity_path),
+        );
+        let (exit, _, stderr) = ssh_run(&mut ssh, &stage_cmd).await?;
+        if exit != Some(0) {
+            return Err(AppError::StageGuestIdentity { exit, stderr });
+        }
+    }
+
     // 6. Build the apply command.
     //
     // TODO(cc): audit `--root` semantics for remote/dev apply. We pass the
@@ -650,8 +680,14 @@ async fn cmd_remote_apply(
         shell_words::quote(log),
     );
     if forward_secrets {
+        let identity = if remote.is_root() {
+            "/etc/ssh/ssh_host_ed25519_key"
+        } else {
+            &guest_identity_path
+        };
         command.push_str(&format!(
-            " --guest-mode --identity /etc/ssh/ssh_host_ed25519_key --secrets-dir {}",
+            " --guest-mode --identity {} --secrets-dir {}",
+            shell_words::quote(identity),
             shell_words::quote(&guest_secrets_dir),
         ));
     }
@@ -665,9 +701,18 @@ async fn cmd_remote_apply(
         let params_json = serde_json::to_string(&params)?;
         command.push_str(&format!(" --params {}", shell_words::quote(&params_json)));
     }
-    if !remote.is_root() {
-        command = format!("sudo -n {command}");
-    }
+    // TODO(cc): we used to wrap a non-root remote in `sudo -n {command}` so the
+    // operator only had to grant one NOPASSWD entry for the apply binary itself,
+    // rather than allowlisting every tool ops shell out to (apt, install, chmod,
+    // useradd, systemctl, ...). The wrap was dropped to match `cmd_dev_apply`:
+    // both now run lusid-apply as the SSH user and let per-op `.sudo()` calls
+    // (see `lusid_cmd::Command::sudo` and `lusid_operation::sudo`) elevate. That
+    // restored parity (e.g. sudo's env_reset no longer strips `XDG_RUNTIME_DIR`
+    // out from under `Paths::create`, and `@operation/aur` which refuses to run
+    // as root works the same on remote and dev) but pushes the sudoers question
+    // back onto every downstream tool. Revisit if the sudoers allowlist becomes
+    // painful in practice; the per-op model assumes the SSH user has a broad
+    // NOPASSWD grant on the target.
 
     // 7. Stream apply output through the TUI. The `async move {
     //    handle.channel.wait()... }` future field-captures
@@ -705,6 +750,12 @@ async fn cmd_remote_apply(
             clear_remote_secrets_dir(&mut ssh, &guest_secrets_dir, remote.is_root()).await
     {
         tracing::debug!(?err, "post-apply secrets dir cleanup failed");
+    }
+    if forward_secrets && !remote.is_root() {
+        let rm_cmd = format!("rm -f {}", shell_words::quote(&guest_identity_path));
+        if let Err(err) = ssh_run(&mut ssh, &rm_cmd).await {
+            tracing::debug!(?err, "post-apply staged identity cleanup failed");
+        }
     }
     if let Err(err) = ssh.disconnect().await {
         tracing::debug!(?err, "ssh disconnect failed");
